@@ -4156,6 +4156,7 @@ constexpr u64 DeathReloadRequestOffset = 0x013CDE30;
 bool bbsc_request_death_reload = false;
 // Keep the death recovery state machine active while its spectator camera is released.
 bool bbsc_spectate_waiting_host_reload = false;
+u64 GetLocalPlayerCharacter();
 void NotifyBbscHostDeathReload();
 
 void RequestBbscDeathReload(std::string_view why) {
