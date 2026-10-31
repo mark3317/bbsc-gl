@@ -70,3 +70,7 @@ in the guest's own world without a delayed disconnect; fresh summon works.
 Also check Cancel, repeated exits, host departure during the save and three
 players (one guest exits, the other stays). Do not describe crash-free gameplay
 or inventory/world restoration as verified solely from fixture tests.
+
+Final completion-gated DLL build: exit=0, SHA256 `457CE260B129C997F065C33BFEB85B8D254D94CA1CE8CD4E4FD6D9137F86F15D`.
+Code: standalone `7ed396b`, bundled `203516d`, BBGL pin `0277410`.
+Menu/save, actual trampoline, and post-load fixture checks pass. Not deployed.
