@@ -4154,6 +4154,9 @@ std::string_view bbsc_spectate_name;
 // asks for the reload itself whenever a death has to end the way the game intends.
 constexpr u64 DeathReloadRequestOffset = 0x013CDE30;
 bool bbsc_request_death_reload = false;
+// Keep the death recovery state machine active while its spectator camera is released.
+bool bbsc_spectate_waiting_host_reload = false;
+void NotifyBbscHostDeathReload();
 
 void RequestBbscDeathReload(std::string_view why) {
     if (image_base == 0) {
@@ -4161,6 +4164,7 @@ void RequestBbscDeathReload(std::string_view why) {
     }
     // 0x01332BC0 already picked the destination (global+0xC map, global+0x10 respawn point) while
     // the death step ran, so the request alone reproduces the vanilla death reload.
+    NotifyBbscHostDeathReload(); // send before loading can suspend the game tick
     using ReloadRequest = u64 PS4_SYSV_ABI (*)();
     const u64 result = reinterpret_cast<ReloadRequest>(image_base + DeathReloadRequestOffset)();
     LOG_INFO(Debug, "BBSC death: reload requested ({}), result {}", why, result);
@@ -4235,10 +4239,46 @@ struct BbscPeerLife {
     u8 dead = 0;
     u32 sequence = 0;
     s64 received_ms = 0;
+    bool host_reloading = false;
 };
 std::mutex bbsc_life_mutex;
 std::map<u32, BbscPeerLife> bbsc_peer_life;
 std::atomic<u32> bbsc_life_own_id{0}; // ours, so an echo of our own packet is ignored
+u32 bbsc_life_sequence = 0; // all life sends share ordering, game thread only
+bool bbsc_host_death_reloading = false;
+
+// State 2 extends the existing dead byte: older clients still treat it as dead.
+void SendBbscLifeState(u8 state) {
+    u32 player_id = bbsc_life_own_id.load();
+    if (player_id == 0) {
+        player_id = static_cast<u32>(static_cast<u64>(SteadyNowMs()) * 2654435761ull) | 1u;
+        bbsc_life_own_id = player_id;
+    }
+    std::array<u8, 14> packet{'S', 'H', 'A', 'D', 0x23};
+    std::memcpy(packet.data() + 5, &player_id, 4);
+    packet[9] = state;
+    const u32 sequence = ++bbsc_life_sequence;
+    std::memcpy(packet.data() + 10, &sequence, 4);
+    Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(packet.data(), packet.size());
+}
+
+void NotifyBbscHostDeathReload() {
+    if (GetSessionState() != 3 || bbsc_host_death_reloading) return;
+    const u64 player = GetLocalPlayerCharacter();
+    if (!bbsc_spectate_active && (player == 0 || GetCharacterHp(player) != 0)) return;
+    bbsc_host_death_reloading = true;
+    SendBbscLifeState(2);
+    BBSC_TIMELINE("DEATH", "host death reload starting; releasing guest spectator cameras");
+}
+
+bool BbscHostReportsDeathReload() {
+    std::scoped_lock lock{bbsc_life_mutex};
+    for (const auto& [player, life] : bbsc_peer_life) {
+        if (life.host_reloading) return true;
+    }
+    return false;
+}
+
 // Counts "dead -> alive" reports: a partner that came back by reloading (see TickBbscSpectate).
 std::atomic<u32> bbsc_peer_revivals{0};
 // T5 (2026-10-29, Gascoigne): the host's wipe reload was over (it said "alive" at 17:35:39.8) before
@@ -5109,6 +5149,7 @@ u32 BbscChaliceInitialJoinMap() {
 // reloaded the Dream first. Already joined, living cooperators use the scoped follow instead.
 // Initial summons, death/home loads, invaders and our own explicit requests keep their path.
 void PS4_SYSV_ABI BbscChaliceTransitionHook(u64, const GuestRegisterSnapshot* registers) {
+    NotifyBbscHostDeathReload(); // native StageTransition, including death reloads
     if (!registers || bbsc_chalice_transition_owned || !bbsc_join_teleport_done ||
         GetSessionState() != 6 || GetLocalPlayerType() != 1) return;
     const u64 global = GetGlobalState();
@@ -9501,6 +9542,7 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
     }
     bbsc_kept_death_this_load = true;
     StashBbscOwnWorldSnapshot();
+    bbsc_spectate_waiting_host_reload = false;
     bbsc_spectate_name = name;
     bbsc_spectate_since_ms = SteadyNowMs();
     bbsc_spectate_load_generation = bbsc_load_generation.load();
@@ -9576,6 +9618,16 @@ void TickBbscSpectate() {
     const s64 now = SteadyNowMs();
     const s32 session_state = GetSessionState();
     const bool session_alive = session_state == 3 || session_state == 6;
+    if (session_state == 6 && !bbsc_spectate_waiting_host_reload && BbscHostReportsDeathReload()) {
+        bbsc_spectate_waiting_host_reload = true;
+        bbsc_spectate_saw_wipe = true;
+        bbsc_spectate_host_back_ms = 0;
+        Bbsc::CinematicForceOff();
+        Bbsc::CinematicSetWatching(false);
+        StartBbscLoadCover("wipe");
+        LOG_INFO(Debug, "BBSC spectate: host started death reload - camera released, waiting for host placement");
+        BBSC_TIMELINE("DEATH", "host death reload: spectator camera released before host respawn");
+    }
     if (session_alive && bbsc_load_generation.load() != bbsc_spectate_load_generation) {
         // The completed load belongs to the common reconciler, including dead/missing locals.
         // Do not race its settle/retry window with another warp or a partner-dependent revive.
@@ -9948,7 +10000,7 @@ constexpr s64 BbscPartnerGoneMs = 180'000;
 constexpr s64 BbscInvaderWinMs = 6'000;
 s64 bbsc_persistence_restore_at_ms = 0;
 s64 bbsc_partner_missing_since_ms = 0;
-std::atomic<bool> bbsc_quit_pending{false};
+bool bbsc_quit_prepared = false; // game-thread hooks and tick only
 std::mutex bbsc_peer_left_mutex;
 std::map<u32, bool> bbsc_peer_left_pending;
 s64 bbsc_confirmed_departure_ms = 0;
@@ -9979,6 +10031,31 @@ void ReleaseBbscNativeLeavingSession() {
     if (GetSessionState() == 7) {
         SuspendBbscPersistenceOnce("native session entered leaving state");
     }
+}
+
+// The confirmed Lua exit and native load step run on the game thread. Stop here,
+// before returning to the engine: the regular game tick can disappear during title
+// loading. Notify peers while our role/host still identifies the old session.
+bool BbscReturningToTitle() {
+    if (image_base == 0) return false;
+    const u64 manager = ReadValue<u64>(image_base + 0x0553B108, 0);
+    const u64 request = ReadablePointer(manager, 0x18) ? ReadValue<u64>(manager, 0x10) : 0;
+    return ReadablePointer(request, 0x0C) && ReadValue<s32>(request, 8) == 2;
+}
+
+void PrepareBbscQuitToTitle() {
+    const s32 state = GetSessionState();
+    if (bbsc_quit_prepared || (state != 3 && state != 4 && state != 6)) return;
+    const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
+    if (!ReadablePointer(manager, 0x128)) return; // retry at the next load step / tick
+    bbsc_quit_prepared = true; // StopRequest can re-enter engine hooks
+    FlushBbscSessionJournals();
+    SendBbscSessionLeave();
+    SuspendBbscPersistence("confirmed return to title");
+    bbsc_recover_session_cleanup = true;
+    using Stop = u8 PS4_SYSV_ABI (*)(u64);
+    reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(manager);
+    LOG_INFO(Debug, "BBSC quit: journals flushed, peers notified; stopped before title load");
 }
 
 // ---- Silencing Blank (2026-10-04) ----------------------------------------------------------------
@@ -10065,11 +10142,10 @@ void PS4_SYSV_ABI BbscQuitToTitleHook(u64 confirmed, const GuestRegisterSnapshot
              "map={:#x}",
              caller > image_base ? caller - image_base : caller, GetSessionState(),
              RemotePlayerCount(), GetCurrentPackedMap());
-    SuspendBbscPersistence("quit to title");
     if (confirmed != 0) {
-        FlushBbscSessionJournals();
-        SendBbscSessionLeave();
-        bbsc_quit_pending = true;
+        PrepareBbscQuitToTitle();
+    } else {
+        SuspendBbscPersistence("quit to title");
     }
 }
 
@@ -10945,7 +11021,6 @@ void InstallBbscQuitHook() {
                               std::span<const u8>{Prologue}, 0, BbscQuitToTitleHook)) {
         LOG_ERROR(Debug, "BBSC quit: failed to hook RegistReturnTitle at {:#x}",
                   RegistReturnTitleOffset);
-        return;
     }
     if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + OnReturnTitleOffset),
                               std::span<const u8>{Prologue}, 1, BbscQuitToTitleHook)) {
@@ -11105,22 +11180,10 @@ void TickBbscSessionExit(bool peer_work) {
         if (peer_work) QueueBbscWork(BbscWork::PeerLeft); // retry when global state is ready
         return;
     }
-    const u64 title_man = ReadValue<u64>(image_base + 0x0553B108, 0);
-    const u64 title_request = ReadablePointer(title_man, 0x18) ? ReadValue<u64>(title_man, 0x10) : 0;
-    const bool returning_title = ReadablePointer(title_request, 0x0C) &&
-                                 ReadValue<s32>(title_request, 8) == 2;
-    static bool quit_prepared = false;
-    if (state == 0 && !returning_title) quit_prepared = false;
+    const bool returning_title = BbscReturningToTitle();
+    if (state == 0 && !returning_title) bbsc_quit_prepared = false;
+    if (returning_title) PrepareBbscQuitToTitle();
     bool stop = false;
-    if ((bbsc_quit_pending.exchange(false) || returning_title) && !quit_prepared &&
-        (state == 3 || state == 4 || state == 6)) {
-        quit_prepared = true;
-        FlushBbscSessionJournals();
-        SendBbscSessionLeave();
-        SuspendBbscPersistence("confirmed return to title");
-        stop = true;
-        LOG_INFO(Debug, "BBSC quit: journals flushed, peers notified; stopping before title load");
-    }
     std::map<u32, bool> left;
     if (peer_work) {
         std::scoped_lock lock{bbsc_peer_left_mutex};
@@ -14998,7 +15061,14 @@ void PS4_SYSV_ABI BbscCinematicCameraHook(u64 /*tag*/, const GuestRegisterSnapsh
         static s64 spectate_since_ms = 0; // 0 = not spectating; -1 = auto-on done for this death
         const u64 player = GetLocalPlayerCharacter();
         const s32 hp = ReadablePointer(player, 0x3B8) ? GetCharacterHp(player) : -1;
-        if (!bbsc_spectate_active) {
+        if (bbsc_spectate_active && bbsc_spectate_waiting_host_reload) {
+            // Do not auto-enable (or manually re-enable) the camera while the host reloads.
+            Bbsc::CinematicForceOff();
+            Bbsc::CinematicSetWatching(false);
+            bbsc_watch = BbscWatchState{};
+            in.enabled = false;
+            spectate_since_ms = -1;
+        } else if (!bbsc_spectate_active) {
             spectate_since_ms = 0;
         } else if (spectate_since_ms == 0) {
             spectate_since_ms = SteadyNowMs();
@@ -16089,7 +16159,6 @@ void TickBbscItemSurvey() {
 
 void TickBbscLifeBroadcast() {
     static s64 last_ms = 0;
-    static u32 sequence = 0;
     static bool last_dead = false;
     const s64 now = SteadyNowMs();
     if (image_base == 0 || now - last_ms < BbscLifeSendMs) {
@@ -16098,6 +16167,7 @@ void TickBbscLifeBroadcast() {
     last_ms = now;
     const s32 state = GetSessionState();
     if (state != 3 && state != 6) {
+        bbsc_host_death_reloading = false;
         const u64 global = GetGlobalState();
         if (state == 0 && ReadablePointer(global, 0x1598) &&
             ReadValue<u8>(global, 0x08) == 0 && ReadValue<u8>(global, 0x1592) != 0) {
@@ -16106,29 +16176,13 @@ void TickBbscLifeBroadcast() {
         }
         return;
     }
-    u32 player_id = bbsc_life_own_id.load();
-    if (player_id == 0) {
-        player_id = static_cast<u32>(static_cast<u64>(now) * 2654435761ull) | 1u;
-        bbsc_life_own_id = player_id;
-    }
     const u64 player = GetLocalPlayerCharacter();
     const u64 global = GetGlobalState();
     if (!player || !ReadablePointer(global, 0x10) || ReadValue<u8>(global, 0x08) != 0 ||
         GetCharacterHp(player) < 0) return; // unknown/loading is never an alive or dead report
     const bool dead = bbsc_spectate_active || GetCharacterHp(player) == 0;
-    struct {
-        u8 magic[4] = {'S', 'H', 'A', 'D'};
-        u8 type = 0x23;
-        u8 id[4]{};
-        u8 dead = 0;
-        u8 sequence[4]{};
-    } packet;
-    static_assert(sizeof(packet) == 14);
-    ++sequence;
-    std::memcpy(packet.id, &player_id, 4);
-    packet.dead = dead ? 1 : 0;
-    std::memcpy(packet.sequence, &sequence, 4);
-    Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(&packet, sizeof(packet));
+    if (!dead) bbsc_host_death_reloading = false;
+    SendBbscLifeState(state == 3 && bbsc_host_death_reloading ? 2 : (dead ? 1 : 0));
     if (dead != last_dead) {
         last_dead = dead;
         if (dead) {
@@ -20162,6 +20216,11 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
 
     const auto& site = Sites[tag];
     if (site.offset == 0x01941C20) { // OwnWorldStep still runs during the load barrier
+        if (BbscReturningToTitle()) {
+            PrepareBbscQuitToTitle();
+        } else if (GetSessionState() == 0) {
+            bbsc_quit_prepared = false;
+        }
         ReleaseBbscNativeLeavingSession();
     }
     if (site.offset == ItemUsableResultOffset) {
@@ -21421,7 +21480,7 @@ void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t seq
         if (host && life.received_ms != 0 && life.dead != 0 && dead == 0) {
             ++bbsc_peer_revivals;
         }
-        life = {dead, sequence, SteadyNowMs()};
+        life = {dead, sequence, SteadyNowMs(), host && dead == 2};
     }
     if (changed) {
         LOG_INFO(Debug, "BBSC life: player {:08x} says it is {}", player, dead ? "dead" : "alive");
