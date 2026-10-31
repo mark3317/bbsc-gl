@@ -1,3 +1,7 @@
+# Current naming (2026-10-31)
+
+BBGL = Bloodborne Game Launcher; GitHub: mark3317/bbgl. Mod: BBSC-GL, mark3317/bbsc-gl. Release folder: `Bloodborne Game Launcher`; profile: `%LOCALAPPDATA%\bbgl`. Source checkout folder names below remain local paths. Historical test paths refer to the installation at the time.
+
 # BBSC (форк mark3317) — заметки для Claude
 
 Цель проекта: довести кооператив Bloodborne (BBSC в Windows-порте bbport) до релизного состояния —
@@ -18,7 +22,7 @@
 VPS `remote_server` (77.73.67.175, Ubuntu 24, ssh `root`) — там игровой сервер/shadNet.
 
 ## Git
-- Remotes: `mark` = github.com/mark3317/BBSC (наш форк, push сюда), `origin` = CLSAMG22/BBSC (апстрим, только fetch).
+- Remotes: `mark` = github.com/mark3317/bbsc-gl (наш форк, push сюда), `origin` = CLSAMG22/BBSC (апстрим, только fetch).
 - Рабочая ветка: `mark/bbport-fixes`. Не пушить в `origin`, не делать force-push без явной просьбы.
 - Стиль коммитов: `BBSC <область>: <что сделано>` (см. `git log`).
 

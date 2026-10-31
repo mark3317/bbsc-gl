@@ -1,4 +1,6 @@
-# ARCHITECTURE-OVERVIEW — BBSC + bbport-coop
+# ARCHITECTURE-OVERVIEW — BBSC-GL + Bloodborne Game Launcher (BBGL)
+
+Текущая поставка: BBGL включает закреплённые бинарные файлы BBSC-GL и сервера. Профиль: `%LOCALAPPDATA%\bbgl`; бинарные файлы не копируются в профиль. Приведённые ниже старые пути и механизм загрузки пакетов описывают исследованную раскладку 29.10, до перехода на единую поставку. Имена DLL и протокола BBSC сохранены.
 
 Сводка по файлам областей (2026-10-29). Детали: `game-internals.md` (GI), `bbsc-world-sync.md` (WS), `bbsc-session-network.md` (SN),
 `bbport-engine.md` (PE), `launcher.md` (LA), `history.md` (HI). Цель — CUSA03173 v1.09.

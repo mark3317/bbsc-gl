@@ -1,6 +1,6 @@
 {
   "id": "bbsc",
-  "name": "BBSC — mark3317 co-op",
+  "name": "BBSC-GL — Bloodborne Seamless Co-op Game Launcher",
   "version": "1.0.0",
   "author": "mark3317; based on BBSC by CLS_AMG, Wozzardman and fhody125",
   "description": "One co-op session across areas, deaths, lamps, bosses and the Hunter's Dream. Bloodborne CUSA03173 v1.09 only. Warps and world sync go through the host's game server relay (port 20444). Off = the vanilla online game.",
