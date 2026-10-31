@@ -4,29 +4,25 @@
 after Continue has loaded the host world. Existing Lua RegistReturnTitle and
 OnReturnTitle hooks have no runtime entries for those exits.
 
-## Confirmed native paths (CUSA03173 1.09 eboot)
+## Corrected native path (02:58 build, 01.11.2026)
 
-System confirmation handler starts at 01779AC0. Confirmed Yes writes
-MenuMan+1B4=1, optionally its viewport result at +DA4+index*40=1, then
-+118=2 at 01779E2B. Cancel takes separate stores with result 2 / state 3.
-The alternate native quit path writes the global result at 01C28154.
-Both confirmed sites are signature-checked; ordinary menu opening and Cancel
-are not intercepted. Per-viewport results must be held as well as the global
-result, or the native flow can observe exit before saving finishes.
+The 02:47 laptop run never entered the old hook. Those +1B4/+118 sites were
+unrelated generic dialog paths, not System Exit Game. Their hooks were removed.
+Followed the port's actual EXIT_GAME_OPENER (BN 0200C9F0 -> image 01C0C9F0),
+its relocated functor vtable 05344A10, slot +10 -> Yes callback 01C0D050.
+That callback requests native saving and ends with MOV [MenuMan+250],1 at
+01C0D0C4. This is now the byte-verified, deferred exit store. Cancellation
+keeps +250=0 and clears the save-before-exit latch +25C; completion releases
++250 only after successful native save and session state 0. Generic dialog and
+viewport fields are no longer modified.
 
-Full save request 0156D570(-1,0,0) means current character, normal write, no
-erase. It serializes while the session is still guest/host and publishes save
-state Global+1554=1 only on accepted request. The native save manager singleton
-is 0556D438. Its poll at 01832160 returns 1=pending, 0=success and other terminal
-results for failure; observe the common epilogue 018322F4 without invoking
-teardown on the save stack. Global+1554 must also return to idle after the
-engine's own completion handling. Idle or an incremented save counter alone
-is NOT sufficient: the engine can clear its save state on failure too.
+Native full-save/poll functions remain 0156D570 and 01832160 (epilogue
+018322F4), manager singleton 0556D438. No change to the save/disconnect wait logic.
 
 ## Implementation
 
 - Confirmed button snapshots the BBSC trip journals and defers the native exit
-  result/state stores. Original menu control flow continues, never returning
+  request store at +250. Original menu control flow continues, never returning
   from a mid-function hook.
 - Game-thread tick/load-step waits for an older autosave, requests a fresh full
   native save, then waits for that manager's successful result and native idle.
@@ -54,7 +50,7 @@ not intentionally end a three-player group when one guest leaves.
 memory/native-call fixture: host/joining/guest, duplicate confirmation, old
 autosave, wrong manager, idle without completion, pending/error/success,
 timeout, load/slot/session changes, missing manager, solo and unsupported-hook
-paths; verifies journal/save/notification/Stop order and per-viewport isolation.
+paths; verifies journal/save/notification/Stop order and title-request deferral.
 `tools/test_hook_resume.py` compiles the actual Windows trampoline and executes
 it against synthetic code: mid-function resume preserves stack/return, skipped
 store stays skipped, default function-entry skip still works.
@@ -74,3 +70,9 @@ or inventory/world restoration as verified solely from fixture tests.
 Final completion-gated DLL build: exit=0, SHA256 `457CE260B129C997F065C33BFEB85B8D254D94CA1CE8CD4E4FD6D9137F86F15D`.
 Code: standalone `7ed396b`, bundled `203516d`, BBGL pin `0277410`.
 Menu/save, actual trampoline, and post-load fixture checks pass. Not deployed.
+
+Corrected hook build: DLL SHA256 `40E40031A38A9EB1E986B3EB6096D828F8E2D996C9B05B1813538A7177A5FF4F`.
+Deployed on PC and laptop, source `9e067a4`. Only targeted menu fixture, actual
+ELF opener -> functor -> store trace, DLL build and installed-hash checks ran.
+Gameplay result is still pending. Backups: menu-exit-20261101-025822 (PC),
+menu-exit-20261101-025825 (laptop).
