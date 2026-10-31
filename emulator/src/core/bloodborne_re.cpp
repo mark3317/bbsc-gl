@@ -10022,6 +10022,7 @@ struct BbscPendingQuit {
     s32 slot = -1;
     s64 started_ms = 0;
     bool requested = false;
+    bool stopping = false;
 };
 BbscPendingQuit bbsc_pending_quit;
 u8 bbsc_quit_defer_store = 0;
@@ -10076,7 +10077,8 @@ bool BbscReturningToTitle() {
 
 void PrepareBbscQuitToTitle() {
     const s32 state = GetSessionState();
-    if (BbscQuitInProgress() || bbsc_quit_prepared || (state != 3 && state != 4 && state != 6)) return;
+    if ((BbscQuitInProgress() && !bbsc_pending_quit.stopping) || bbsc_quit_prepared ||
+        (state != 3 && state != 4 && state != 6)) return;
     const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
     if (!ReadablePointer(manager, 0x128)) return; // retry at the next load step / tick
     bbsc_quit_prepared = true; // StopRequest can re-enter engine hooks
@@ -10097,6 +10099,7 @@ void CancelBbscPendingQuit(std::string_view why) {
     const auto pending = bbsc_pending_quit;
     bbsc_pending_quit = {};
     bbsc_quit_save_watch = false;
+    bbsc_quit_prepared = false; // a failed Stop must not poison a later confirmed attempt
     if (pending.menu == ReadValue<u64>(image_base + MenuManPointerOffset, 0) &&
         HasMemoryAccess(pending.menu + 0x1B4, 4, MemoryProt::CpuWrite) &&
         HasMemoryAccess(pending.menu + 0x118, 4, MemoryProt::CpuWrite)) {
@@ -10106,7 +10109,7 @@ void CancelBbscPendingQuit(std::string_view why) {
             WriteValue<s32>(pending.player_result, 0, 2);
         }
     }
-    LOG_ERROR(Debug, "BBSC quit: exit cancelled before disconnect ({})", why);
+    LOG_ERROR(Debug, "BBSC quit: menu exit cancelled ({})", why);
 }
 
 void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers) {
@@ -10147,8 +10150,27 @@ void TickBbscPendingQuit() {
     auto& pending = bbsc_pending_quit;
     if (GetGlobalState() != pending.global ||
         ReadValue<u64>(image_base + MenuManPointerOffset, 0) != pending.menu ||
-        !ReadablePointer(pending.global, 0x1752) ||
-        GetSessionState() != pending.session ||
+        !ReadablePointer(pending.global, 0x1752)) {
+        CancelBbscPendingQuit("world or menu context changed");
+        return;
+    }
+    if (pending.stopping) {
+        if (GetSessionState() == 0) {
+            const auto completed = pending;
+            bbsc_pending_quit = {};
+            if (completed.player_result != 0 &&
+                HasMemoryAccess(completed.player_result, 4, MemoryProt::CpuWrite)) {
+                WriteValue<s32>(completed.player_result, 0, 1);
+            }
+            WriteValue<s32>(completed.menu, 0x118, 2);
+            WriteValue<s32>(completed.menu, 0x1B4, 1);
+            LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; releasing title exit");
+        } else if (SteadyNowMs() - pending.started_ms >= BbscQuitSaveTimeoutMs) {
+            CancelBbscPendingQuit("native disconnect timed out; title exit remains cancelled");
+        }
+        return;
+    }
+    if (GetSessionState() != pending.session ||
         ReadValue<s32>(pending.global, 0x1490) != pending.slot) {
         CancelBbscPendingQuit("session, world or save slot changed");
         return;
@@ -10185,21 +10207,11 @@ void TickBbscPendingQuit() {
         CancelBbscPendingQuit("saved, but session manager became unavailable");
         return;
     }
-    const u64 menu = pending.menu;
-    const u64 player_result = pending.player_result;
-    bbsc_pending_quit = {};
+    pending.stopping = true; // keep rejoin/follow blocked throughout native teardown
+    pending.started_ms = SteadyNowMs();
     bbsc_quit_save_watch = false;
     PrepareBbscQuitToTitle(); // journals, explicit leave, native Stop; old session identity still valid
-    if (!bbsc_quit_prepared) {
-        LOG_ERROR(Debug, "BBSC quit: saved, but session manager unavailable; title exit not released");
-        return;
-    }
-    if (player_result != 0 && HasMemoryAccess(player_result, 4, MemoryProt::CpuWrite)) {
-        WriteValue<s32>(player_result, 0, 1);
-    }
-    WriteValue<s32>(menu, 0x118, 2);
-    WriteValue<s32>(menu, 0x1B4, 1); // now release the native menu exit
-    LOG_INFO(Debug, "BBSC quit: native save completed; disconnected before releasing title exit");
+    LOG_INFO(Debug, "BBSC quit: native save completed; waiting for session state 0 before title exit");
 }
 
 // ---- Silencing Blank (2026-10-04) ----------------------------------------------------------------
@@ -10447,7 +10459,8 @@ void TickBbscStrayForcedWarp() {
 
 void TickBbscSessionEnd() {
     const s64 now = SteadyNowMs();
-    if (bbsc_persistence_restore_at_ms != 0 && now >= bbsc_persistence_restore_at_ms) {
+    if (bbsc_persistence_restore_at_ms != 0 && now >= bbsc_persistence_restore_at_ms &&
+        !BbscQuitInProgress()) {
         bbsc_persistence_restore_at_ms = 0;
         Core::Bbsc::SetPersistentSessionPatches(true);
     }

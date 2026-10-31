@@ -31,13 +31,16 @@ is NOT sufficient: the engine can clear its save state on failure too.
 - Game-thread tick/load-step waits for an older autosave, requests a fresh full
   native save, then waits for that manager's successful result and native idle.
 - Only then: flush journals again, send leave using old session identity, lift
-  persistence, issue native StopRequest, release native title exit results.
+  persistence, issue native StopRequest; keep title results held until native
+  session state reaches 0. Rejoin remains blocked throughout this second phase.
 - Reinsert, self-heal, join teleport and follow do not revive/rejoin/warp the
   player while this exit is waiting for its save.
 - Save rejection/error, 30-second timeout, loading, changed world/slot/session
   or missing session manager cancel the exit without initiating disconnect.
   An in-progress native save is not interrupted or deleted. Native save error
-  handling remains intact. No manual session-state writes or save-file edits.
+  handling remains intact. A separate disconnect wait timeout cancels the title
+  exit rather than allowing Continue to race an unfinished Stop; it cannot undo
+  a native disconnection already requested. No manual session-state writes or save-file edits.
 
 Existing native guest-save snapshots plus BBSC own-world/item/trip journals are
 retained; no shared-progress policy changes. A changed session during save is
@@ -57,8 +60,9 @@ it against synthetic code: mid-function resume preserves stack/return, skipped
 store stays skipped, default function-entry skip still works.
 Existing 18 post-load recovery scenarios PASS. Hook signatures/instruction
 boundaries checked against local eboot. DLL build exit=0, no compiler warnings;
-SHA256 B02761E21BD8E86DC4D4129A722D72790216856FEA8E995517B8DD2B23AC3A13.
-Code commits: standalone 48604ee; bundled BBSC-GL 03f640f (later commits add tests/docs).
+First save-gated DLL build passed; the final completion-gated build hash is recorded below.
+The completion-gated refinement also waits for native session state 0 after Stop;
+final build validation is recorded below.
 
 Not deployed. In-game validation remains necessary: pickup/quest/echo progress
 then confirmed quit; host loses guest while guest is in title; Continue starts
