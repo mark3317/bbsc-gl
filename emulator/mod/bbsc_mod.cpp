@@ -83,6 +83,13 @@ void OpenLog() {
     wchar_t path[MAX_PATH]{};
     GetModuleFileNameW(self_module, path, MAX_PATH);
     mod_dir = std::filesystem::path{path}.parent_path();
+    // The launcher owns one writable profile; the DLL stays in the installation.
+    wchar_t data_path[32768]{};
+    const DWORD length = GetEnvironmentVariableW(L"BBSC_DATA_DIR", data_path, 32768);
+    if (length > 0 && length < 32768) {
+        mod_dir = std::filesystem::path{data_path};
+    }
+
     SYSTEMTIME now;
     GetLocalTime(&now);
     wchar_t name[96]{};

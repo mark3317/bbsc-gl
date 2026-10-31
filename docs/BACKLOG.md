@@ -91,3 +91,9 @@ perf policy PASS. [Разбор и игровой контроль](fixes/T24-wi
 `f9447b4`: removed the blocking LICENSE.txt / NOTICE.txt / SUPPORTERS.txt
 content check from the DLL. Missing or modified companion notices no longer
 disable BBSC or show a startup error. Packaging license files are unchanged.
+## Launcher profile layout (31.10.2026)
+
+BBSC_DATA_DIR redirects mod logs, persistent journals and bbsc-launch.ini into the
+launcher's AppData profile. Binaries remain in the launcher installation. Without
+the variable the standalone BBSC layout remains compatible. Build and local profile
+checks accompany the launcher ZIP; no deployment or gameplay test is implied.
