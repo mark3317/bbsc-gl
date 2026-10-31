@@ -115,6 +115,9 @@ int main() {
         TickBbscPendingQuit(); assert(!stopped()); // engine must finish completion handling
         memory[world+0x1554]=0; TickBbscPendingQuit();
         assert(events==std::vector<int>({1,2,1,3,4,5}));
+        assert(session==7 && memory[menu+0x1B4]==0 && BbscQuitInProgress());
+        TickBbscPendingQuit(); assert(memory[menu+0x1B4]==0); // Stop request is not completion
+        session=0; TickBbscPendingQuit();
         assert(memory[menu+0x1B4]==1 && memory[menu+0xDA4]==1 && memory[menu+0x118]==2 && !BbscQuitInProgress());
         TickBbscPendingQuit(); assert(events.size()==6); // no delayed second disconnect
     }
@@ -122,6 +125,7 @@ int main() {
     memory[menu+0xDA4+4*0x40]=1; confirm();
     assert(memory[menu+0xDA4]==99 && memory[menu+0xDA4+4*0x40]==0);
     TickBbscPendingQuit(); result(0); memory[world+0x1554]=0; TickBbscPendingQuit();
+    session=0; TickBbscPendingQuit();
     assert(memory[menu+0xDA4]==99 && memory[menu+0xDA4+4*0x40]==1);
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
@@ -140,6 +144,11 @@ int main() {
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[image_base+MatchingStatePointerOffset]=0;
     TickBbscPendingQuit(); assert_cancelled();
+    reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
+    TickBbscPendingQuit(); assert(session==7 && BbscQuitInProgress());
+    now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && !bbsc_quit_prepared && memory[menu+0x1B4]==2);
+    session=0; TickBbscPendingQuit(); assert(memory[menu+0x1B4]==2); // no late title release
     reset(0); confirm(); assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
     reset(); bbsc_quit_save_hooks_ready=false; confirm();
     assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
