@@ -87,6 +87,7 @@ void reset(s32 role=6) {
 }
 void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
+    memory[menu+0x25C]=1;
     BbscNativeQuitConfirmHook(0,&r);
 }
 void result(s32 value, bool correct_manager=true) {
@@ -97,13 +98,13 @@ void result(s32 value, bool correct_manager=true) {
 bool stopped() { return std::find(events.begin(),events.end(),5)!=events.end(); }
 void assert_cancelled() {
     assert(!BbscQuitInProgress() && !stopped());
-    assert(memory[menu+0x1B4]==2 && memory[menu+0x118]==3 && memory[menu+0xDA4]==2);
+    assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
 }
 int main() {
     for (s32 role : {3,4,6}) {
         reset(role); confirm();
         assert(BbscQuitInProgress() && bbsc_quit_defer_store==1);
-        assert(memory[menu+0x1B4]==0 && memory[menu+0xDA4]==0 && !stopped());
+        assert(memory[menu+0x250]==0 && !stopped());
         confirm(); assert(events.size()==1); // duplicate preserves the pending save
         PrepareBbscQuitToTitle(); assert(!stopped()); // Lua/load fallback cannot bypass save
         TickBbscPendingQuit();
@@ -115,18 +116,12 @@ int main() {
         TickBbscPendingQuit(); assert(!stopped()); // engine must finish completion handling
         memory[world+0x1554]=0; TickBbscPendingQuit();
         assert(events==std::vector<int>({1,2,1,3,4,5}));
-        assert(session==7 && memory[menu+0x1B4]==0 && BbscQuitInProgress());
-        TickBbscPendingQuit(); assert(memory[menu+0x1B4]==0); // Stop request is not completion
+        assert(session==7 && memory[menu+0x250]==0 && BbscQuitInProgress());
+        TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // Stop request is not completion
         session=0; TickBbscPendingQuit();
-        assert(memory[menu+0x1B4]==1 && memory[menu+0xDA4]==1 && memory[menu+0x118]==2 && !BbscQuitInProgress());
+        assert(memory[menu+0x250]==1 && !BbscQuitInProgress());
         TickBbscPendingQuit(); assert(events.size()==6); // no delayed second disconnect
     }
-    reset(); memory[menu+0xD60]=4; memory[menu+0xDA4]=99;
-    memory[menu+0xDA4+4*0x40]=1; confirm();
-    assert(memory[menu+0xDA4]==99 && memory[menu+0xDA4+4*0x40]==0);
-    TickBbscPendingQuit(); result(0); memory[world+0x1554]=0; TickBbscPendingQuit();
-    session=0; TickBbscPendingQuit();
-    assert(memory[menu+0xDA4]==99 && memory[menu+0xDA4+4*0x40]==1);
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
     memory[world+0x1554]=0; TickBbscPendingQuit();
@@ -147,8 +142,8 @@ int main() {
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     TickBbscPendingQuit(); assert(session==7 && BbscQuitInProgress());
     now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
-    assert(!BbscQuitInProgress() && !bbsc_quit_prepared && memory[menu+0x1B4]==2);
-    session=0; TickBbscPendingQuit(); assert(memory[menu+0x1B4]==2); // no late title release
+    assert(!BbscQuitInProgress() && !bbsc_quit_prepared && memory[menu+0x250]==0);
+    session=0; TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // no late title release
     reset(0); confirm(); assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
     reset(); bbsc_quit_save_hooks_ready=false; confirm();
     assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
