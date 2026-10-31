@@ -97,3 +97,13 @@ BBSC_DATA_DIR redirects mod logs, persistent journals and bbsc-launch.ini into t
 launcher's AppData profile. Binaries remain in the launcher installation. Without
 the variable the standalone BBSC layout remains compatible. Build and local profile
 checks accompany the launcher ZIP; no deployment or gameplay test is implied.
+
+## Native menu exit follow-up (01.11.2026)
+
+Guest staying connected in title / delayed disconnect after Continue: Lua-only
+exit hooks missed the native confirmation path. Implemented save-gated native
+menu exit, with both global and per-viewport results deferred until successful
+native save completion; failures cancel the exit. See
+[implementation and checks](fixes/native-menu-save-exit.md). DLL build and
+production-fixture/trampoline/post-load checks PASS; deployment and gameplay
+confirmation are pending.
