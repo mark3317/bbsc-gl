@@ -132,7 +132,7 @@ bool WriteJump(u8* site, const void* target, size_t length) {
 } // namespace
 
 bool InstallGuestCodeHook(void* address, std::span<const u8> expected_instructions, u64 tag,
-                          GuestCodeHook hook, const u8* skip_flag) {
+                          GuestCodeHook hook, const u8* skip_flag, bool skip_instructions) {
     constexpr size_t NearJumpBytes = 5;
     constexpr size_t GuestRedZoneBytes = 128;
     constexpr size_t SnapshotOffset = 0;
@@ -242,7 +242,11 @@ bool InstallGuestCodeHook(void* address, std::span<const u8> expected_instructio
             trampoline.mov(byte[rax], 0);
             trampoline.pop(rax);
             trampoline.je(run_original, Xbyak::CodeGenerator::LabelType::T_NEAR);
-            trampoline.ret();
+            if (skip_instructions) {
+                trampoline.jmp(code + expected_instructions.size(), Xbyak::CodeGenerator::LabelType::T_NEAR);
+            } else {
+                trampoline.ret();
+            }
         }
         trampoline.L(run_original);
         trampoline.db(expected_instructions.data(), expected_instructions.size());

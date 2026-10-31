@@ -81,9 +81,11 @@ void RegisterPatchModule(void* module_ptr, u64 module_size, void* trampoline_are
 /// addressing.
 // skip_flag (optional): if the hook sets *skip_flag to non-zero, the trampoline clears it and
 // returns straight to the caller instead of running the hooked function (function entry only).
+// skip_instructions instead resumes after the displaced span, for mid-function hooks. The
+// skipped instruction and following code must not depend on flags from before the hook.
 bool InstallGuestCodeHook(void* address, std::span<const u8> expected_instructions, u64 tag,
                           GuestCodeHook hook,
-                          const u8* skip_flag = nullptr);
+                          const u8* skip_flag = nullptr, bool skip_instructions = false);
 
 /// Applies CPU patches that need to be done before beginning executions.
 void PrePatchInstructions(u64 segment_addr, u64 segment_size);

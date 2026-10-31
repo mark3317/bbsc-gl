@@ -3487,6 +3487,7 @@ void CaptureBbscGuestRespawnPoint();
 void DeliverBbscLedgerAtJoin(std::string_view why); // see "The item ledger"
 void SuspendBbscPersistenceOnce(std::string_view why); // see "quit to title" below
 void FlushBbscSessionJournals();
+bool BbscQuitInProgress();
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 
 void WriteLuaSessionEvent(std::ostream& out, const GuestRegisterSnapshot& registers) {
@@ -3971,6 +3972,7 @@ void ArmBbscReinsertV8() {
 // Game-thread tick after the kept death: once the respawned player is alive and the load is over,
 // restore the player type if the respawn reset it and restart remote-player creation.
 void TickBbscReinsertV8() {
+    if (BbscQuitInProgress()) return;
     if (!bbsc_v8_pending) {
         return;
     }
@@ -4059,6 +4061,7 @@ void TickBbscReinsertV8() {
 constexpr s64 BbscSelfHealMissingMs = 4'000;
 
 void TickBbscSelfHeal() {
+    if (BbscQuitInProgress()) return;
     struct MissingSince {
         u64 task;
         s64 since_ms;
@@ -4844,6 +4847,7 @@ bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std
 }
 
 void TickBbscJoinTeleport() {
+    if (BbscQuitInProgress()) return;
     static bool done = false;
     static bool warp_requested = false;
     static s64 warp_requested_ms = 0;
@@ -5523,6 +5527,7 @@ BbscFollowSpot BbscFollowSpotOf(const BbscFollowMessage& host) {
 constexpr s64 BbscFollowAfterLoadMs = 5'000;
 
 void TickBbscFollowHost() {
+    if (BbscQuitInProgress()) return;
     static s64 last_check_ms = 0;
     static bool warping = false;
     static s64 warp_requested_ms = 0;
@@ -10002,6 +10007,31 @@ constexpr s64 BbscInvaderWinMs = 6'000;
 s64 bbsc_persistence_restore_at_ms = 0;
 s64 bbsc_partner_missing_since_ms = 0;
 bool bbsc_quit_prepared = false; // game-thread hooks and tick only
+// Confirmed native System menu exit, distinct from the Lua return-to-title path.
+constexpr u64 BbscMenuQuitConfirmOffset = 0x01779E2B;
+constexpr u64 BbscNativeQuitConfirmOffset = 0x01C28154;
+constexpr u64 BbscNativeSaveRequestOffset = 0x0156D570;
+constexpr u64 BbscNativeSaveResultOffset = 0x018322F4;
+constexpr u64 BbscNativeSaveManagerOffset = 0x0556D438;
+constexpr s64 BbscQuitSaveTimeoutMs = 30'000;
+struct BbscPendingQuit {
+    u64 global = 0;
+    u64 menu = 0;
+    u64 player_result = 0;
+    s32 session = 0;
+    s32 slot = -1;
+    s64 started_ms = 0;
+    bool requested = false;
+};
+BbscPendingQuit bbsc_pending_quit;
+u8 bbsc_quit_defer_store = 0;
+bool bbsc_quit_save_hooks_ready = false;
+std::atomic<bool> bbsc_quit_save_watch{false};
+std::atomic<s32> bbsc_quit_save_result{-1};
+
+bool BbscQuitInProgress() {
+    return bbsc_pending_quit.global != 0;
+}
 std::mutex bbsc_peer_left_mutex;
 std::map<u32, bool> bbsc_peer_left_pending;
 s64 bbsc_confirmed_departure_ms = 0;
@@ -10046,7 +10076,7 @@ bool BbscReturningToTitle() {
 
 void PrepareBbscQuitToTitle() {
     const s32 state = GetSessionState();
-    if (bbsc_quit_prepared || (state != 3 && state != 4 && state != 6)) return;
+    if (BbscQuitInProgress() || bbsc_quit_prepared || (state != 3 && state != 4 && state != 6)) return;
     const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
     if (!ReadablePointer(manager, 0x128)) return; // retry at the next load step / tick
     bbsc_quit_prepared = true; // StopRequest can re-enter engine hooks
@@ -10057,6 +10087,119 @@ void PrepareBbscQuitToTitle() {
     using Stop = u8 PS4_SYSV_ABI (*)(u64);
     reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(manager);
     LOG_INFO(Debug, "BBSC quit: journals flushed, peers notified; stopped before title load");
+}
+
+// The System menu writes MenuMan+1B4=1 only on confirmed Yes (2 is Cancel).
+// Hold the global AND per-viewport results until the native save finishes. The
+// menu hook is after both result stores and defers its final exit-state store.
+// Never return from the middle of the menu function or stop on the save stack.
+void CancelBbscPendingQuit(std::string_view why) {
+    const auto pending = bbsc_pending_quit;
+    bbsc_pending_quit = {};
+    bbsc_quit_save_watch = false;
+    if (pending.menu == ReadValue<u64>(image_base + MenuManPointerOffset, 0) &&
+        HasMemoryAccess(pending.menu + 0x1B4, 4, MemoryProt::CpuWrite) &&
+        HasMemoryAccess(pending.menu + 0x118, 4, MemoryProt::CpuWrite)) {
+        WriteValue<s32>(pending.menu, 0x1B4, 2); // same result as native Cancel
+        WriteValue<s32>(pending.menu, 0x118, 3);
+        if (pending.player_result != 0 && HasMemoryAccess(pending.player_result, 4, MemoryProt::CpuWrite)) {
+            WriteValue<s32>(pending.player_result, 0, 2);
+        }
+    }
+    LOG_ERROR(Debug, "BBSC quit: exit cancelled before disconnect ({})", why);
+}
+
+void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers) {
+    const s32 state = GetSessionState();
+    if (!registers || !bbsc_quit_save_hooks_ready ||
+        (state != 3 && state != 4 && state != 6)) return;
+    const u64 global = GetGlobalState();
+    const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
+    if (registers->rax != menu || !ReadablePointer(global, 0x1752) ||
+        !HasMemoryAccess(menu + 0x1B4, 4, MemoryProt::CpuWrite)) return;
+    bbsc_quit_defer_store = 1; // skip only the displaced store; continue the native function
+    WriteValue<s32>(menu, 0x1B4, 0);
+    const s32 viewport = ReadValue<s32>(menu, 0xD60);
+    const u64 player_result = viewport >= 0 && viewport <= 4 ? menu + 0xDA4 + viewport * 0x40 : 0;
+    if (player_result != 0 && HasMemoryAccess(player_result, 4, MemoryProt::CpuWrite)) {
+        WriteValue<s32>(player_result, 0, 0);
+    }
+    if (BbscQuitInProgress()) return; // duplicate confirmation does not restart the save
+    CancelBbscReinsert("confirmed System menu exit");
+    FlushBbscSessionJournals(); // record the trip before the native save or any teardown
+    bbsc_pending_quit = {global, menu, player_result, state, ReadValue<s32>(global, 0x1490), SteadyNowMs(), false};
+    bbsc_quit_save_result = -1;
+    LOG_INFO(Debug, "BBSC quit: native menu confirmed; saving slot {} before disconnect", bbsc_pending_quit.slot);
+}
+
+// SaveDataMan::poll result: 1=pending, 0=success; other terminal values are errors.
+// Capture only this manager's result for the save we requested, leaving its own
+// completion/error handling untouched. No engine teardown on the save stack.
+void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers) {
+    if (!registers || !bbsc_quit_save_watch.load() ||
+        registers->rbx != ReadValue<u64>(image_base + BbscNativeSaveManagerOffset, 0)) return;
+    const s32 result = static_cast<s32>(registers->rax);
+    if (result != 1) bbsc_quit_save_result = result;
+}
+
+void TickBbscPendingQuit() {
+    if (!BbscQuitInProgress()) return;
+    auto& pending = bbsc_pending_quit;
+    if (GetGlobalState() != pending.global ||
+        ReadValue<u64>(image_base + MenuManPointerOffset, 0) != pending.menu ||
+        !ReadablePointer(pending.global, 0x1752) ||
+        GetSessionState() != pending.session ||
+        ReadValue<s32>(pending.global, 0x1490) != pending.slot) {
+        CancelBbscPendingQuit("session, world or save slot changed");
+        return;
+    }
+    if (pending.slot < 0 || pending.slot > 9 ||
+        ReadValue<u8>(pending.global, 0x08) != 0 ||
+        SteadyNowMs() - pending.started_ms >= BbscQuitSaveTimeoutMs) {
+        CancelBbscPendingQuit("save unavailable, load started or save timed out");
+        return;
+    }
+    const s32 save_state = ReadValue<s32>(pending.global, 0x1554);
+    if (!pending.requested) {
+        if (save_state != 0) return; // an older autosave must finish first
+        bbsc_quit_save_result = -1;
+        bbsc_quit_save_watch = true;
+        using Save = u8 PS4_SYSV_ABI (*)(s32 slot, s32 flag, s32 erase);
+        // Same full-character save used by the native stage flow: current slot,
+        // ordinary write, no erase. It serializes while still a guest.
+        if (!reinterpret_cast<Save>(image_base + BbscNativeSaveRequestOffset)(-1, 0, 0)) {
+            CancelBbscPendingQuit("native save request failed");
+            return;
+        }
+        pending.requested = true;
+        return;
+    }
+    const s32 result = bbsc_quit_save_result.load();
+    if (result != -1 && result != 0) {
+        CancelBbscPendingQuit("native save reported an error");
+        return;
+    }
+    if (result != 0 || save_state != 0) return; // completion must be observed, not guessed from idle
+    const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
+    if (!ReadablePointer(manager, 0x128)) {
+        CancelBbscPendingQuit("saved, but session manager became unavailable");
+        return;
+    }
+    const u64 menu = pending.menu;
+    const u64 player_result = pending.player_result;
+    bbsc_pending_quit = {};
+    bbsc_quit_save_watch = false;
+    PrepareBbscQuitToTitle(); // journals, explicit leave, native Stop; old session identity still valid
+    if (!bbsc_quit_prepared) {
+        LOG_ERROR(Debug, "BBSC quit: saved, but session manager unavailable; title exit not released");
+        return;
+    }
+    if (player_result != 0 && HasMemoryAccess(player_result, 4, MemoryProt::CpuWrite)) {
+        WriteValue<s32>(player_result, 0, 1);
+    }
+    WriteValue<s32>(menu, 0x118, 2);
+    WriteValue<s32>(menu, 0x1B4, 1); // now release the native menu exit
+    LOG_INFO(Debug, "BBSC quit: native save completed; disconnected before releasing title exit");
 }
 
 // ---- Silencing Blank (2026-10-04) ----------------------------------------------------------------
@@ -11012,6 +11155,29 @@ void InstallBbscQuitHook() {
                      "for free (starter and regular Bath ranges; vanilla stock unchanged)");
         }
     }
+    static constexpr std::array<u8, 17> SavePrologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x41, 0x56,
+        0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x48};
+    static constexpr std::array<u8, 5> SaveResult{0x48, 0x83, 0xC4, 0x58, 0x5B};
+    static constexpr std::array<u8, 10> ConfirmQuit{0xC7, 0x80, 0x18, 0x01, 0, 0, 2, 0, 0, 0};
+    static constexpr std::array<u8, 10> NativeConfirmQuit{0xC7, 0x80, 0xB4, 0x01, 0, 0, 1, 0, 0, 0};
+    bbsc_quit_save_hooks_ready =
+        std::memcmp(reinterpret_cast<const void*>(image_base + BbscNativeSaveRequestOffset),
+                    SavePrologue.data(), SavePrologue.size()) == 0 &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscNativeSaveResultOffset),
+                             std::span<const u8>{SaveResult}, 0, BbscQuitSaveResultHook);
+    if (bbsc_quit_save_hooks_ready) {
+        for (const u64 offset : {BbscMenuQuitConfirmOffset, BbscNativeQuitConfirmOffset}) {
+            if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + offset),
+                                      offset == BbscMenuQuitConfirmOffset ? std::span<const u8>{ConfirmQuit}
+                                                                         : std::span<const u8>{NativeConfirmQuit},
+                                      0, BbscNativeQuitConfirmHook,
+                                      &bbsc_quit_defer_store, true)) {
+                LOG_ERROR(Debug, "BBSC quit: native confirmation hook failed at {:#x}", offset);
+            }
+        }
+    } else {
+        LOG_ERROR(Debug, "BBSC quit: native save verification failed; confirmed-exit save hooks disabled");
+    }
     static constexpr std::array<u8, 6> Prologue{0x55, 0x48, 0x89, 0xE5, 0x53, 0x50};
     if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + SendPhantomHomeOffset),
                               std::span<const u8>{Prologue}, 0, BbscSendPhantomHomeHook,
@@ -11174,6 +11340,7 @@ void TickBbscPostLoadRecovery() {
 
 // Run engine cleanup only on the game thread, after confirmed departure / return home.
 void TickBbscSessionExit(bool peer_work) {
+    TickBbscPendingQuit();
     const s32 state = GetSessionState();
     ReleaseBbscNativeLeavingSession();
     const u64 global = GetGlobalState();
@@ -19391,6 +19558,7 @@ bool ArmBbscRejoinV7(u64 state, u32 death_selected_map) {
 // Called from the persistence no-op cleanup hook. Returns true when the member replay should arm
 // for this kept end; false when the rejoin redirected the load (replay would only interfere).
 bool ArmBbscRejoin() {
+    if (BbscQuitInProgress()) return false;
     if (!BbscRejoinEnabled()) {
         return true;
     }
@@ -20217,6 +20385,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
 
     const auto& site = Sites[tag];
     if (site.offset == 0x01941C20) { // OwnWorldStep still runs during the load barrier
+        TickBbscPendingQuit();
         if (BbscReturningToTitle()) {
             PrepareBbscQuitToTitle();
         } else if (GetSessionState() == 0) {
