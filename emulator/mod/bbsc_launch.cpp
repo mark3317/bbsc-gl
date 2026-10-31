@@ -24,6 +24,7 @@
 #include <commdlg.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <utility>
 #include <vector>
@@ -126,6 +127,13 @@ DWORD WINAPI PlaceWindowThread(void* param) {
 // ---- Remembered choices: bbsc-launch.ini next to the launcher (game=..., emulator=...) ---------
 
 std::wstring IniPath() {
+    wchar_t data_path[32768]{};
+    const DWORD length = GetEnvironmentVariableW(L"BBSC_DATA_DIR", data_path, 32768);
+    if (length > 0 && length < 32768) {
+        std::error_code error;
+        std::filesystem::create_directories(data_path, error);
+        return (std::filesystem::path{data_path} / L"bbsc-launch.ini").wstring();
+    }
     return HereFile(L"bbsc-launch.ini");
 }
 
