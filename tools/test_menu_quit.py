@@ -118,6 +118,11 @@ int main() {
         assert(memory[menu+0x1B4]==1 && memory[menu+0xDA4]==1 && memory[menu+0x118]==2 && !BbscQuitInProgress());
         TickBbscPendingQuit(); assert(events.size()==6); // no delayed second disconnect
     }
+    reset(); memory[menu+0xD60]=4; memory[menu+0xDA4]=99;
+    memory[menu+0xDA4+4*0x40]=1; confirm();
+    assert(memory[menu+0xDA4]==99 && memory[menu+0xDA4+4*0x40]==0);
+    TickBbscPendingQuit(); result(0); memory[world+0x1554]=0; TickBbscPendingQuit();
+    assert(memory[menu+0xDA4]==99 && memory[menu+0xDA4+4*0x40]==1);
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
     memory[world+0x1554]=0; TickBbscPendingQuit();
