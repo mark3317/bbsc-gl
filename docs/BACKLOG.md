@@ -107,3 +107,9 @@ native save completion; failures cancel the exit. See
 [implementation and checks](fixes/native-menu-save-exit.md). DLL build and
 production-fixture/trampoline/post-load checks PASS; deployment and gameplay
 confirmation are pending.
+
+01.11 02:58 follow-up: 02:47 laptop logs showed the generic-dialog hook was
+never called. Corrected to actual System Exit Game Yes callback (01C0D0C4,
+MenuMan+250), traced from the port's real row opener and relocated vtable.
+Targeted fixture/build passed; corrected DLL installed on both PCs. See
+[updated native-menu notes](fixes/native-menu-save-exit.md). Gameplay pending.
