@@ -10008,8 +10008,7 @@ s64 bbsc_persistence_restore_at_ms = 0;
 s64 bbsc_partner_missing_since_ms = 0;
 bool bbsc_quit_prepared = false; // game-thread hooks and tick only
 // Confirmed native System menu exit, distinct from the Lua return-to-title path.
-constexpr u64 BbscMenuQuitConfirmOffset = 0x01779E2B;
-constexpr u64 BbscNativeQuitConfirmOffset = 0x01C28154;
+constexpr u64 BbscNativeQuitConfirmOffset = 0x01C0D0C4; // actual System Exit Game Yes functor
 constexpr u64 BbscNativeSaveRequestOffset = 0x0156D570;
 constexpr u64 BbscNativeSaveResultOffset = 0x018322F4;
 constexpr u64 BbscNativeSaveManagerOffset = 0x0556D438;
@@ -10017,7 +10016,6 @@ constexpr s64 BbscQuitSaveTimeoutMs = 30'000;
 struct BbscPendingQuit {
     u64 global = 0;
     u64 menu = 0;
-    u64 player_result = 0;
     s32 session = 0;
     s32 slot = -1;
     s64 started_ms = 0;
@@ -10091,23 +10089,18 @@ void PrepareBbscQuitToTitle() {
     LOG_INFO(Debug, "BBSC quit: journals flushed, peers notified; stopped before title load");
 }
 
-// The System menu writes MenuMan+1B4=1 only on confirmed Yes (2 is Cancel).
-// Hold the global AND per-viewport results until the native save finishes. The
-// menu hook is after both result stores and defers its final exit-state store.
-// Never return from the middle of the menu function or stop on the save stack.
+// System's Exit Game opener (BB_BN(0x200C9F0)) binds the Yes functor
+// at 0x01C0D050. Its final store is MenuMan+250=1, NOT the generic
+// dialog result at +1B4. Hold this actual title request until save and Stop finish.
 void CancelBbscPendingQuit(std::string_view why) {
     const auto pending = bbsc_pending_quit;
     bbsc_pending_quit = {};
     bbsc_quit_save_watch = false;
     bbsc_quit_prepared = false; // a failed Stop must not poison a later confirmed attempt
     if (pending.menu == ReadValue<u64>(image_base + MenuManPointerOffset, 0) &&
-        HasMemoryAccess(pending.menu + 0x1B4, 4, MemoryProt::CpuWrite) &&
-        HasMemoryAccess(pending.menu + 0x118, 4, MemoryProt::CpuWrite)) {
-        WriteValue<s32>(pending.menu, 0x1B4, 2); // same result as native Cancel
-        WriteValue<s32>(pending.menu, 0x118, 3);
-        if (pending.player_result != 0 && HasMemoryAccess(pending.player_result, 4, MemoryProt::CpuWrite)) {
-            WriteValue<s32>(pending.player_result, 0, 2);
-        }
+        HasMemoryAccess(pending.menu + 0x250, 0x10, MemoryProt::CpuWrite)) {
+        WriteValue<s32>(pending.menu, 0x250, 0); // cancel the actual exit request
+        WriteValue<s32>(pending.menu, 0x25C, 0); // release its save-before-exit latch
     }
     LOG_ERROR(Debug, "BBSC quit: menu exit cancelled ({})", why);
 }
@@ -10119,18 +10112,13 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
     const u64 global = GetGlobalState();
     const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
     if (registers->rax != menu || !ReadablePointer(global, 0x1752) ||
-        !HasMemoryAccess(menu + 0x1B4, 4, MemoryProt::CpuWrite)) return;
-    bbsc_quit_defer_store = 1; // skip only the displaced store; continue the native function
-    WriteValue<s32>(menu, 0x1B4, 0);
-    const s32 viewport = ReadValue<s32>(menu, 0xD60);
-    const u64 player_result = viewport >= 0 && viewport <= 4 ? menu + 0xDA4 + viewport * 0x40 : 0;
-    if (player_result != 0 && HasMemoryAccess(player_result, 4, MemoryProt::CpuWrite)) {
-        WriteValue<s32>(player_result, 0, 0);
-    }
+        !HasMemoryAccess(menu + 0x250, 0x10, MemoryProt::CpuWrite)) return;
+    bbsc_quit_defer_store = 1; // skip MOV [RAX+250],1, then the native functor returns normally
+    WriteValue<s32>(menu, 0x250, 0);
     if (BbscQuitInProgress()) return; // duplicate confirmation does not restart the save
     CancelBbscReinsert("confirmed System menu exit");
     FlushBbscSessionJournals(); // record the trip before the native save or any teardown
-    bbsc_pending_quit = {global, menu, player_result, state, ReadValue<s32>(global, 0x1490), SteadyNowMs(), false};
+    bbsc_pending_quit = {global, menu, state, ReadValue<s32>(global, 0x1490), SteadyNowMs(), false};
     bbsc_quit_save_result = -1;
     LOG_INFO(Debug, "BBSC quit: native menu confirmed; saving slot {} before disconnect", bbsc_pending_quit.slot);
 }
@@ -10158,12 +10146,7 @@ void TickBbscPendingQuit() {
         if (GetSessionState() == 0) {
             const auto completed = pending;
             bbsc_pending_quit = {};
-            if (completed.player_result != 0 &&
-                HasMemoryAccess(completed.player_result, 4, MemoryProt::CpuWrite)) {
-                WriteValue<s32>(completed.player_result, 0, 1);
-            }
-            WriteValue<s32>(completed.menu, 0x118, 2);
-            WriteValue<s32>(completed.menu, 0x1B4, 1);
+            WriteValue<s32>(completed.menu, 0x250, 1);
             LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; releasing title exit");
         } else if (SteadyNowMs() - pending.started_ms >= BbscQuitSaveTimeoutMs) {
             CancelBbscPendingQuit("native disconnect timed out; title exit remains cancelled");
@@ -11171,22 +11154,19 @@ void InstallBbscQuitHook() {
     static constexpr std::array<u8, 17> SavePrologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x41, 0x56,
         0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x48};
     static constexpr std::array<u8, 5> SaveResult{0x48, 0x83, 0xC4, 0x58, 0x5B};
-    static constexpr std::array<u8, 10> ConfirmQuit{0xC7, 0x80, 0x18, 0x01, 0, 0, 2, 0, 0, 0};
-    static constexpr std::array<u8, 10> NativeConfirmQuit{0xC7, 0x80, 0xB4, 0x01, 0, 0, 1, 0, 0, 0};
+    static constexpr std::array<u8, 10> ConfirmQuit{0xC7, 0x80, 0x50, 0x02, 0, 0, 1, 0, 0, 0};
     bbsc_quit_save_hooks_ready =
         std::memcmp(reinterpret_cast<const void*>(image_base + BbscNativeSaveRequestOffset),
                     SavePrologue.data(), SavePrologue.size()) == 0 &&
         InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscNativeSaveResultOffset),
                              std::span<const u8>{SaveResult}, 0, BbscQuitSaveResultHook);
     if (bbsc_quit_save_hooks_ready) {
-        for (const u64 offset : {BbscMenuQuitConfirmOffset, BbscNativeQuitConfirmOffset}) {
-            if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + offset),
-                                      offset == BbscMenuQuitConfirmOffset ? std::span<const u8>{ConfirmQuit}
-                                                                         : std::span<const u8>{NativeConfirmQuit},
-                                      0, BbscNativeQuitConfirmHook,
-                                      &bbsc_quit_defer_store, true)) {
-                LOG_ERROR(Debug, "BBSC quit: native confirmation hook failed at {:#x}", offset);
-            }
+        if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscNativeQuitConfirmOffset),
+                                  std::span<const u8>{ConfirmQuit}, 0, BbscNativeQuitConfirmHook,
+                                  &bbsc_quit_defer_store, true)) {
+            LOG_ERROR(Debug, "BBSC quit: System Exit Game Yes hook failed at {:#x}", BbscNativeQuitConfirmOffset);
+        } else {
+            LOG_INFO(Debug, "BBSC quit: System Exit Game Yes hook installed at {:#x}", BbscNativeQuitConfirmOffset);
         }
     } else {
         LOG_ERROR(Debug, "BBSC quit: native save verification failed; confirmed-exit save hooks disabled");
