@@ -56,7 +56,8 @@
 #include "core/memory.h"
 
 #ifdef BBSC_MOD
-namespace BbscMod { void TickSessionRegister(s32 level, bool loaded); }
+#include "../../mod/bbsc_register.h"
+#include "core/bbsc_dreg_rules.h"
 #endif
 
 namespace Core::Bloodborne {
@@ -19447,6 +19448,96 @@ void ApplyBbscPvpTeams() {
     }
 }
 
+#ifdef BBSC_MOD
+DregLife bbsc_dreg_life;
+
+BbscMod::RegisterIdentity ReadBbscRegisterIdentity(u64 chr) {
+    BbscMod::RegisterIdentity identity;
+    if (!ReadablePointer(chr,0x3F8)) return identity;
+    const u64 member=ReadValue<u64>(chr,0x3D8);
+    // ca22f0 and ca23b0 construct this concrete member type. Its equality ca29a0
+    // compares the NpId at +36, then the room/member pair at +30/+34.
+    if (!ReadablePointer(member,0x5A) || ReadValue<u64>(member,0)!=image_base+0x052C5C00) return identity;
+    identity.room=ReadValue<u32>(member,0x30);
+    identity.member=ReadValue<u16>(member,0x34);
+    std::memcpy(identity.name,reinterpret_cast<const void*>(member+0x36),16);
+    return identity;
+}
+
+bool BbscRegisterRemotePlayer(u64 chr) {
+    const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
+    if (!ReadablePointer(world,0x68) || chr==GetLocalPlayerCharacter()) return false;
+    const s32 count=ReadValue<s32>(world,0x30);
+    const u64 entries=ReadValue<u64>(world,0x38);
+    if(count<=0 || count>64 || !ReadablePointer(entries,static_cast<size_t>(count)*0x38)) return false;
+    for(s32 i=0;i<count;++i) if(ReadValue<u64>(entries,i*0x38)==chr) return true;
+    return false;
+}
+
+void TickBbscDregLife() {
+    const u64 player=GetLocalPlayerCharacter();
+    const u64 global=GetGlobalState();
+    const bool loaded=ReadablePointer(global,0x1598) && ReadValue<u8>(global,8)==0 && player!=0;
+    bbsc_dreg_life.Observe(player,BbscMod::RegisterSessionKey(),loaded,GetCharacterHp(player));
+}
+
+void PS4_SYSV_ABI BbscDregLethalHook(u64 tag,const GuestRegisterSnapshot* r) {
+    if(!r) return;
+    const u64 local=GetLocalPlayerCharacter();
+    const u64 victim=tag==0 ? r->rcx : r->rax;
+    if(!local || victim!=local || GetCharacterHp(local)!=0) return;
+    u64 killer=tag==0 ? r->r15 : 0;
+    if(tag==1) {
+        // Special-effect damage carries the actual effect owner's character handle in ECX.
+        const u32 handle=static_cast<u32>(r->rcx);
+        const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
+        if(ReadablePointer(world,0x68)) {
+            const s32 count=ReadValue<s32>(world,0x30);
+            const u64 entries=ReadValue<u64>(world,0x38);
+            if(count>0 && count<=64 && ReadablePointer(entries,static_cast<size_t>(count)*0x38)) {
+                for(s32 i=0;i<count;++i) {
+                    const u64 chr=ReadValue<u64>(entries,i*0x38);
+                    if(ReadablePointer(chr,0x10) && ReadValue<u32>(chr,8)==handle) { killer=chr; break; }
+                }
+            }
+        }
+    }
+    const bool is_player=BbscRegisterRemotePlayer(killer);
+    if(!bbsc_dreg_life.Lethal(victim,killer,BbscMod::RegisterSessionKey(),0,bbsc_pvp_on,is_player)) return;
+    const auto identity=ReadBbscRegisterIdentity(killer);
+    if(!identity.name[0] && (!identity.room || !identity.member)) {
+        LOG_WARNING(Debug,"PvP Blood Dreg: unknown lethal attacker identity; no guessed credit"); return;
+    }
+    BbscMod::QueueRegisterKill(identity);
+}
+
+bool GiveBbscSessionBloodDreg() {
+    const u64 player=GetLocalPlayerCharacter();
+    const u64 global=GetGlobalState();
+    if(!ReadablePointer(global,0x1598) || ReadValue<u8>(global,8)!=0 || GetCharacterHp(player)<=0) return false;
+    const u32 code=0x40000000u|704u, key=0xB0000000u|704u;
+    using Fits=s32 PS4_SYSV_ABI (*)(u64,const u32*,s32);
+    using Add=s32 PS4_SYSV_ABI (*)(u64,const u32*,s32);
+    for(u64 inventory : {BbscCarriedInventory(),BbscStorageInventory()}) {
+        if(!inventory || reinterpret_cast<Fits>(image_base+InventoryFitsOffset)(inventory,&code,1)<=0) continue;
+        if(reinterpret_cast<Add>(image_base+InventoryAddOffset)(inventory,&key,1)<0) continue;
+        NoteBbscLedgerGiven(BbscLedgerSource::Award,0,0,code,1);
+        ShowBbscItemPopup(0x40000000u,704,1,"PvP finishing blow");
+        return true;
+    }
+    return false;
+}
+
+void InstallBbscSessionDregHooks() {
+    // Whole MOV instructions, no RIP addressing, branches or changed flags.
+    static constexpr std::array<u8,6> hit{0x89,0x81,0xDC,0x01,0x00,0x00};
+    static constexpr std::array<u8,6> effect{0x89,0x88,0xDC,0x01,0x00,0x00};
+    const bool direct=InstallGuestCodeHook(reinterpret_cast<void*>(image_base+0x01A2C176),hit,0,BbscDregLethalHook);
+    const bool periodic=InstallGuestCodeHook(reinterpret_cast<void*>(image_base+0x01A30011),effect,1,BbscDregLethalHook);
+    LOG_INFO(Debug,"PvP Blood Dreg lethal hooks: direct={} effect={}",direct,periodic);
+}
+#endif
+
 void TickBbscPvp() {
     if (image_base == 0) {
         return;
@@ -19495,6 +19586,9 @@ void TickBbscPvp() {
         SetBbscPvp(false, "the co-op ended");
     }
     ApplyBbscPvpTeams();
+#ifdef BBSC_MOD
+    TickBbscDregLife();
+#endif
 }
 
 // Trace: a boss script asked for the vanilla co-op buff (now skipped by the Scaling patches).
@@ -20034,8 +20128,10 @@ void TickBbscPresence() {
 #ifdef BBSC_MOD
     const u64 register_slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
     const u64 register_data = ReadablePointer(register_slots, 0x10) ? ReadValue<u64>(register_slots, 8) : 0;
-    const s32 register_level = ReadablePointer(register_data, 0x80) ? ReadValue<s32>(register_data, 0x78) : 0;
-    BbscMod::TickSessionRegister(register_level, next.in_game && GetLocalPlayerCharacter() != 0);
+    // Annalise ESD c1_64 uses vtable +588/+590 (18FE4D0/18FE4F0): PlayerGameData+E8.
+    const bool register_loaded = next.in_game && GetLocalPlayerCharacter()!=0 && ReadablePointer(register_data,0xEC);
+    const u32 register_offered = register_loaded ? ReadValue<u32>(register_data,0xE8) : 0;
+    BbscMod::TickSessionRegister(register_offered,register_loaded,ReadBbscRegisterIdentity(GetLocalPlayerCharacter()));
 #endif
     if (next.in_game) {
         next.area = BbscAreaName(map);
@@ -21322,6 +21418,11 @@ bool BbscConnectFirstPlacementFresh() {
 }
 
 } // namespace
+
+#ifdef BBSC_MOD
+bool GiveSessionBloodDreg() { return GiveBbscSessionBloodDreg(); }
+void InstallSessionDregHooks() { InstallBbscSessionDregHooks(); }
+#endif
 
 // ---- Cutscenes for everyone (2026-10-27) ---------------------------------------------------------
 // The host's cutscenes play for its guests at the same time. Every cutscene the game plays goes
