@@ -29,6 +29,7 @@ fixture = r'''
 #include <cstdio>
 #include "core/cpu_patches.h"
 #include "bbsc_register_wait.h"
+#define LOG_INFO(...)
 u64 image=0;
 std::atomic<bool> ready{true};
 std::atomic<u32> book_generation{1};
@@ -47,8 +48,13 @@ int main(){
  auto* code=(u8*)image;std::memcpy(code,native_code,sizeof native_code);
  const u64 owner=image+0x10000, start=(owner+0xDF8+7)&~u64{7};
  u64 functor[2]={0,owner};
- auto board=(u32*)(owner+0x2858);auto count=(u64*)(owner+0x1120);
- *board=19;*count=10;
+ auto first=(u32*)(owner+0x2858);auto count=(u64*)(owner+0x1120);
+ // Native Ranking initializer 1B333F4: MOV DWORD PTR [RDI+2858],0.
+ // Execute it rather than constructing the formerly assumed board index 19.
+ const u8 initialize_first[]={0xC7,0x87,0x58,0x28,0,0,0,0,0,0,0xC3};
+ auto* init=code+0x1000;std::memcpy(init,initialize_first,sizeof initialize_first);
+ ((void PS4_SYSV_ABI (*)(u64))init)(owner);
+ assert(*first==0);*count=10;
  auto rows=[&](u32 n){for(u32 i=0;i<10;++i)*(u8*)(start+i*0x50)=i<n?1:0;};
  using Predicate=u64 PS4_SYSV_ABI (*)(u64);
  auto poll=(Predicate)code;
@@ -59,8 +65,8 @@ int main(){
  result(false,2);assert((poll((u64)functor)&255)==0);
  result(true,2);rows(1);assert((poll((u64)functor)&255)==0);
  rows(2);assert((poll((u64)functor)&255)==1&&register_wait_skip==0);
- *board=18;assert((poll((u64)functor)&255)==0&&register_wait_skip==0);
- *board=19;book_generation=2;assert((poll((u64)functor)&255)==0);
+ *first=19;assert((poll((u64)functor)&255)==0&&register_wait_skip==0);
+ *first=0;book_generation=2;assert((poll((u64)functor)&255)==0);
  book_generation=1;result(true,5);rows(4);assert((poll((u64)functor)&255)==0);
  rows(5);assert((poll((u64)functor)&255)==1);
  result(true,0);rows(0);assert((poll((u64)functor)&255)==1);
