@@ -48,6 +48,7 @@ bool HasMemoryAccess(u64 p, size_t, int) { return p>=0x10000; }
 u64 GetGlobalState() { return world; }
 s32 GetSessionState() { return session; }
 s64 SteadyNowMs() { return now; }
+void LogBbscQuitQueue(u64) {}
 void CancelBbscReinsert(std::string_view) {}
 void FlushBbscSessionJournals() { events.push_back(1); }
 void SendBbscSessionLeave() { events.push_back(3); }
@@ -86,12 +87,13 @@ functions = '\n'.join(function(signature) for signature in (
     'void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers)',
     'void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers)',
     'void TickBbscPendingQuit()',
+    'void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global)',
 ))
 
 fixture = r'''
 void reset(s32 role=6) {
     memory.clear(); events.clear(); closed=0; session=role; now=1000; accept_save=true;
-    bbsc_pending_quit={}; bbsc_quit_prepared=false; bbsc_quit_defer_store=0;
+    bbsc_pending_quit={}; bbsc_title_quit={}; bbsc_quit_prepared=false; bbsc_quit_defer_store=0;
     bbsc_quit_save_hooks_ready=true; bbsc_quit_save_watch=false; bbsc_quit_save_result=-1;
     memory[image_base+MenuManPointerOffset]=menu;
     memory[image_base+SprjLuaEventManPointerOffset]=0x600100; memory[0x600100+8]=0x600000;
@@ -134,7 +136,12 @@ int main() {
         assert(session==7 && memory[menu+0x250]==0 && BbscQuitInProgress());
         TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // Stop request is not completion
         session=0; TickBbscPendingQuit();
-        assert(memory[menu+0x250]==0 && memory[request_address]==2 && !BbscQuitInProgress());
+        assert(memory[menu+0x250]==0 && memory[request_address]==2 && BbscQuitInProgress());
+        memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
+        TickBbscPendingQuit(); assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
+        ReleaseBbscQuitTitleAtLoad(false,world); assert(BbscQuitInProgress());
+        memory[world+0x1592]=0; ReleaseBbscQuitTitleAtLoad(true,world); assert(BbscQuitInProgress());
+        memory[world+0x1592]=1; ReleaseBbscQuitTitleAtLoad(true,world); assert(!BbscQuitInProgress());
         TickBbscPendingQuit(); assert(events.size()==7 && events.back()==6); // title once, no delayed disconnect
     }
     reset(); memory[world+0x1554]=1; confirm(); result(0);
@@ -167,7 +174,7 @@ int main() {
     memory[image_base+MatchingStatePointerOffset]=0;
     TickBbscPendingQuit(); TickBbscPendingQuit();
     assert(events==std::vector<int>({1,2,6}));
-    assert(memory[request_address]==2 && memory[menu+0x250]==0 && !BbscQuitInProgress());
+    assert(memory[request_address]==2 && memory[menu+0x250]==0 && BbscQuitInProgress());
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[0x700000]=0; TickBbscPendingQuit(); assert_cancelled();
     assert(memory[request_address]==0);

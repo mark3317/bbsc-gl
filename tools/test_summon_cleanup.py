@@ -35,6 +35,7 @@ using DWORD=unsigned long;
 #define LOG_INFO(...)
 #define LOG_WARNING(...)
 #define BBSC_TIMELINE(...)
+std::atomic<bool> joined_claim_cleanup_due{false};
 std::atomic<bool> stale_cleared{false},was_in_session{false},placement_aimed{false};
 std::atomic<s64> claim_delivered_ms{0},own_user_id{0},placement_received_ms{0};
 std::atomic<u32> placement_sender{0};
@@ -73,18 +74,24 @@ int main(){
  // Initial cleanup, then normal refresh without deleting an active invitation.
  assert(create()==0&&deletes==1&&creates==1&&broker_record);
  assert(create()==0&&deletes==1&&creates==2);
- state=4;tick();state=6;tick();assert(deletes==1);
- state=7;tick();assert(deletes==1);
+ state=4;tick();assert(deletes==1&&broker_record);
+ state=6;tick();assert(deletes==2&&!broker_record);
+ tick();assert(deletes==2); // joined member no longer searchable
+ // A pre-join create can complete late; ReadData arms another consume only
+ // after its response, preventing publication/ack reordering from retaining it.
+ broker_record=true;joined_claim_cleanup_due=true;now+=2000;tick();
+ assert(!broker_record&&!joined_claim_cleanup_due);int baseline=deletes;
+ state=7;tick();assert(deletes==baseline);
  // Regression: departure with no HTTP traffic / next bell. A host can no
  // longer discover the previous invitation during the minutes spent in menu.
- state=0;tick();assert(deletes==2&&!broker_record);
- tick();assert(deletes==2);
- assert(create()==0&&deletes==2&&broker_record);
+ state=0;tick();assert(deletes==baseline+1&&!broker_record);
+ tick();assert(deletes==baseline+1);
+ assert(create()==0&&deletes==baseline+1&&broker_record);
  // Fast rejoin before maintenance gets to run still deletes before create.
  state=6;tick();state=0;operations.clear();
  assert(create()==0);assert((operations==std::vector<char>{'D','C'}));
  // Failed cleanup remains armed, backs off, and does not publish over a claim.
- state=6;tick();state=0;status=503;tick();int failed=deletes;
+ status=503;state=6;tick();state=0;tick();int failed=deletes;
  assert(!stale_cleared&&broker_record);tick();assert(deletes==failed);
  now+=2000;tick();assert(deletes==failed+1);
  int sent=creates;assert(create()!=0&&creates==sent&&!stale_cleared);

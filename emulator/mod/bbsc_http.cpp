@@ -108,6 +108,7 @@ std::mutex state_mutex;
 std::map<int, std::string> request_urls;            // reqId -> URL the request really goes to
 std::vector<std::pair<std::string, std::string>> overrides; // URL prefix -> replacement
 std::atomic<bool> stale_cleared{false};
+std::atomic<bool> joined_claim_cleanup_due{false};
 std::atomic<s64> placement_received_ms{0};
 // 5-player test 2026-10-12: every player polls /summon_messenger/get, waiting guests too, so every
 // guest sent its own placement as "a host looking for signs". The other waiting guests switched
@@ -407,6 +408,22 @@ s32 SessionState() {
 // maintenance thread, including while the native game tick is stopped in menus.
 void WatchSessionForStaleClaims() {
     const s32 state = SessionState();
+    static bool guest_join_seen = false; // protected by summon_lifecycle_mutex
+    if (state != 6) guest_join_seen = false;
+    if (state == 6 && !guest_join_seen) {
+        guest_join_seen = true;
+        // JoinRoom has completed. Retained claims exist only to retry an unfinished
+        // join; consume ours now so the host cannot discover/re-summon a member.
+        joined_claim_cleanup_due = true;
+        cleanup_retry_ms = 0;
+    }
+    if (state == 6 && joined_claim_cleanup_due && !own_sign_url.empty() && NowMs() >= cleanup_retry_ms) {
+        stale_cleared = false;
+        if (ClearStaleRecord(own_sign_url, own_sign_body)) {
+            joined_claim_cleanup_due = false;
+            LOG_INFO(Mod, "HTTP: joined guest's sign retired; completed members cannot be summoned again");
+        }
+    }
     if (state == 3 || state == 4 || state == 6) {
         was_in_session = true;
         if (claim_delivered_ms.exchange(0) != 0) {
@@ -419,6 +436,7 @@ void WatchSessionForStaleClaims() {
         return;
     }
     if (was_in_session.exchange(false)) {
+        joined_claim_cleanup_due = false;
         stale_cleared = false;
         cleanup_retry_ms = 0;
         claim_delivered_ms = 0;
@@ -650,6 +668,9 @@ int PS4_SYSV_ABI ReadData(int request, void* data, u64 size) {
             }
         }
         if (IsSummonCreate(url)) {
+            // A create dispatched before JoinRoom can finish AFTER the first
+            // joined acknowledgement. Retire that late publication as well.
+            if (SessionState() == 6) joined_claim_cleanup_due = true;
             const std::string_view reply(static_cast<const char*>(data), static_cast<size_t>(read));
             if (reply.find("\"UserId\"") != std::string_view::npos &&
                 claim_delivered_ms.exchange(NowMs()) == 0) {
