@@ -86,6 +86,10 @@ s64 now=1000;
 s64 SteadyNowMs() { return now; }
 constexpr s64 BbscFollowStaleMs=15000;
 bool BbscWarpTogetherEnabled() { return true; }
+bool quitting=false; bool BbscQuitInProgress(){return quitting;}
+u32 relay_host=9; u32 GetBbscRelayHost(){return relay_host;}
+bool IsSprjLuaEventManReady(){return true;}
+int departures=0; void OnBbscPeerLeft(u32,bool){++departures;}
 bool enabled=true;
 bool BbscWorldSyncEnabled() { return enabled; }
 u32 current=0x1d000000;
@@ -170,6 +174,16 @@ int main() {
     // Even all three native map candidates can still be the guest's old/invalid map.
     session=6; current=0x18010000; selected.fill(false);
     initial_claim=SummonPlacementDescriptor{mount.map};
+    // Gate the actual snapshot/phase transition before any native load starts.
+    enabled=false;
+    assert(GateBbscChaliceSummon() && bbsc_chalice_summon_map==mount.map);
+    assert(bbsc_chalice_borrowed.armed.revision==0);
+    now+=15000;TickBbscChaliceSummon();assert(departures==1 && !bbsc_chalice_summon_map);
+    now=1000;assert(GateBbscChaliceSummon());
+    quitting=true;TickBbscChaliceSummon();assert(!bbsc_chalice_summon_map);
+    quitting=false;assert(GateBbscChaliceSummon());
+    ++relay_host;TickBbscChaliceSummon();assert(!bbsc_chalice_summon_map);--relay_host;
+    enabled=true;assert(!GateBbscChaliceSummon());
     assert(BbscChaliceJoinNeedsFollow()); // do not teleport dungeon coords into Yharnam
     GuestRegisterSnapshot first_load{};
     first_load.r13=0xffffffff; first_load.rbx=0xe0000; first_load.rbp=0xf0000;

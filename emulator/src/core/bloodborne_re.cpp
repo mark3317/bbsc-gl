@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "core/bbsc_stop_policy.h"
 #include "core/bloodborne_re.h"
 
 #include <algorithm>
@@ -5199,6 +5200,63 @@ void PS4_SYSV_ABI BbscChaliceTransitionHook(u64, const GuestRegisterSnapshot* re
     BBSC_TIMELINE("CHALICE", "native dungeon transition deferred; keeping current world until scoped follow");
 }
 
+// Gate BEFORE SummonedMapReload.Native snapshots the world and sets phase 3.
+// Deferring at the decoded-loader hook is too late: stage teardown has begun.
+u8 bbsc_chalice_summon_skip = 0;
+u32 bbsc_chalice_summon_map = 0;
+u32 bbsc_chalice_summon_host = 0;
+s64 bbsc_chalice_summon_since = 0;
+
+bool GateBbscChaliceSummon() {
+    const s32 state = GetSessionState();
+    const u32 map = (state == 4 || state == 6) ? BbscChaliceInitialJoinMap() : 0;
+    if (BbscQuitInProgress()) {
+        bbsc_chalice_summon_skip = 1;
+        return true;
+    }
+    if (!Chalice::IsMap(map) || PrepareBbscChaliceLoad(map)) {
+        bbsc_chalice_summon_map = 0;
+        return false;
+    }
+    if (!bbsc_chalice_summon_map) {
+        bbsc_chalice_summon_since = SteadyNowMs();
+        LOG_INFO(Debug, "BBSC chalice: summon held before snapshot/load until host context arrives");
+    }
+    bbsc_chalice_summon_map = map;
+    bbsc_chalice_summon_host = GetBbscRelayHost();
+    bbsc_chalice_summon_skip = 1;
+    return true;
+}
+
+void TickBbscChaliceSummon() {
+    if (!bbsc_chalice_summon_map) return;
+    const s32 state = GetSessionState();
+    if (BbscQuitInProgress() || (state != 4 && state != 6) ||
+        GetBbscRelayHost() != bbsc_chalice_summon_host) {
+        bbsc_chalice_summon_map = 0;
+        return;
+    }
+    static s64 last = 0;
+    const s64 now = SteadyNowMs();
+    if (now - last < 100) return;
+    last = now;
+    if (now - bbsc_chalice_summon_since >= 15000) {
+        bbsc_chalice_summon_map = 0;
+        // The common departure owner stops the session and returns the guest home.
+        OnBbscPeerLeft(bbsc_chalice_summon_host, true);
+        LOG_ERROR(Debug, "BBSC chalice: context unavailable for 15 s; ending failed summon safely");
+        return;
+    }
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x1593) || ReadValue<u8>(global, 8) != 0 ||
+        !IsSprjLuaEventManReady()) return;
+    if (PrepareBbscChaliceLoad(bbsc_chalice_summon_map)) {
+        bbsc_chalice_summon_map = 0; // clear before re-entering the native hook
+        reinterpret_cast<void PS4_SYSV_ABI (*)()>(image_base + 0x0131E5C0)();
+        LOG_INFO(Debug, "BBSC chalice: held summon released with scoped host context");
+    }
+}
+
 bool BbscProtectChaliceAltar(u32 flag, u32 width = 1) {
     if (!Chalice::TouchesAltar(flag, width)) return false;
     const s32 state = GetSessionState();
@@ -8145,6 +8203,12 @@ bool BbscLoadingScreen(bool open) {
         using Open = bool PS4_SYSV_ABI (*)(const void* args);
         return reinterpret_cast<Open>(image_base + NowLoadingOpenOffset)(args.data());
     }
+    const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
+    const s32 state = ReadValue<s32>(menu, 0x804);
+    if (state == 0) return true;
+    if (state == 3 || state == 4) return false;
+    // Native close clears the fade object's interpolation fields. Repeating it
+    // while the menu script is closing resets that animation every game tick.
     using Close = bool PS4_SYSV_ABI (*)();
     return reinterpret_cast<Close>(image_base + NowLoadingCloseOffset)();
 }
@@ -8261,13 +8325,27 @@ void StartBbscLoadCover(std::string_view why) {
     BBSC_TIMELINE("LOAD", "load cover: fading out ({})", why);
 }
 
+bool BbscGuestWorldReady() {
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x1593) || ReadValue<u8>(global, 8) != 0 ||
+        GetCharacterHp(GetLocalPlayerCharacter()) <= 0) return false;
+    const u32 map = GetCurrentPackedMap();
+    if (!IsUsablePackedMap(map) || !BbscChaliceArrivalReady(map) || BbscChaliceNeedsLoad(map))
+        return false;
+    std::scoped_lock lock{bbsc_follow_mutex};
+    const auto& host = bbsc_follow_latest;
+    return host.received_ms != 0 && IsUsablePackedMap(host.packed_map) && (host.packed_map == map ||
+        (BbscMapArea(host.packed_map) == BbscMapArea(map) && BbscMapResident(host.packed_map)));
+}
+
 void EndBbscLoadCover(std::string_view how) {
     if (!bbsc_load_cover.active) {
         return;
     }
     // Placement completion does not imply inventory reconciliation. Keep the
     // cover across the final native inventory reset and the existing ledger check.
-    if (GetSessionState() == 6 && how != "time limit" && !BbscGuestLoadItemsReady()) {
+    if (GetSessionState() == 6 && !BbscQuitInProgress() &&
+        (!BbscGuestLoadItemsReady() || !BbscGuestWorldReady())) {
         bbsc_load_cover_pending_end = std::string{how};
         return;
     }
@@ -8291,14 +8369,22 @@ void TickBbscLoadCover() {
     if (!bbsc_load_cover.active) {
         return;
     }
-    if (!bbsc_load_cover_pending_end.empty() && BbscGuestLoadItemsReady()) {
+    if (!bbsc_load_cover_pending_end.empty() && BbscGuestLoadItemsReady() &&
+        (GetSessionState() != 6 || BbscGuestWorldReady())) {
         const std::string reason = bbsc_load_cover_pending_end;
         EndBbscLoadCover(reason);
         return;
     }
     const s64 now = SteadyNowMs();
     if (now - bbsc_load_cover.started_ms > BbscLoadCoverLimitMs) {
-        EndBbscLoadCover("time limit");
+        if (GetSessionState() == 6 && !BbscQuitInProgress() &&
+            (!BbscGuestWorldReady() || !BbscGuestLoadItemsReady())) {
+            OnBbscPeerLeft(GetBbscRelayHost(), true);
+            bbsc_load_cover.started_ms = now;
+            LOG_ERROR(Debug, "BBSC load cover: world/inventory readiness timed out; returning home");
+        } else {
+            EndBbscLoadCover("time limit");
+        }
         return;
     }
     const s32 session_state = GetSessionState();
@@ -8581,7 +8667,7 @@ bool BbscRespawnInPlace(std::string_view why) {
     // the host is in is not loaded and guests fall through the map". Beside-the-host used the host
     // character's position, which is in the coordinates of the host's map - not loaded here, so
     // nothing under the guest. The host's position is used only while the host's map is loaded
-    // here; otherwise the nearest lamp of OUR map, and the follow then reloads us into the host's.
+    // here. Otherwise use the real reload; never revive in an unfinished host-world transition.
     bool partner_here = !guest;
     if (guest) {
         s32 host_lamp = -1;
@@ -8601,6 +8687,11 @@ bool BbscRespawnInPlace(std::string_view why) {
         partner_here = IsUsablePackedMap(host_map) &&
                        (host_map == here_map ||
                         (BbscMapResident(host_map) && BbscMapArea(host_map) == BbscMapArea(here_map)));
+        if (!partner_here || !BbscChaliceArrivalReady(here_map) ||
+            BbscChaliceNeedsLoad(here_map)) {
+            LOG_WARNING(Debug, "BBSC respawn: host world not ready; real reload required");
+            return false;
+        }
         if (host_lamp != -1 && !BbscLampBlockLoaded(host_lamp)) {
             LOG_INFO(Debug, "BBSC respawn: host's lamp {} is in map {:#x}, not loaded here - "
                             "skipped",
@@ -8640,10 +8731,8 @@ bool BbscRespawnInPlace(std::string_view why) {
             where = "partner";
         }
     }
-    if (!target.has_value()) {
-        target = ReadCharacterTransform(player);
-        where = "own body";
-    }
+    // A corpse can be in a kill plane or an unmounted dungeon. No safe
+    // destination means the existing single real-load recovery must take over.
     if (!target.has_value()) {
         LOG_WARNING(Debug, "BBSC respawn in place ({}): no usable position", why);
         return false;
@@ -10147,6 +10236,54 @@ void LogBbscQuitQueue(u64 manager) {
              ReadablePointer(task, 0x28) ? ReadValue<u32>(task, 0x24) : 0);
 }
 
+// Native matching worker holds its controller lock here. Stop task C drains
+// members at C9B960 before CC53C0 calls LeaveRoom. Bound that drain using its
+// existing timeout branch (C9BA10), preserving LeaveRoom and real completion.
+void PS4_SYSV_ABI BbscStopPhaseHook(u64 phase, const GuestRegisterSnapshot* registers) {
+    if (!registers) return;
+    const u64 controller = registers->rdi;
+    if (!ReadablePointer(controller, 0x408)) return;
+    const u64 sentinel = ReadValue<u64>(controller, 0x10);
+    const u64 node = ReadablePointer(sentinel, 0x18) ? ReadValue<u64>(sentinel, 0) : 0;
+    if (!node || node == sentinel || !ReadablePointer(node, 0x18)) return;
+    const u64 task = ReadValue<u64>(node, 0x10);
+    if (!ReadablePointer(task, 0x220) || ReadValue<u32>(task, 0x24) != 0xC) return;
+    struct Trace { u64 controller=0, task=0, sequence=0, phase=0; s64 began=0, drain=0; bool bounded=false; };
+    static thread_local Trace trace;
+    const s64 now = SteadyNowMs();
+    const u64 sequence = ReadValue<u32>(task, 0x20);
+    if (trace.controller != controller || trace.task != task || trace.sequence != sequence)
+        trace = {controller, task, sequence, 0, now, 0, false};
+    if (trace.phase != phase) {
+        trace.phase = phase;
+        LOG_INFO(Debug, "BBSC stop phase: {:#x}, elapsed {} ms, controller state {}, members {}, room {}",
+                 phase, now - trace.began, ReadValue<s32>(controller, 0x118),
+                 (ReadValue<u64>(controller, 0x88) - ReadValue<u64>(controller, 0x80)) / 8,
+                 ReadValue<u64>(controller, 0x400));
+    }
+    if (phase != 0x00C9B960) return;
+    if (!trace.drain) trace.drain = now;
+    if (!trace.bounded && BbscStopDrainExpired(0xC, phase, now - trace.drain) &&
+        HasMemoryAccess(task + 0x18, 8, MemoryProt::CpuWrite)) {
+        const u64 native_now = ReadValue<u64>(controller, 0x58);
+        if (!native_now) return;
+        WriteValue<u64>(task, 0x18, native_now - 1);
+        trace.bounded = true;
+        LOG_WARNING(Debug, "BBSC stop: member drain reached 2 s; native timeout cleanup selected");
+    }
+}
+
+void InstallBbscStopHooks() {
+    static constexpr std::array<u8, 6> Frame{0x55,0x48,0x89,0xE5,0x41,0x56};
+    static constexpr std::array<u8, 6> Short{0x55,0x48,0x89,0xE5,0x53,0x50};
+    for (u64 phase : {0x00C98110ULL, 0x00C9B960ULL, 0x00CC53C0ULL}) {
+        const auto& bytes = phase == 0x00C9B960 ? Frame : Short;
+        if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + phase), bytes,
+                                  phase, BbscStopPhaseHook))
+            LOG_ERROR(Debug, "BBSC stop: phase hook unavailable at {:#x}", phase);
+    }
+}
+
 // The native StageTransition pairs Stop with remote teardown immediately
 // (0x013CDEF6 -> 0x013CDF17). Waiting for state 0 reverses that order.
 void CleanupBbscDepartingRemotes() {
@@ -10881,13 +11018,14 @@ void TickBbscLeaveLocks() {
         bbsc_release_leave_locks = false;
         armed_ms = now;
     }
-    if (armed_ms == 0 || now - armed_ms < 1'000) {
+    if (armed_ms == 0 || now <= armed_ms) {
         return;
     }
     armed_ms = 0;
     const u64 global = GetGlobalState();
     if (BbscOwnWorldNonGuest(global) && ReadValue<u8>(global, 0x08) == 0) {
         ReleaseBbscLeaveLocks("send-home skipped in our own world");
+        ReleaseBbscDeathLocks("send-home terminal callback");
     }
 }
 
@@ -10965,7 +11103,6 @@ void TickBbscStuckLeaveLocks() {
     const s32 state = GetSessionState();
     if (state == 0 && last_state != 0) {
         ended_ms = now;
-        bbsc_recover_session_cleanup = true;
     }
     last_state = state;
     if (ended_ms == 0 || state != 0) {
@@ -11571,6 +11708,9 @@ void TickBbscPostLoadRecovery() {
 void TickBbscSessionExit(bool peer_work) {
     TickBbscPendingQuit();
     const s32 state = GetSessionState();
+    static s32 previous_state = 0;
+    if (state == 0 && previous_state != 0) bbsc_recover_session_cleanup = true;
+    previous_state = state;
     ReleaseBbscNativeLeavingSession();
     const u64 global = GetGlobalState();
     if (image_base == 0 || !ReadablePointer(global, 0x1700)) {
@@ -20861,6 +21001,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscTimelineContext"); TickBbscTimelineContext(); }
         { BBSC_PERF_NESTED("tick TickBbscLoadState"); TickBbscLoadState(); }
         { BBSC_PERF_NESTED("tick TickBbscSessionExit"); TickBbscSessionExit(HasBbscWork(pending_work, BbscWork::PeerLeft)); }
+        TickBbscChaliceSummon(); // a confirmed departure wins over a newly ready summon
         { BBSC_PERF_NESTED("tick TickBbscFrameRate"); TickBbscFrameRate(); }
         if (BbscResearchEnabled()) { BBSC_PERF_NESTED("tick TickBbscGateWatch"); TickBbscGateWatch(); }
         { BBSC_PERF_NESTED("tick TickBbscTransitionIdle"); TickBbscTransitionIdle(); }
@@ -20948,6 +21089,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     }
     if (site.offset == 0x0131E5C0) { // SummonedMapReload.Native: remember the joined host map
         BbscFillConnectFirstReceivedPlacement();
+        if (GateBbscChaliceSummon()) return;
         const u64 multi_play = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
         const s32 session_state =
             multi_play >= 0x10000 && HasMemoryAccess(multi_play, 0x128, MemoryProt::CpuRead)
@@ -23164,8 +23306,8 @@ void InstallReverseEngineeringTrace() {
         // The cutscene request sites can skip the game's own call (bbsc_cutscene_skip).
         if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + site.offset), expected,
                                   index, TraceEntry,
-                                  BbscCutsceneVariant(site.offset) >= 0 ? &bbsc_cutscene_skip
-                                                                        : nullptr)) {
+                                  site.offset == 0x0131E5C0 ? &bbsc_chalice_summon_skip :
+                                  BbscCutsceneVariant(site.offset) >= 0 ? &bbsc_cutscene_skip : nullptr)) {
             LOG_ERROR(Debug, "Failed to install Bloodborne RE hook {} at {:#x}", site.name,
                       site.offset);
             continue;
@@ -23186,6 +23328,7 @@ void InstallReverseEngineeringTrace() {
     InstallBbscItemResearchHooks();
     InstallBbscCinematicHook();
     InstallBbscQuitHook();
+    InstallBbscStopHooks();
     InstallBbscDeathTraceHooks();
     InstallBbscBannerHook();
 }
