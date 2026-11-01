@@ -2,6 +2,7 @@
 No game processes or saves are touched. Requires a C++20 compiler.
 """
 import os
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -40,6 +41,8 @@ constexpr u64 PlayerSlotManagerPointerOffset=0x100, MatchingStatePointerOffset=0
 constexpr s64 BbscReinsertSettleMs=2500;
 u64 image_base=0x100000, global=0x200000, slots=0x300000, local=0x400000, player=0x500000;
 s32 state=6, hp=0; s64 clock_ms=1000;
+bool bbsc_wipe_restock_pending=false; int restocks=0;
+void BbscRestockFromStorage(std::string_view) { ++restocks; }
 bool ready=true, revive_ok=true; int revived=0, stopped=0, suspended=0, camera_off=0, reloaded=0;
 u64 GetGlobalState() { return global; }
 s32 GetSessionState() { return state; }
@@ -60,7 +63,7 @@ std::atomic<bool> bbsc_reload_finish_pending{false};
 bool bbsc_spectate_active=false, bbsc_spectate_releasing=false;
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 void LogBbscSessionShape(std::string_view) {}
-bool BbscRespawnInPlace(std::string_view) { ++revived; if(revive_ok) hp=100; return revive_ok; }
+bool BbscRespawnInPlace(std::string_view) { ++revived; if(revive_ok) { hp=100; ++restocks; } return revive_ok; }
 namespace Bbsc { void CinematicForceOff() { ++camera_off; } }
 void ClearBbscBossContext(std::string_view) {}
 void ReleaseBbscDeathLocks(std::string_view) {}
@@ -108,12 +111,15 @@ int main(int argc,char**argv) {
     }
     if(test=="native_wipe_alive" || test=="native_wipe_dead") {
         bbsc_spectate_active=true;
+        bbsc_wipe_restock_pending=true;
         hp=test=="native_wipe_alive" ? 100 : 0;
         bbsc_reload_finish_pending=true; TickBbscLoadState();
         assert(bbsc_load_generation==1);
         tick(20);
         assert(!bbsc_spectate_active && camera_off==1 && hp>0 && stopped==0);
         assert(revived==(test=="native_wipe_dead" ? 1 : 0));
+        assert(restocks==1 && !bbsc_wipe_restock_pending);
+        tick(20); assert(restocks==1);
         return 0;
     }
     if(test=="override") {
@@ -166,6 +172,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-recovery-') as tmp:
     subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-O0',str(cpp),'-o',str(exe)],check=True)
     for scenario in ('load_observer','native_load_observer','native_wipe_alive','native_wipe_dead','override','boss_without_load','home','home_pending','dead','healthy',
                      'missing','failed_revive','host_missing','loading','joining','invader','title','lua_unavailable'):
+        if len(sys.argv)>1 and scenario not in sys.argv[1:]: continue
         subprocess.run([str(exe),scenario],check=True,timeout=5)
         print(scenario+': PASS')
 # Integration: no health veto on sending a stranded client home; cancellation precedes teardown.
