@@ -120,6 +120,11 @@ void PS4_SYSV_ABI RegisterWaitHook(u64,const Core::GuestRegisterSnapshot* r) {
     // the dialog. Pending real rows still execute the original predicate unchanged.
     const_cast<Core::GuestRegisterSnapshot*>(r)->rax=1;
     register_wait_skip=1;
+    static u64 logged_result=0;
+    if(logged_result!=result) {
+        logged_result=result;
+        LOG_INFO(Mod,"Session register: native loading wait finished, generation {} rows {}",result>>32,result&0x7FFF'FFFF);
+    }
 }
 std::vector<Rank> Snapshot() {
     const u32 session=RegisterSessionKey();

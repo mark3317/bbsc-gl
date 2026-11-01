@@ -38,6 +38,7 @@
 
 #include "common/logging/log.h"
 #include "common/types.h"
+#include "core/cpu_patches.h"
 
 namespace BbscMod {
 u64 EbootAddress(); // bbsc_mod.cpp
@@ -57,6 +58,34 @@ constexpr u64 SlotSetsockopt = 0x053E4B68;
 constexpr u64 SlotSendto = 0x053E4F48;
 constexpr u64 SlotRecvfrom = 0x053E4F58;
 constexpr u64 SlotConnectionStatus = 0x053E52D0;
+
+// Observe the native decision, before registers are repurposed by the import.
+// These are all four callers of sceNpSignalingDeactivateConnection in 1.09.
+// Do not keep a connection alive behind the game's back: that would hide the
+// failed native negotiation and leave its task/room/character states divergent.
+void PS4_SYSV_ABI TraceNativeDisconnect(u64 site,const Core::GuestRegisterSnapshot* r) {
+    static std::atomic<u32> count{0};
+    if(!r || count.fetch_add(1)>=128) return;
+    const bool unobserved=site==0xCC0DC3;
+    const u64 object=unobserved?r->r14:r->rbx;
+    u64 connection=0,task=0,flags=0,result=0;
+    BbscMod::ReadSlotSafely(object+(unobserved?0x20:0x10),&connection);
+    if(!unobserved) {
+        BbscMod::ReadSlotSafely(object+0xB4,&task);
+        BbscMod::ReadSlotSafely(object+0xAC,&flags);
+        BbscMod::ReadSlotSafely(object+0x68,&result);
+    }
+    LOG_INFO(Mod,"Native signaling close: site={:#x} object={:#x} conn={} task={} flags={:#x} result={:#x} no-observer={}",
+             site,object,static_cast<u32>(connection),static_cast<u32>(task),static_cast<u32>(flags),result,unobserved);
+}
+void InstallDisconnectTrace() {
+    const std::array<u8,8> orphan{0x41,0x8B,0x7F,0x78,0x41,0x8B,0x76,0x20};
+    const std::array<u8,9> task{0x8B,0xBB,0xA8,0,0,0,0x8B,0x73,0x10};
+    bool ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0xCC0DC3),orphan,0xCC0DC3,TraceNativeDisconnect);
+    for(const u64 site:{0xCD8704ULL,0xCD8F29ULL,0xCDA162ULL})
+        ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+site),task,site,TraceNativeDisconnect)&&ok;
+    LOG_INFO(Mod,"Native signaling close diagnostics installed={}",ok);
+}
 
 constexpr u16 ChannelVport = 3173; // below 32768 (official shadPS4 reserves the rest); game uses 40
 constexpr s32 OrbisAfInet = 2;
@@ -359,6 +388,7 @@ void StartP2PChannel() {
     }
     Swap<ConnectionStatusFn>(SlotConnectionStatus, &ConnectionStatus, original_connection_status,
                              "ConnectionStatus");
+    InstallDisconnectTrace();
     enabled = true;
     if (HANDLE thread = CreateThread(nullptr, 0, ChannelThread, nullptr, 0, nullptr)) {
         CloseHandle(thread);

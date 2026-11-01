@@ -8,8 +8,11 @@ namespace BbscMod {
 template<class Reader>
 bool RegisterWaitCanFinish(u64 owner,u32 expected,bool received,Reader read) {
     if(!owner || !received || expected>5) return false;
-    u64 board=0,count=0;
-    if(!read(owner+0x2858,&board) || static_cast<u32>(board)!=19 ||
+    // +2858 is the zero-based FIRST RANK, not the score board. Native
+    // 1B3181C/1B333F4 initialize it to zero; 14A19D8 adds one for the query.
+    // received is published only by our board-20 Range(first=1), this opening.
+    u64 first=0,count=0;
+    if(!read(owner+0x2858,&first) || static_cast<u32>(first)!=0 ||
        !read(owner+0x1120,&count) || count>10 || count<expected) return false;
     const u64 start=(owner+0xDF8+7)&~u64{7};
     for(u32 i=0;i<expected;++i) {
