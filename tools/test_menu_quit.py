@@ -37,6 +37,8 @@ u64 image_base=0x100000, world=0x200000, menu=0x300000, manager=0x400000;
 constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88;
 std::map<u64,u64> memory;
 std::vector<int> events; // journal=1, save=2, notify=3, suspend=4, stop=5
+constexpr u64 request_address=0x700008;
+u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 template<class T> T ReadValue(u64 p, size_t off) { return static_cast<T>(memory[p+off]); }
@@ -51,7 +53,7 @@ void FlushBbscSessionJournals() { events.push_back(1); }
 void SendBbscSessionLeave() { events.push_back(3); }
 void SuspendBbscPersistence(std::string_view) { events.push_back(4); }
 u8 save_stub(s32 slot, s32 flag, s32 erase) {
-    assert(session==3 || session==4 || session==6);
+    assert(session==0 || session==3 || session==4 || session==6);
     assert(slot==-1 && flag==0 && erase==0);
     events.push_back(2);
     if (!accept_save) return 0;
@@ -59,6 +61,12 @@ u8 save_stub(s32 slot, s32 flag, s32 erase) {
     return 1;
 }
 u8 stop_stub(u64 value) { assert(value==manager); events.push_back(5); session=7; return 1; }
+void title_stub() {
+    assert(session==0 && memory[world+0x1554]==0);
+    assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
+    events.push_back(6); memory[request_address]=2;
+}
+u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
 u64 MultiPlayStopRequestOffset=reinterpret_cast<u64>(&stop_stub)-image_base;
 '''
 
@@ -83,7 +91,7 @@ void reset(s32 role=6) {
     memory[image_base+MenuManPointerOffset]=menu;
     memory[image_base+MatchingStatePointerOffset]=manager;
     memory[image_base+BbscNativeSaveManagerOffset]=0x500000;
-    memory[world+0x1490]=2;
+    memory[world+0x1490]=2; memory[0x700000]=request_address;
 }
 void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
@@ -119,8 +127,8 @@ int main() {
         assert(session==7 && memory[menu+0x250]==0 && BbscQuitInProgress());
         TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // Stop request is not completion
         session=0; TickBbscPendingQuit();
-        assert(memory[menu+0x250]==1 && !BbscQuitInProgress());
-        TickBbscPendingQuit(); assert(events.size()==6); // no delayed second disconnect
+        assert(memory[menu+0x250]==0 && memory[request_address]==2 && !BbscQuitInProgress());
+        TickBbscPendingQuit(); assert(events.size()==7 && events.back()==6); // title once, no delayed disconnect
     }
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
@@ -144,7 +152,25 @@ int main() {
     now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
     assert(!BbscQuitInProgress() && !bbsc_quit_prepared && memory[menu+0x250]==0);
     session=0; TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // no late title release
-    reset(0); confirm(); assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
+    // Former host, already disconnected: save, then direct title; no Stop needed.
+    reset(0); confirm(); assert(BbscQuitInProgress() && bbsc_quit_defer_store==1);
+    TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
+    memory[image_base+MatchingStatePointerOffset]=0;
+    TickBbscPendingQuit(); TickBbscPendingQuit();
+    assert(events==std::vector<int>({1,2,6}));
+    assert(memory[request_address]==2 && memory[menu+0x250]==0 && !BbscQuitInProgress());
+    reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
+    memory[0x700000]=0; TickBbscPendingQuit(); assert_cancelled();
+    assert(memory[request_address]==0);
+    // A title target disappearing during asynchronous Stop must not be called.
+    reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
+    TickBbscPendingQuit(); assert(stopped());
+    memory[0x700000]=0; session=0; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && events.back()==5 && memory[menu+0x250]==0);
+    for (s32 role : {-1,1,2,5,7}) {
+        reset(role); confirm();
+        assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
+    }
     reset(); bbsc_quit_save_hooks_ready=false; confirm();
     assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
 }
