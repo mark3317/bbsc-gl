@@ -3500,6 +3500,11 @@ void WriteLuaSessionEvent(std::ostream& out, const GuestRegisterSnapshot& regist
              return_address >= image_base ? return_address - image_base : 0);
     BBSC_TIMELINE("GAME", "lua event: {} (caller {:#x})", name,
              return_address >= image_base ? return_address - image_base : 0);
+}
+
+// Session actions must run even when diagnostic capture/research is disabled.
+void HandleBbscLuaSessionEvent(const GuestRegisterSnapshot& registers) {
+    const std::string name = ReadGuestAscii(registers.rsi, 64);
     // The guest accepted a summon: its summon load is next (see "Load cover").
     if (name.starts_with("JoinSession_") && GetSessionState() != 3) {
         KeepBbscHomeSpot(); // where we stand now is where the trip home goes back to
@@ -10424,19 +10429,26 @@ void GuardBbscStrayForcedWarp(const GuestRegisterSnapshot& registers) {
     const u32 forced_map = ReadValue<u32>(global, 0x14F0);
     // Mod 24 only cleared it when +0x14F0 held no map; 22:17:12 it held the host's own map and the
     // host still fell (the position is the summon placement's, not his). Not a guest = no forced warp.
-    const bool clear = BbscOwnWorldNonGuest(global);
+    bool clear = BbscOwnWorldNonGuest(global);
     if (clear) {
         WriteValue<u8>(global, 0x1520, 0);
     } else if (ReadValue<u8>(global, 0x1592) == 0 && GetSessionState() != 4 &&
                GetSessionState() != 6) {
-        PutBbscHomeSpot(global); // the trip home from another world: back where we joined from
+        // A follow warp overwrites this bank with the HOST's map and coordinates. If the
+        // original spot is unavailable, use the native home lamp instead of that stale bank.
+        ReleaseBbscGuestRespawnPoint("return home map choice");
+        if (!PutBbscHomeSpot(global)) {
+            WriteValue<u8>(global, 0x1520, 0);
+            clear = true;
+            LOG_WARNING(Debug, "BBSC return home: no own spot; using our native respawn point");
+        }
     }
     LOG_INFO(Debug,
              "BBSC forced warp at a map choice (session state {}, own world {}, forced map {:#x}, "
              "point {}, callers {:#x} <- {:#x}): {}",
              GetSessionState(), ReadValue<u8>(global, 0x1592), forced_map,
              static_cast<s32>(registers.rsi), offset(caller), offset(caller2),
-             clear ? "we are not a guest - taken off, the last lamp is used" : "kept");
+             clear ? "forced warp off, own respawn point is used" : "kept");
 }
 
 void TickBbscStrayForcedWarp() {
@@ -10942,10 +10954,10 @@ void TickBbscStrandedGuest() {
     }
     LOG_WARNING(Debug, "BBSC leave: still in another player's world {} s after the session ended - "
                        "BBSC sends us home",
-                BbscStrandedMs / 1000);
+                grace / 1000);
     BBSC_TIMELINE("LEAVE", "leave: still in another player's world {} s after the session ended - "
                        "BBSC sends us home",
-                BbscStrandedMs / 1000);
+                grace / 1000);
     WriteValue<s32>(event_state, 0, 2);
     WriteValue<u8>(global, 0x1520, 1);
     using HomePoint = void PS4_SYSV_ABI (*)(u64 lua, s32 point);
@@ -20539,7 +20551,8 @@ void TickBbscNpcOwnQuests();                                                    
 // Keep diagnostic-only hooks out of normal play entirely (including register save/restore).
 // Keep this list aligned with the functional dispatch at the start of TraceEntry.
 bool BbscFunctionalTraceSite(const TraceSite& site) {
-    return site.offset == ItemUsableResultOffset || site.offset == SummonBuildEntryOffset ||
+    return site.kind == TraceKind::LuaSessionEvent ||
+           site.offset == ItemUsableResultOffset || site.offset == SummonBuildEntryOffset ||
            site.offset == CrossMapGuestHandoffOffset ||
            site.offset == StageWarpDescriptorFinalizeOffset || site.offset == 0x0178D9C0 ||
            site.offset == 0x01941C20 ||
@@ -20569,6 +20582,9 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     BbscPerfScope perf_scope{perf_site};
 
     const auto& site = Sites[tag];
+    if (site.kind == TraceKind::LuaSessionEvent) {
+        HandleBbscLuaSessionEvent(*registers);
+    }
     if (site.offset == 0x01941C20) { // OwnWorldStep still runs during the load barrier
         TickBbscPendingQuit();
         if (BbscReturningToTitle()) {
