@@ -19,6 +19,7 @@
 // Log: logs\bbsc-mod-<date>-<time>-<pid>.log next to the DLL (one per game window, so two
 // windows on one PC do not overwrite each other); capture files in captures\ next to it.
 
+#include "core/bbsc_quit_input.h"
 #include <windows.h>
 
 #include <algorithm>
@@ -860,6 +861,7 @@ float PadAxis(u8 value) {
 int PS4_SYSV_ABI PadReadState(s32 handle, u8* data) {
     const int result = original_pad_read(handle, data);
     ++cine_pad_reads;
+    if (BlockQuitPadInput(result, data)) return result;
     if (result != 0 || data == nullptr) {
         return result;
     }

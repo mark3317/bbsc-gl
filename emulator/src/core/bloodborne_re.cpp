@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "core/bbsc_quit_input.h"
 #include "core/bbsc_stop_policy.h"
 #include "core/bloodborne_re.h"
 
@@ -10376,6 +10377,7 @@ void CancelBbscPendingQuit(std::string_view why) {
     const auto pending = bbsc_pending_quit;
     RestoreBbscQuitControls(pending);
     bbsc_pending_quit = {};
+    Bbsc::quit_input_blocked = false;
     bbsc_quit_save_watch = false;
     bbsc_quit_prepared = false; // a failed Stop must not poison a later confirmed attempt
     if (pending.menu == ReadValue<u64>(image_base + MenuManPointerOffset, 0) &&
@@ -10406,6 +10408,7 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
     bbsc_pending_quit.lua = lua;
     bbsc_pending_quit.menu_brake = ReadValue<s32>(menu, 0x2DC);
     bbsc_pending_quit.load_wait = ReadValue<u8>(lua, 0x8D);
+    Bbsc::quit_input_blocked = true;
     // The same menu close/brake and load-wait used by native EventMenuBrake/leave.
     WriteValue<s32>(menu, 0x2DC, 1);
     WriteValue<u8>(lua, 0x8D, 1);
@@ -10477,8 +10480,12 @@ void TickBbscPendingQuit() {
             // Select title directly instead of starting another world-stage transition.
             WriteValue<s32>(completed.menu, 0x250, 0);
             WriteValue<s32>(completed.menu, 0x25C, 0);
+            // Session closure is the loading boundary. Open once, then native title
+            // flow owns the screen; no world reload or artificial wait in between.
+            BbscLoadingScreen(true);
             using ReturnTitle = void PS4_SYSV_ABI (*)();
             reinterpret_cast<ReturnTitle>(image_base + OnReturnTitleOffset)();
+            Bbsc::quit_input_blocked = false; // title menu must accept input
             LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; requested title directly (no world reload)");
         } else if (!pending.disconnect_warned &&
                    SteadyNowMs() - pending.started_ms >= 5'000) {
