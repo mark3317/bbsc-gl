@@ -24,6 +24,7 @@ code=r"""
 #include <string_view>
 #include <iostream>
 using u64=uint64_t;using u32=uint32_t;using u8=uint8_t;using s32=int32_t;
+#define PS4_SYSV_ABI
 #define LOG_INFO(...)
 #define LOG_WARNING(...)
 #define BBSC_TIMELINE(...)
@@ -39,7 +40,9 @@ int GetSessionState(){return state;}u32 GetCurrentPackedMap(){return map;}
 u64 GetLocalPlayerCharacter(){return 1;}
 auto ReadCharacterTransform(u64){return transform;}
 bool IsUsablePackedMap(u32 m){return m!=0;}
-struct GuestRegisterSnapshot {u64 rsi=0,rcx=0,rbp=0;};
+struct GuestRegisterSnapshot {u64 rsi=0,rcx=0,rbp=0,rax=0;};
+struct Quit {int session=0;} bbsc_pending_quit,bbsc_title_quit;
+bool quit=false; bool BbscQuitInProgress(){return quit;}
 std::string ReadGuestAscii(u64 p,size_t){return (const char*)p;}
 int captures=0,ledger=0,world=0,cover=0,leaves=0,ending=0,releases=0;
 void CaptureBbscGuestRespawnPoint(){++captures;}
@@ -57,7 +60,7 @@ for sig in ['void KeepBbscHomeSpot()', 'void TickBbscHomeSpot()', 'bool PutBbscH
 code+=r"""
 void event(const char* name){GuestRegisterSnapshot r{};r.rsi=(u64)name;HandleBbscLuaSessionEvent(r);}
 int main(){
- auto g=GetGlobalState();GuestRegisterSnapshot r{};r.rcx=g;
+ bbsc_save_home_hooks_ready=true;auto g=GetGlobalState();GuestRegisterSnapshot r{};r.rcx=g;
  WriteValue<u8>(g,0x1592,1);event("JoinSession_White");
  assert(bbsc_home_spot.valid && bbsc_home_spot.map==0x15000000);
  assert(captures==1&&ledger==1&&world==1&&cover==1);
@@ -81,6 +84,21 @@ int main(){
  bbsc_home_spot={};state=0;WriteValue<u32>(g,0x14f0,0x1d000000);WriteValue<u8>(g,0x1520,1);
  GuardBbscStrayForcedWarp(r);assert(ReadValue<u8>(g,0x1520)==0&&ReadValue<int>(g,0x1528)==2102961);
  WriteValue<u8>(g,0x1592,1);transform.reset();event("JoinSession_White");assert(!bbsc_home_spot.valid);
+ // Serializer regression: live/return bank is in host map, but guest save
+ // must contain the own-world origin, including during committed menu exit.
+ state=0;map=0x15000000;transform=Transform{};WriteValue<s32>(g,0x1490,2);
+ WriteValue<u8>(g,0x1592,1);KeepBbscHomeSpot();
+ WriteValue<u8>(g,0x1592,0);state=6;
+ GuestRegisterSnapshot saved{};saved.rax=0x19000000;saved.rsi=123;
+ BbscSaveHomeLocationHook(0,&saved);assert(saved.rax==0x15000000);
+ BbscSaveHomeLocationHook(1,&saved);assert(((float*)saved.rsi)[0]==1);
+ BbscSaveHomeLocationHook(2,&saved);assert(((float*)saved.rsi)[1]==4);
+ state=0;WriteValue<u8>(g,0x1592,1);bbsc_title_quit.session=6;quit=true;
+ bbsc_home_spot.left=true;TickBbscHomeSpot();assert(bbsc_home_spot.valid);
+ saved.rax=0x19000000;BbscSaveHomeLocationHook(0,&saved);assert(saved.rax==0x15000000);
+ WriteValue<s32>(g,0x1490,3);saved.rax=99;BbscSaveHomeLocationHook(0,&saved);assert(saved.rax==99);
+ WriteValue<s32>(g,0x1490,2);bbsc_title_quit.session=0;quit=false;
+ saved.rax=99;BbscSaveHomeLocationHook(0,&saved);assert(saved.rax==99);
  // Host never captures the guest origin; native leave actions still fire once.
  state=3;int before=captures;event("JoinSession_White");assert(captures==before);
  event("OnLeaveMenu_Yes");assert(leaves==1&&ending==1);

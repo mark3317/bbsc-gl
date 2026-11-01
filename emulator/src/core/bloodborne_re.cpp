@@ -10061,6 +10061,7 @@ struct BbscPendingQuit {
     bool menus_closed = false;
 };
 BbscPendingQuit bbsc_pending_quit;
+BbscPendingQuit bbsc_title_quit; // retained until native character creation on Continue
 u8 bbsc_quit_defer_store = 0;
 bool bbsc_quit_save_hooks_ready = false;
 std::atomic<bool> bbsc_quit_save_watch{false};
@@ -10069,7 +10070,7 @@ std::atomic<bool> bbsc_talk_save_watch{false};
 std::atomic<s32> bbsc_talk_save_result{-1};
 
 bool BbscQuitInProgress() {
-    return bbsc_pending_quit.global != 0;
+    return bbsc_pending_quit.global != 0 || bbsc_title_quit.global != 0;
 }
 std::mutex bbsc_peer_left_mutex;
 std::map<u32, bool> bbsc_peer_left_pending;
@@ -10113,12 +10114,28 @@ bool BbscReturningToTitle() {
     return ReadablePointer(request, 0x0C) && ReadValue<s32>(request, 8) == 2;
 }
 
+// StopRequest queues reason FF000023 through C8ED70 -> C98070 -> CBACA0.
+// That scheduler appends; it does not preempt the active summon operation.
+// Record the queue head so a slow native operation can be identified next run.
+void LogBbscQuitQueue(u64 manager) {
+    const u64 controller = ReadablePointer(manager, 0x20) ? ReadValue<u64>(manager, 0x18) : 0;
+    if (!ReadablePointer(controller, 0x28)) return;
+    const u64 end = ReadValue<u64>(controller, 0x10);
+    const u64 head = ReadablePointer(end, 0x18) ? ReadValue<u64>(end, 0) : 0;
+    const u64 task = head && head != end && ReadablePointer(head, 0x18)
+                         ? ReadValue<u64>(head, 0x10) : 0;
+    LOG_INFO(Debug, "BBSC quit queue: count {} head task {:#x} kind {:#x}",
+             ReadValue<u64>(controller, 0x18), task,
+             ReadablePointer(task, 0x28) ? ReadValue<u32>(task, 0x24) : 0);
+}
+
 void PrepareBbscQuitToTitle() {
     const s32 state = GetSessionState();
     if ((BbscQuitInProgress() && !bbsc_pending_quit.stopping) || bbsc_quit_prepared ||
         (state != 1 && state != 3 && state != 4 && state != 6)) return;
     const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
     if (!ReadablePointer(manager, 0x128)) return; // retry at the next load step / tick
+    LogBbscQuitQueue(manager);
     bbsc_quit_prepared = true; // StopRequest can re-enter engine hooks
     FlushBbscSessionJournals();
     SendBbscSessionLeave();
@@ -10204,7 +10221,22 @@ void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* regis
 }
 
 void TickBbscPendingQuit() {
-    if (!BbscQuitInProgress()) return;
+    if (bbsc_title_quit.global != 0) {
+        // State 0 means disconnected, not "title reached". In particular a host
+        // still has its living own-world character during the title transition.
+        const auto& q = bbsc_title_quit;
+        const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
+        if (GetGlobalState() == q.global &&
+            ReadValue<u64>(image_base + MenuManPointerOffset, 0) == q.menu &&
+            HasMemoryAccess(q.menu + 0x2DC, 4, MemoryProt::CpuWrite) &&
+            ReadablePointer(lua_man, 0x10) && ReadValue<u64>(lua_man, 8) == q.lua &&
+            HasMemoryAccess(q.lua + 0x8D, 1, MemoryProt::CpuWrite)) {
+            WriteValue<s32>(q.menu, 0x2DC, 1);
+            WriteValue<u8>(q.lua, 0x8D, 1);
+        }
+        return;
+    }
+    if (!bbsc_pending_quit.global) return;
     auto& pending = bbsc_pending_quit;
     if (GetGlobalState() != pending.global ||
         ReadValue<u64>(image_base + MenuManPointerOffset, 0) != pending.menu ||
@@ -10229,6 +10261,7 @@ void TickBbscPendingQuit() {
                 return;
             }
             const auto completed = pending;
+            bbsc_title_quit = completed;
             bbsc_pending_quit = {};
             // Select title directly instead of starting another world-stage transition.
             WriteValue<s32>(completed.menu, 0x250, 0);
@@ -10410,12 +10443,32 @@ void PS4_SYSV_ABI BbscQuitToTitleHook(u64 confirmed, const GuestRegisterSnapshot
 // home (0x01332C1B: forced warp on, no longer a guest, still in the other world).
 struct BbscHomeSpot {
     u32 map = 0;
-    std::array<float, 4> position{};
-    std::array<float, 4> rotation{};
+    alignas(16) std::array<float, 4> position{};
+    alignas(16) std::array<float, 4> rotation{};
     bool valid = false;
     bool left = false; // we have been in another world since it was kept
+    s32 slot = -1;
 };
 BbscHomeSpot bbsc_home_spot; // game thread
+bool bbsc_save_home_hooks_ready = false;
+
+// Native serializer sites verified in CUSA03173 1.09: map has already been
+// selected in EAX, position/rotation source is already in RSI. Override only
+// those save inputs, leaving world/progress/inventory serialization untouched.
+void PS4_SYSV_ABI BbscSaveHomeLocationHook(u64 field, const GuestRegisterSnapshot* registers) {
+    if (!registers || !bbsc_save_home_hooks_ready || !bbsc_home_spot.valid) return;
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x1598) ||
+        ReadValue<s32>(global, 0x1490) != bbsc_home_spot.slot) return;
+    const bool away = ReadValue<u8>(global, 0x1592) == 0;
+    const bool quit_guest = (bbsc_pending_quit.session == 4 || bbsc_pending_quit.session == 6 ||
+                             bbsc_title_quit.session == 4 || bbsc_title_quit.session == 6);
+    if (!away && !quit_guest) return;
+    auto* changed = const_cast<GuestRegisterSnapshot*>(registers);
+    if (field == 0) changed->rax = bbsc_home_spot.map;
+    if (field == 1) changed->rsi = reinterpret_cast<u64>(bbsc_home_spot.position.data());
+    if (field == 2) changed->rsi = reinterpret_cast<u64>(bbsc_home_spot.rotation.data());
+}
 
 void KeepBbscHomeSpot() {
     const u64 global = GetGlobalState();
@@ -10428,7 +10481,8 @@ void KeepBbscHomeSpot() {
         return;
     }
     bbsc_home_spot = {map, {here->position[0], here->position[1], here->position[2], 1.0f},
-                      {0.0f, here->rotation[1], 0.0f, 0.0f}, true, false};
+                      {0.0f, here->rotation[1], 0.0f, 0.0f}, true, false,
+                      ReadValue<s32>(global, 0x1490)};
     LOG_INFO(Debug, "BBSC return home: kept our spot {:#x} ({:.2f}, {:.2f}, {:.2f}) for the trip home",
              map, here->position[0], here->position[1], here->position[2]);
     BBSC_TIMELINE("HOME", "kept our spot in {} for the trip home", BbscAreaName(map));
@@ -10436,6 +10490,7 @@ void KeepBbscHomeSpot() {
 
 // Game tick: forget the spot once we are home again after having been away.
 void TickBbscHomeSpot() {
+    if (BbscQuitInProgress()) return; // title teardown has not returned us home
     if (!bbsc_home_spot.valid) {
         return;
     }
@@ -11258,6 +11313,17 @@ void InstallBbscQuitHook() {
                      "for free (starter and regular Bath ranges; vanilla stock unchanged)");
         }
     }
+    // All three hooks precede native serializer writes, not save-file patching.
+    static constexpr std::array<u8, 13> SaveMap{0xC5,0xFC,0x57,0xC0,0xC5,0xFC,0x29,0x84,0x24,0xC0,0,0,0};
+    static constexpr std::array<u8, 8> SaveVector{0x48,0x8D,0xBC,0x24,0,1,0,0};
+    bbsc_save_home_hooks_ready =
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x0156AB9F),
+            std::span<const u8>{SaveMap}, 0, BbscSaveHomeLocationHook) &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x0156B461),
+            std::span<const u8>{SaveVector}, 1, BbscSaveHomeLocationHook) &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x0156B48B),
+            std::span<const u8>{SaveVector}, 2, BbscSaveHomeLocationHook);
+    if (!bbsc_save_home_hooks_ready) LOG_ERROR(Debug, "BBSC own origin: native save location hooks unavailable");
     static constexpr std::array<u8, 17> SavePrologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x41, 0x56,
         0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x48};
     static constexpr std::array<u8, 5> SaveResult{0x48, 0x83, 0xC4, 0x58, 0x5B};
@@ -11299,6 +11365,14 @@ void InstallBbscQuitHook() {
 
 // Shared load observation for death recovery and cutscene replay. An unavailable global
 // during teardown is not proof of completion; only the native loading flag returning to 0 is.
+void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global) {
+    if (native_finish && bbsc_title_quit.global && GetSessionState() == 0 &&
+        ReadValue<u8>(global, 0x1592) != 0) {
+        bbsc_title_quit = {};
+        LOG_INFO(Debug, "BBSC quit: Continue created our own character; exit guard released");
+    }
+}
+
 void TickBbscLoadState() {
     static bool was_loading = false;
     const u64 global = GetGlobalState();
@@ -11308,6 +11382,7 @@ void TickBbscLoadState() {
     // during character construction even then; consume it only once loading has ended.
     if (!loading) {
         const bool native_finish = bbsc_reload_finish_pending.exchange(false);
+        ReleaseBbscQuitTitleAtLoad(native_finish, global);
         if (was_loading || native_finish) {
             ++bbsc_load_generation;
             LOG_INFO(Debug, "BBSC load: completed generation {} (native finish {})",
@@ -20518,8 +20593,21 @@ void TickBbscTimelineContext() {
 // SHADPS4_BBSC_BELLS_ANYWHERE. Logs 'BBSC bells anywhere:' on every change of bell / reasons / map.
 constexpr u64 ItemUsableResultOffset = 0x015800D1;
 void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
+    if (!registers) return;
     const u64 used_row = registers->r13;
     const s32 used_effect = ReadablePointer(used_row, 0x48) ? ReadValue<s32>(used_row, 0) : -1;
+    // A guest cannot start another host/search while joining or visiting a host.
+    // This is the native goods-use result shared by menus and quick slots. Apply
+    // before both the native-yes and bells-anywhere paths, independently of that
+    // option. Keep Silencing Blank and the PvP toggle available.
+    const s32 session = GetSessionState();
+    if ((used_effect == 9000 || used_effect == 9005) &&
+        (session == 4 || session == 6) && registers->r14 != 0 &&
+        registers->r14 == GetLocalPlayerCharacter()) {
+        auto* changed = const_cast<GuestRegisterSnapshot*>(registers);
+        changed->rcx &= ~u64{0xFF};
+        return;
+    }
     if (used_effect == 9000 || used_effect == 9005 || used_effect == 7511 || used_effect == 7) {
         const u64 carried = BbscCarriedInventory();
         if (carried == 0 || !BbscInventoryHas(carried, 0x40000000u | 120u)) {

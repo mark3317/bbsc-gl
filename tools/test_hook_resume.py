@@ -21,6 +21,7 @@ void LogPlain(const char* text) { std::puts(text); }
 void PS4_SYSV_ABI callback(u64 tag, const Core::GuestRegisterSnapshot* snapshot) {
     skip=should_skip ? 1 : 0;
     if (tag==1 && should_skip) const_cast<Core::GuestRegisterSnapshot*>(snapshot)->rax=13;
+    if (tag==2 && should_skip) const_cast<Core::GuestRegisterSnapshot*>(snapshot)->rsi=0xDEADCAFE;
 }
 int main() {
     image=reinterpret_cast<u64>(VirtualAlloc(nullptr,0x6000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));
@@ -40,6 +41,18 @@ int main() {
         assert(value==(enabled ? 5 : 7));
         assert(skip==0);
     }
+    // Actual save-vector hook instruction: RSI is the serializer's source;
+    // the displaced LEA changes RDI only, so callback-supplied RSI must survive.
+    const u8 vector_code[]={0x48,0x81,0xEC,0x18,1,0,0,0x48,0x89,0xFE,
+        0x48,0x8D,0xBC,0x24,0,1,0,0,0x48,0x89,0xF0,
+        0x48,0x81,0xC4,0x18,1,0,0,0xC3};
+    auto* vector_start=start+0x3000;
+    std::memcpy(vector_start,vector_code,sizeof(vector_code));
+    using Vector=u64 PS4_SYSV_ABI (*)(u64);
+    auto vector=reinterpret_cast<Vector>(vector_start);
+    assert(Core::InstallGuestCodeHook(vector_start+10,std::span<const u8>{vector_code+10,8},2,callback));
+    should_skip=false;assert(vector(0x1234)==0x1234);
+    should_skip=true;assert(vector(0x1234)==0xDEADCAFE);
     const u8 entry_code[]={0xB8,99,0,0,0,0xC3};
     std::memcpy(start+0x1000,entry_code,sizeof(entry_code));
     using Entry=u64 PS4_SYSV_ABI (*)();
