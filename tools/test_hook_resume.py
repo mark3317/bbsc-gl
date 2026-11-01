@@ -47,6 +47,19 @@ int main() {
     assert(Core::InstallGuestCodeHook(start+0x1000,std::span<const u8>{entry_code,5},1,callback,&skip));
     should_skip=false; assert(entry()==99);
     should_skip=true; assert(entry()==13); // existing entry-skip API still returns to caller
+    // Native Yes callback: initial LEA has no stack effects. Hook its next MOV/CMP,
+    // so RET skips the entire callback before native save flags can be written.
+    const u8 yes_code[]={0x48,0x8D,0x05,0xF9,0x00,0x00,0x00,
+        0x48,0x8B,0x00,0x48,0x83,0x78,0x08,0x00,0xB8,99,0,0,0,0xC3};
+    auto* yes_start=start+0x2000;
+    std::memcpy(yes_start,yes_code,sizeof(yes_code));
+    *reinterpret_cast<u64*>(yes_start+0x100)=reinterpret_cast<u64>(yes_start+0x200);
+    auto yes=reinterpret_cast<Entry>(yes_start);
+    assert(Core::InstallGuestCodeHook(yes_start+7,std::span<const u8>{yes_code+7,8},1,callback,&skip));
+    for(int n=0;n<10;++n){
+        should_skip=false; assert(yes()==99);
+        should_skip=true; assert(yes()==13 && skip==0);
+    }
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-hook-resume-') as temporary:
