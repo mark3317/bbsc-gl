@@ -14168,6 +14168,35 @@ s64 bbsc_progress_home_ms = 0;  // home and settled since
 bool bbsc_progress_merged_at_load = false; // merged during the trip home (checked once settled)
 bool bbsc_progress_backed_up = false;      // saves backed up for this trip home
 
+// Encounter event IDs / literal map conditions of EMEVD boss gauge events
+// (2003[11]), CUSA03173 1.09 base game and DLC. Defeat flags stay shareable.
+constexpr std::array<u32, 63> BbscEncounterProgressFlags{
+    12104800, 12104802, 12104850, 12104852, 12204800, 12204802, 12204807, 12304700,
+    12304702, 12304800, 12304802, 12404800, 12404802, 12414700, 12414702, 12414800,
+    12414802, 12414807, 12415400, 12424700, 12424702, 12424790, 12424800, 12424802,
+    12504800, 12504802, 12604800, 12604802, 12604850, 12604852, 12604856, 12604986,
+    12704800, 12704802, 12804800, 12804802, 12904776, 12904863, 12904877, 12904881,
+    12904887, 12904890, 12904891, 12906791, 12906795, 12906806, 12906825, 13204800,
+    13204802, 13304800, 13304802, 13404802, 13404808, 13404824, 13404825, 13404852,
+    13404858, 13504802, 13504808, 13504852, 13504858, 13604802, 13604808,
+};
+
+bool BbscSharedMapProgressAllowed(u32 flag) {
+    return !IsBbscNpcQuestFlag(flag) && !IsBbscPersonalMapEvent(flag) &&
+           !std::binary_search(BbscEncounterProgressFlags.begin(),
+                               BbscEncounterProgressFlags.end(), flag);
+}
+
+u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming) {
+    for (u32 bit = 0; bit < 8; ++bit) {
+        const u32 flag = key * 1000 + static_cast<u32>(byte) * 8 + bit;
+        if (!BbscSharedMapProgressAllowed(flag)) {
+            incoming &= static_cast<u8>(~(0x80u >> bit));
+        }
+    }
+    return incoming;
+}
+
 // OR the collected host progress into the live flag table (own world). Returns the boss flags and
 // world flags it newly set, or {-1, 0} when there was nothing to merge. Keeps what it merged, so a
 // second call only reports what did not stick. Game thread.
@@ -14216,8 +14245,18 @@ std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when) {
         }
         auto* live = reinterpret_cast<u8*>(storage);
         for (size_t b = 0; b < BbscWorldGroupBytes; ++b) {
-            bits += std::popcount(static_cast<u8>(bytes[b] & ~live[b]));
-            live[b] = static_cast<u8>(live[b] | bytes[b]);
+            // Filter at consumption so old pending journals obey the same policy.
+            // Never remove an existing own-world bit; session sync is unchanged.
+            const u8 incoming = BbscSharedProgressByte(key, b, bytes[b]);
+            const u8 added = static_cast<u8>(incoming & ~live[b]);
+            bits += std::popcount(added);
+            for (u32 bit = 0; bit < 8; ++bit) {
+                if ((added & (0x80u >> bit)) != 0) {
+                    LOG_INFO(Debug, "BBSC shared progress ({}): applying map flag {}",
+                             when, key * 1000 + b * 8 + bit);
+                }
+            }
+            live[b] = static_cast<u8>(live[b] | incoming);
         }
         ++group_count;
     }
