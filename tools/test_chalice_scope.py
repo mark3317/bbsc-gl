@@ -87,6 +87,7 @@ s64 SteadyNowMs() { return now; }
 constexpr s64 BbscFollowStaleMs=15000;
 bool BbscWarpTogetherEnabled() { return true; }
 bool quitting=false; bool BbscQuitInProgress(){return quitting;}
+bool BbscMapResident(u32){return false;}
 u32 relay_host=9; u32 GetBbscRelayHost(){return relay_host;}
 bool IsSprjLuaEventManReady(){return true;}
 int departures=0; void OnBbscPeerLeft(u32,bool){++departures;}
