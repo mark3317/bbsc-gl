@@ -12,6 +12,7 @@
 #include <mutex>
 #include <vector>
 #include "bbsc_register.h"
+#include "bbsc_register_wait.h"
 #include "common/logging/log.h"
 #include "core/cpu_patches.h"
 
@@ -47,6 +48,9 @@ std::atomic<bool> ready{false};
 constexpr u32 BookBoard=20; // native Vileblood Register, observed in the game
 constexpr s32 NoRanking=static_cast<s32>(0x80550812u);
 std::atomic<u64> range_log_ms{0};
+std::atomic<u32> book_generation{0};
+std::atomic<u64> book_page_result{0}; // generation : received bit : actual first-page row count
+u8 register_wait_skip=0; // native UI-thread predicate, cleared by the production trampoline
 u64 last_tick=0;
 bool SameMember(const RegisterIdentity& a,const RegisterIdentity& b) {
     if(a.room && a.member && b.room && b.member) return a.room==b.room && a.member==b.member;
@@ -99,7 +103,23 @@ void PS4_SYSV_ABI BookUse(u64, const Core::GuestRegisterSnapshot*) {
     // Goods opmeMenuType 8 selects 0x018F72F2, then queues this Ranking factory.
     // Arm before 0x01BBC224 constructs the view and makes its first ranking request.
     range_log_ms=0;
+    book_generation.fetch_add(1);
+    book_page_result=0;
     LOG_INFO(Mod,"Session register: book used; ranking provider armed");
+}
+void PS4_SYSV_ABI RegisterWaitHook(u64,const Core::GuestRegisterSnapshot* r) {
+    register_wait_skip=0;
+    if(!ready || !r) return;
+    const u64 result=book_page_result.load(std::memory_order_acquire);
+    const bool received=(result&0x8000'0000ULL)!=0 &&
+        static_cast<u32>(result>>32)==book_generation.load();
+    u64 owner=0;
+    if(!ReadSlotSafely(r->rdi+8,&owner) ||
+       !RegisterWaitCanFinish(owner,static_cast<u32>(result&0x7FFF'FFFF),received,ReadSlotSafely)) return;
+    // Return true from the native completion predicate, letting its own task close/fade
+    // the dialog. Pending real rows still execute the original predicate unchanged.
+    const_cast<Core::GuestRegisterSnapshot*>(r)->rax=1;
+    register_wait_skip=1;
 }
 std::vector<Rank> Snapshot() {
     const u32 session=RegisterSessionKey();
@@ -151,6 +171,7 @@ s32 PS4_SYSV_ABI Range(s32 req,u32 board,u32 first,Rank* rows,u64 size,void* com
                       void* info,u64 is,u64 n,u64* date,u32* total,void* option) {
     if(!Ours(board)) return original_range(req,board,first,rows,size,comments,cs,info,is,n,date,total,option);
     if(!first || !Buffers(rows,size,sizeof(Rank),comments,cs,info,is,n,option)) return Invalid;
+    const u32 generation=book_generation.load();
     const auto all=Snapshot();
     if(date) *date=0;
     if(total) *total=static_cast<u32>(all.size());
@@ -158,6 +179,8 @@ s32 PS4_SYSV_ABI Range(s32 req,u32 board,u32 first,Rank* rows,u64 size,void* com
     for(u64 i=0;i<n && static_cast<u64>(first)-1+i<all.size();++i) {
         rows[i]=all[first-1+i]; ++count;
     }
+    if(first==1) book_page_result.store((static_cast<u64>(generation)<<32)|0x8000'0000ULL|count,
+                                       std::memory_order_release);
     const u64 now=GetTickCount64();
     u64 last=range_log_ms.load();
     if((!last || now-last>=5'000) && range_log_ms.compare_exchange_strong(last,now)) {
@@ -305,6 +328,12 @@ void InstallSessionRegister() {
     if(!Core::InstallGuestCodeHook(reinterpret_cast<void*>(EbootAddress()+0x01BBC1E0),bytes,0,BookUse)) {
         LOG_ERROR(Mod,"Session register: book hook unavailable"); return;
     }
+    // 1B33190 is the predicate attached to dialog 305003 by 1B322C0.
+    // MOV RAX,[RDI+8]; LEA RCX,[RAX+DF8] — whole instructions, no RIP operands.
+    const std::array<u8,11> wait_bytes{0x48,0x8B,0x47,0x08,0x48,0x8D,0x88,0xF8,0x0D,0x00,0x00};
+    const bool wait=Core::InstallGuestCodeHook(reinterpret_cast<void*>(EbootAddress()+0x01B33190),
+                                               wait_bytes,0,RegisterWaitHook,&register_wait_skip);
+    if(!wait) LOG_ERROR(Mod,"Session register: native loading-dialog predicate hook unavailable");
     const bool a=Wrap(0x053E5258,Range,original_range,"SessionRegister.Range");
     const bool b=Wrap(0x053E5248,ById,original_by_id,"SessionRegister.ById");
     const bool c=Wrap(0x053E5278,BoardInfo,original_board,"SessionRegister.BoardInfo");

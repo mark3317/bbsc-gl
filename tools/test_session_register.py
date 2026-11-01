@@ -9,6 +9,8 @@ source = (root / 'emulator/mod/bbsc_register.cpp').read_text(encoding='utf8')
 header = (root / 'emulator/mod/bbsc_register.h').read_text(encoding='utf8')
 header = re.sub(r'^#(?:include|pragma once).*$', '', header, flags=re.M)
 source = re.sub(r'^#include.*$', '', source, flags=re.M)
+wait_header = (root / 'emulator/mod/bbsc_register_wait.h').read_text(encoding='utf8')
+wait_header = re.sub(r'^#(?:include|pragma once).*$', '', wait_header, flags=re.M)
 fixture = r'''
 #include <algorithm>
 #include <array>
@@ -31,9 +33,9 @@ u64 clock_ms=10000;u32 test_session=42,test_own=1;
 int grants=0;bool can_give=true;std::vector<std::vector<u8>> sent;
 u64 GetTickCount64(){return clock_ms;}
 namespace Core {
-struct GuestRegisterSnapshot { u64 rsi; };
+struct GuestRegisterSnapshot { u64 rsi=0,rdi=0,rax=0; };
 using GuestCodeHook=void PS4_SYSV_ABI (*)(u64,const GuestRegisterSnapshot*);
-bool InstallGuestCodeHook(void*,std::span<const u8>,u64,GuestCodeHook){return true;}
+bool InstallGuestCodeHook(void*,std::span<const u8>,u64,GuestCodeHook,const u8* =nullptr){return true;}
 }
 namespace BbscMod {
 u64 EbootAddress(){return 0;}
@@ -44,7 +46,7 @@ u32 RegisterSessionKey(){return test_session;}
 u32 RegisterOwnId(){return test_own;}
 u32 SendRegisterPacket(const void* p,u32 n){sent.emplace_back((const u8*)p,(const u8*)p+n);return 0;}
 }
-''' + header + r'''
+''' + header + wait_header + r'''
 namespace Core::Bloodborne {
 bool GiveSessionBloodDreg(){if(!can_give)return false;++grants;return true;}
 void InstallSessionDregHooks(){}
