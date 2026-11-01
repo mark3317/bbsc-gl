@@ -4161,6 +4161,7 @@ bool bbsc_request_death_reload = false;
 bool bbsc_spectate_waiting_host_reload = false;
 u64 GetLocalPlayerCharacter();
 void NotifyBbscHostDeathReload();
+void ClearBbscBossContext(std::string_view why);
 
 void RequestBbscDeathReload(std::string_view why) {
     if (image_base == 0) {
@@ -4169,6 +4170,7 @@ void RequestBbscDeathReload(std::string_view why) {
     // 0x01332BC0 already picked the destination (global+0xC map, global+0x10 respawn point) while
     // the death step ran, so the request alone reproduces the vanilla death reload.
     NotifyBbscHostDeathReload(); // send before loading can suspend the game tick
+    ClearBbscBossContext("before death reload");
     using ReloadRequest = u64 PS4_SYSV_ABI (*)();
     const u64 result = reinterpret_cast<ReloadRequest>(image_base + DeathReloadRequestOffset)();
     LOG_INFO(Debug, "BBSC death: reload requested ({}), result {}", why, result);
@@ -4464,7 +4466,6 @@ bool bbsc_boss_at_own_death = false;
 std::atomic<u32> bbsc_load_generation{0}; // incremented after an actual load completes
 std::atomic<bool> bbsc_reload_finish_pending{false}; // native load callback; ticks may pause in loads
 u32 bbsc_spectate_load_generation = 0;
-void ClearBbscBossContext(std::string_view why);
 
 void NoteBbscBossBar() {
     if (BossFightActive()) {
@@ -4835,6 +4836,9 @@ bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std
         WriteValue<s32>(rules, 0x84, 3);
     }
     StartBbscLoadCover(why); // already on for the summon when this is the cross-map second reload
+    // A kept guest bypasses the vanilla failed-mission teardown. Clear the old encounter
+    // before StageTransition snapshots the world, not after the new character is built.
+    ClearBbscBossContext("before session warp");
     const bool previous_owner = bbsc_chalice_transition_owned;
     bbsc_chalice_transition_owned = true;
     const u64 result = reinterpret_cast<StageTransition>(image_base + StageTransitionOffset)();
@@ -10925,6 +10929,7 @@ void TickBbscStrandedGuest() {
     using HomePoint = void PS4_SYSV_ABI (*)(u64 lua, s32 point);
     using Transition = u64 PS4_SYSV_ABI (*)();
     reinterpret_cast<HomePoint>(image_base + 0x01332BC0)(lua, -1);
+    ClearBbscBossContext("before return home");
     reinterpret_cast<Transition>(image_base + 0x013CDE30)();
 }
 
