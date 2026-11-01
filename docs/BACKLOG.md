@@ -113,3 +113,9 @@ never called. Corrected to actual System Exit Game Yes callback (01C0D0C4,
 MenuMan+250), traced from the port's real row opener and relocated vtable.
 Targeted fixture/build passed; corrected DLL installed on both PCs. See
 [updated native-menu notes](fixes/native-menu-save-exit.md). Gameplay pending.
+
+01.11 03:03 run confirmed by user and logs: client native save succeeds before
+disconnect; title released after state 0, own world and 8 quest flags restored,
+taken-item record retained, no save errors or delayed kept-session cleanup.
+Native menu exit is confirmed in this two-player scenario; see
+[run evidence](fixes/native-menu-save-exit.md).

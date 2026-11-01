@@ -76,3 +76,29 @@ Deployed on PC and laptop, source `9e067a4`. Only targeted menu fixture, actual
 ELF opener -> functor -> store trace, DLL build and installed-hash checks ran.
 Gameplay result is still pending. Backups: menu-exit-20261101-025822 (PC),
 menu-exit-20261101-025825 (laptop).
+
+## Successful user run — 01.11.2026, 03:03
+
+User confirms client disconnects on menu exit. Laptop log
+`bbsc-mod-20261101-025956-15584.log`:
+- 03:03:07.684: native menu confirmed, saving slot 0.
+- 03:03:07.794: native save completed, explicit leave and Stop issued.
+- 03:03:08.343: native session state 0 observed, title request released.
+- 03:03:23.694: 30 own-world flag groups restored during home load.
+- 03:03:23.747 / 03:03:57.775: shared progress merged (25 then 12 world
+  flags; no boss flags); pre-merge backup recorded.
+- 03:03:24.504: 8 own quest flags restored.
+- 03:03:58.732: previously taken item record retained; ledger reconciliation
+  required no key-item grants. Own-world cleanup finishes in session state 0.
+
+No save rejection/cancellation, CHECK FAIL, or native Fault in this run. The
+only mod warning predates exit: host flags unavailable during the initial
+join (03:02:49.728); it is not evidence of a save-write failure.
+`userdata0000` exists at the expected 1,310,720 bytes and was updated at
+03:04:09 (later autosave); metadata file updated at 03:04:28.
+Raw logs preserved under `coop-dev/runs/20261101-menu-exit-confirmed` on PC
+and laptop. Save contents were not manually modified or exhaustively compared
+item by item. Confirmed scope: native save-before-disconnect, title release
+after disconnect, own-world/quest/taken-item recovery after continuation.
+Three-player departure and save-error behavior still rely on code/fixture
+checks, not this two-player run.
