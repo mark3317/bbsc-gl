@@ -60,6 +60,10 @@ s64 bbsc_v8_death_ms=0, bbsc_v8_ready_since_ms=0;
 bool bbsc_v8_pending=false, bbsc_v8_original_swapped=false;
 std::atomic<u32> bbsc_load_generation{0};
 std::atomic<bool> bbsc_reload_finish_pending{false};
+std::atomic<u64> bbsc_world_load_pending{0};
+bool BbscReturningToTitle() { return false; }
+void ReleaseBbscQuitTitleAtLoad(bool, u64) {}
+bool BbscQuitInProgress() { return false; }
 bool bbsc_spectate_active=false, bbsc_spectate_releasing=false;
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 void LogBbscSessionShape(std::string_view) {}

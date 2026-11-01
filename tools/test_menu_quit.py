@@ -41,6 +41,12 @@ constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
 std::atomic<bool> bbsc_recover_session_cleanup{false};
+std::atomic<u64> bbsc_world_load_pending{0};
+std::atomic<bool> bbsc_reload_finish_pending{false};
+std::atomic<u32> bbsc_load_generation{0};
+u64 character=0x800000;
+u64 GetLocalPlayerCharacter() { return character; }
+bool BbscReturningToTitle() { return memory[request_address]==2; }
 template<class T> T ReadValue(u64 p, size_t off) { return static_cast<T>(memory[p+off]); }
 template<class T> bool WriteValue(u64 p, size_t off, T value) { memory[p+off]=value; return true; }
 bool ReadablePointer(u64 p, size_t) { return p>=0x10000; }
@@ -49,6 +55,8 @@ u64 GetGlobalState() { return world; }
 s32 GetSessionState() { return session; }
 s64 SteadyNowMs() { return now; }
 void LogBbscQuitQueue(u64) {}
+void cleanup_stub(u64 remote) { assert(session==7 && remote==0x900000); events.push_back(7); }
+u64 WorldChrManRemoteCleanupOffset=reinterpret_cast<u64>(&cleanup_stub)-image_base;
 void CancelBbscReinsert(std::string_view) {}
 void FlushBbscSessionJournals() { events.push_back(1); }
 void SendBbscSessionLeave() { events.push_back(3); }
@@ -81,6 +89,7 @@ state = SOURCE[begin:end].replace(
     'u64 BbscNativeSaveRequestOffset = reinterpret_cast<u64>(&save_stub)-image_base;')
 state=state.replace('constexpr u64 BbscQuitCloseMenusOffset = 0x0176A900;', 'u64 BbscQuitCloseMenusOffset = reinterpret_cast<u64>(&close_stub)-image_base;')
 functions = '\n'.join(function(signature) for signature in (
+    'void CleanupBbscDepartingRemotes()',
     'void PrepareBbscQuitToTitle()',
     'void RestoreBbscQuitControls(const BbscPendingQuit& pending)',
     'void CancelBbscPendingQuit(std::string_view why)',
@@ -88,6 +97,7 @@ functions = '\n'.join(function(signature) for signature in (
     'void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers)',
     'void TickBbscPendingQuit()',
     'void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global)',
+    'void TickBbscLoadState()',
 ))
 
 fixture = r'''
@@ -99,7 +109,7 @@ void reset(s32 role=6) {
     memory[image_base+SprjLuaEventManPointerOffset]=0x600100; memory[0x600100+8]=0x600000;
     memory[image_base+MatchingStatePointerOffset]=manager;
     memory[image_base+BbscNativeSaveManagerOffset]=0x500000;
-    memory[world+0x1490]=2; memory[0x700000]=request_address;
+    memory[world+0x16F8]=0x900000; memory[world+0x1490]=2; memory[0x700000]=request_address;
 }
 void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
@@ -118,6 +128,21 @@ void assert_cancelled() {
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
 }
 int main() {
+    // Ordinary Continue: no multiplayer finish and no tick during loading.
+    reset(0); bbsc_title_quit.global=world;
+    memory[world+0x1592]=1;
+    memory[request_address]=2;
+    bbsc_world_load_pending=world;
+    TickBbscLoadState(); assert(BbscQuitInProgress()); // still entering title
+    memory[request_address]=0; character=0;
+    TickBbscLoadState(); assert(BbscQuitInProgress()); // construction not ready
+    character=0x800000;
+    TickBbscLoadState(); assert(!BbscQuitInProgress());
+    assert(bbsc_load_generation==1 && bbsc_world_load_pending==0);
+    TickBbscLoadState(); assert(bbsc_load_generation==1); // exactly once
+    bbsc_title_quit.global=world; bbsc_world_load_pending=world+0x1000;
+    TickBbscLoadState(); assert(BbscQuitInProgress()); // stale context
+    reset(0); bbsc_world_load_pending=0;
     for (s32 role : {1,3,4,6}) {
         reset(role); confirm();
         assert(BbscQuitInProgress() && bbsc_quit_defer_store==1);
@@ -132,7 +157,7 @@ int main() {
         result(0); memory[world+0x1554]=1;
         TickBbscPendingQuit(); assert(!stopped()); // engine must finish completion handling
         memory[world+0x1554]=0; TickBbscPendingQuit();
-        assert(events==std::vector<int>({1,2,1,3,4,5}));
+        assert(events==std::vector<int>({1,2,1,3,4,5,7}));
         assert(session==7 && memory[menu+0x250]==0 && BbscQuitInProgress());
         TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // Stop request is not completion
         session=0; TickBbscPendingQuit();
@@ -142,7 +167,7 @@ int main() {
         ReleaseBbscQuitTitleAtLoad(false,world); assert(BbscQuitInProgress());
         memory[world+0x1592]=0; ReleaseBbscQuitTitleAtLoad(true,world); assert(BbscQuitInProgress());
         memory[world+0x1592]=1; ReleaseBbscQuitTitleAtLoad(true,world); assert(!BbscQuitInProgress());
-        TickBbscPendingQuit(); assert(events.size()==7 && events.back()==6); // title once, no delayed disconnect
+        TickBbscPendingQuit(); assert(events.size()==8 && events.back()==6); // title once, no delayed disconnect
     }
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
@@ -166,8 +191,8 @@ int main() {
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     TickBbscPendingQuit(); assert(session==7 && BbscQuitInProgress());
     now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
-    assert(!BbscQuitInProgress() && !bbsc_quit_prepared && memory[menu+0x250]==0);
-    session=0; TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // no late title release
+    assert(BbscQuitInProgress() && bbsc_quit_prepared && memory[menu+0x250]==0);
+    session=0; TickBbscPendingQuit(); assert(memory[request_address]==2); // accepted Stop completes original intent
     // Former host, already disconnected: save, then direct title; no Stop needed.
     reset(0); confirm(); assert(BbscQuitInProgress() && bbsc_quit_defer_store==1);
     TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
@@ -182,7 +207,7 @@ int main() {
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     TickBbscPendingQuit(); assert(stopped());
     memory[0x700000]=0; session=0; TickBbscPendingQuit();
-    assert(!BbscQuitInProgress() && events.back()==5 && memory[menu+0x250]==0);
+    assert(!BbscQuitInProgress() && events.back()==7 && memory[menu+0x250]==0);
     for (s32 role : {-1,8}) {
         reset(role); confirm();
         assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
