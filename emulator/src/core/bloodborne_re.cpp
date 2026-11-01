@@ -22129,19 +22129,50 @@ bool ConfigureBbscSummonPolling() {
     const u64 manager = ReadValue<u64>(image_base + 0x05540288, 0);
     if (!ReadablePointer(manager, 0x20)) return false;
     const u64 info = ReadValue<u64>(manager, 0x18);
-    if (!ReadablePointer(info, 0x8A8) ||
-        !HasMemoryAccess(info + 0x89C, 12, MemoryProt::CpuWrite)) return false;
+    if (!ReadablePointer(info, 0x8CC) ||
+        !HasMemoryAccess(info + 0x89C, 12, MemoryProt::CpuWrite) ||
+        !HasMemoryAccess(info + 0x8C8, 4, MemoryProt::CpuWrite)) return false;
     const u32 create = ReadValue<u32>(info, 0x89C);
     const u32 search = ReadValue<u32>(info, 0x8A0);
     const u32 guard = ReadValue<u32>(info, 0x8A4);
-    if (create > 9999 || search > 9999 || guard > 9999) return false;
+    const u32 coop_guard = ReadValue<u32>(info, 0x8C8);
+    if (create > 9999 || search > 9999 || guard > 9999 || coop_guard > 9999) return false;
     const u64 network = ReadValue<u64>(image_base + SummonManagerRootPointerOffset, 0);
     const u64 broker = ReadablePointer(network, 0xC58) ? ReadValue<u64>(network, 0xC50) : 0;
     if (!ReadablePointer(broker, 0x194)) return false;
+    // A separate role backoff gates SummonBuild at 01874750..01874769.
+    // 01871317/36C/3C1/416/46B cache ServerInfo+8C8 (normally 60 s)
+    // in these five co-op roles' +18. 01878AE0 clamps the active +4 timer
+    // to that cache; changing HTTP search/create intervals never changed it.
+    // Cap only the retry delay: keep the role's enabled/count and observation
+    // timer (+8), candidate filters and all native join/readiness checks.
+    constexpr std::array<u32, 5> coop_roles{7, 21, 22, 23, 24};
+    for (const u32 role : coop_roles) {
+        const u64 metadata = image_base + RoleMetadataTableOffset + role * RoleMetadataStride;
+        const u64 backoff = image_base + SummonBuildRoleTableOffset + role * 12;
+        if (!HasMemoryAccess(metadata + 0x18, 4, MemoryProt::CpuWrite) ||
+            !HasMemoryAccess(backoff + 4, 4, MemoryProt::CpuWrite)) return false;
+    }
     // ss.info completion also caches the create interval here (01E89AAD).
     const bool ok = WriteValue<u32>(info, 0x89C, 2) && WriteValue<u32>(info, 0x8A0, 2) &&
                     WriteValue<u32>(info, 0x8A4, 2) &&
-                    WriteValue<float>(broker, 0x190, 2.0f);
+                    WriteValue<float>(broker, 0x190, 2.0f) &&
+                    WriteValue<u32>(info, 0x8C8, std::min(coop_guard, 2u));
+    if (!ok) return false;
+    for (const u32 role : coop_roles) {
+        const u64 metadata = image_base + RoleMetadataTableOffset + role * RoleMetadataStride;
+        const u64 backoff = image_base + SummonBuildRoleTableOffset + role * 12;
+        for (const u64 address : {metadata + 0x18, backoff + 4}) {
+            const float delay = ReadValue<float>(address, 0);
+            if (std::isfinite(delay) && delay > 2.0f && delay <= 36'000.0f) {
+                if (!WriteValue<float>(address, 0, 2.0f)) return false;
+            }
+        }
+    }
+    if (coop_guard > 2) {
+        LOG_INFO(Debug, "BBSC matchmaking: native co-op retry guard {} -> 2 seconds", coop_guard);
+        BBSC_TIMELINE("JOIN", "matchmaking: native co-op retry guard {} -> 2 seconds", coop_guard);
+    }
     if (ok && (create != 2 || search != 2 || guard != 2)) {
         LOG_INFO(Debug, "BBSC matchmaking: native sign/search/guard intervals {} / {} / {} -> 2 seconds", create, search, guard);
         BBSC_TIMELINE("JOIN", "matchmaking: native sign/search/guard intervals {} / {} / {} -> 2 seconds", create, search, guard);
