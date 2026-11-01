@@ -75,7 +75,6 @@ void ServiceKills(bool loaded,u64 now) {
         std::scoped_lock lock{mutex};
         for(auto it=outgoing_kills.begin();it!=outgoing_kills.end();) {
             auto& e=it->second;
-            if(now-e.created>30'000) { it=outgoing_kills.erase(it); continue; }
             if(!e.sent || now-e.sent>=1'000) { send.push_back(e.packet); e.sent=now; }
             ++it;
         }
@@ -236,6 +235,9 @@ void TickSessionRegister(u32 offered,bool loaded,const RegisterIdentity& identit
         if(session!=current_session || !session) {
             members.clear(); pending_kills.clear(); outgoing_kills.clear();
         }
+        for(auto it=members.begin();it!=members.end();) {
+            if(now-it->second.seen>15'000) it=members.erase(it); else ++it;
+        }
         current_session=session; local=packet; local_loaded=loaded;
     }
     if(loaded && session) SendRegisterPacket(&packet,sizeof(packet));
@@ -287,7 +289,16 @@ void ReceiveRegisterKill(u32 sender,u32 session,const void* data,u32 size) {
     }
     if(ack) { packet.kind=1; SendRegisterPacket(&packet,sizeof(packet)); }
 }
-void ForgetSessionRegister(u32 sender) { std::scoped_lock lock{mutex}; members.erase(sender); }
+void ForgetSessionRegister(u32 sender) {
+    std::scoped_lock lock{mutex};
+    if(const auto peer=members.find(sender);peer!=members.end()) {
+        for(auto it=outgoing_kills.begin();it!=outgoing_kills.end();) {
+            if(SameMember(it->second.packet.killer,peer->second.packet.identity)) it=outgoing_kills.erase(it);
+            else ++it;
+        }
+        members.erase(peer);
+    }
+}
 void InstallSessionRegister() {
     if(const char* v=std::getenv("BBSC_SESSION_REGISTER");v && *v=='0') return;
     const std::array<u8,6> bytes{0x55,0x48,0x89,0xE5,0x41,0x57};
