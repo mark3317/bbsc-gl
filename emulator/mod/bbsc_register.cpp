@@ -12,6 +12,7 @@
 #include <mutex>
 #include <vector>
 #include "bbsc_register.h"
+#include "core/bbsc_protocol.h"
 #include "bbsc_register_wait.h"
 #include "common/logging/log.h"
 #include "core/cpu_patches.h"
@@ -34,7 +35,7 @@ struct Board { u32 limit, update, sort, uploads; u64 bytes; };
 static_assert(sizeof(NpId)==36 && sizeof(Rank)==128 && sizeof(PlayerRank)==136);
 static_assert(sizeof(IdPc)==44 && sizeof(Board)==24);
 #pragma pack(push,1)
-struct Packet { char magic[4]={'S','H','A','D'}; u8 type=0x2B, version=2;
+struct Packet { char magic[4]={'S','H','A','D'}; u8 type=Core::Bloodborne::Protocol::Register, version=2;
     RegisterIdentity identity; u32 offered=0; };
 #pragma pack(pop)
 static_assert(sizeof(Packet)==33);
@@ -59,7 +60,7 @@ bool SameMember(const RegisterIdentity& a,const RegisterIdentity& b) {
 #pragma pack(push,1)
 struct KillPacket {
     char magic[4]={'S','H','A','D'};
-    u8 type=0x2C,version=1,kind=0; // claim / acknowledgement after inventory add
+    u8 type=Core::Bloodborne::Protocol::RegisterKill,version=1,kind=0; // claim / acknowledgement after inventory add
     u32 victim=0,death=0;
     RegisterIdentity killer;
 };
@@ -274,7 +275,7 @@ void TickSessionRegister(u32 offered,bool loaded,const RegisterIdentity& identit
 void ReceiveSessionRegister(u32 sender,u32 session,const void* data,u32 size) {
     if(size!=sizeof(Packet) || !sender || !session || session!=RegisterSessionKey()) return;
     Packet packet; std::memcpy(&packet,data,sizeof(packet));
-    if(std::memcmp(packet.magic,"SHAD",4) || packet.type!=0x2B || packet.version!=2 ||
+    if(std::memcmp(packet.magic,"SHAD",4) || packet.type!=Core::Bloodborne::Protocol::Register || packet.version!=2 ||
        !packet.identity.name[0] || packet.identity.name[16] || packet.offered>99'999) return;
     std::scoped_lock lock{mutex};
     if(session!=current_session || (members.size()>=4 && !members.contains(sender))) return;
@@ -296,7 +297,7 @@ void QueueRegisterKill(const RegisterIdentity& killer) {
 void ReceiveRegisterKill(u32 sender,u32 session,const void* data,u32 size) {
     if(!sender || !session || session!=RegisterSessionKey() || size!=sizeof(KillPacket)) return;
     KillPacket packet; std::memcpy(&packet,data,sizeof(packet));
-    if(std::memcmp(packet.magic,"SHAD",4) || packet.type!=0x2C || packet.version!=1 ||
+    if(std::memcmp(packet.magic,"SHAD",4) || packet.type!=Core::Bloodborne::Protocol::RegisterKill || packet.version!=1 ||
        packet.kind>1 || !packet.death || packet.killer.name[16]) return;
     bool ack=false;
     {

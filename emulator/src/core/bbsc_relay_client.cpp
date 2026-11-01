@@ -51,14 +51,14 @@ namespace Core::Bbsc {
 namespace {
 
 constexpr std::uint16_t DefaultRelayPort = 20444;
-constexpr std::uint8_t FollowType = 0x20;
-constexpr std::uint8_t ScaleType = 0x24;
-constexpr std::uint8_t PvpType = 0x25;
-constexpr std::uint8_t ProgressType = 0x26;
-constexpr std::uint8_t HostBossType = 0x27;
-constexpr std::uint8_t AimedPlacementType = 0x31;
-constexpr std::uint8_t PeersType = 0x7F;
-constexpr std::uint8_t EnvelopeType = 0x40;
+constexpr std::uint8_t FollowType = Core::Bloodborne::Protocol::Follow;
+constexpr std::uint8_t ScaleType = Core::Bloodborne::Protocol::Scale;
+constexpr std::uint8_t PvpType = Core::Bloodborne::Protocol::Pvp;
+constexpr std::uint8_t ProgressType = Core::Bloodborne::Protocol::Progress;
+constexpr std::uint8_t HostBossType = Core::Bloodborne::Protocol::HostBoss;
+constexpr std::uint8_t AimedPlacementType = Core::Bloodborne::Protocol::AimedPlacement;
+constexpr std::uint8_t PeersType = Core::Bloodborne::Protocol::Peers;
+constexpr std::uint8_t EnvelopeType = Core::Bloodborne::Protocol::Envelope;
 constexpr size_t EnvelopeSize = 13;
 constexpr std::int64_t SignalingFreshMs = 5'000;
 constexpr size_t SendQueueLimit = 256 * 1024;

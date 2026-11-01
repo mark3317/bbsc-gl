@@ -47,7 +47,9 @@ int main() {
 assert 'ReleaseBbscNativeLeavingSession();' in function('void TickBbscSessionExit(bool peer_work)')
 assert 'site.offset == 0x01941C20' in function('bool BbscFunctionalTraceSite(const TraceSite& site)')
 trace = SOURCE[SOURCE.index('void PS4_SYSV_ABI TraceEntry('):]
-assert 'if (site.offset == 0x01941C20) { // OwnWorldStep still runs during the load barrier\n        ReleaseBbscNativeLeavingSession();' in trace
+own_step = trace[trace.index('if (site.offset == 0x01941C20)'):trace.index('if (site.offset == ItemUsableResultOffset)')]
+assert 'ReleaseBbscNativeLeavingSession();' in own_step
+
 with tempfile.TemporaryDirectory(prefix='bbsc-leave-') as tmp:
     cpp, exe = Path(tmp)/'test.cpp', Path(tmp)/'test.exe'
     cpp.write_text(code,encoding='utf-8')

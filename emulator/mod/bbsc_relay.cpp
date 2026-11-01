@@ -49,25 +49,25 @@ u32 P2PChannelPeerCount();
 namespace {
 
 constexpr u16 DefaultRelayPort = 20444;
-constexpr u8 FollowType = 0x20;
-constexpr u8 PlacementType = 0x30; // "SHAD" 0x30 + a host's placement text (before the hotfix, ignored now)
+constexpr u8 FollowType = Core::Bloodborne::Protocol::Follow;
+constexpr u8 PlacementType = Core::Bloodborne::Protocol::Placement; // "SHAD" 0x30 + a host's placement text (before the hotfix, ignored now)
 // "SHAD" 0x31 + "<target UserId>|<placement>": a host rang that sign (0.0.1 hotfix, bbsc_http.cpp)
-constexpr u8 AimedPlacementType = 0x31;
-constexpr u8 LifeType = 0x23;   // "SHAD" 0x23 + u32 player, u8 dead, u32 sequence
-constexpr u8 ScaleType = 0x24;  // "SHAD" 0x24 + 5 x u16 the host's scaling percentages
-constexpr u8 PvpType = 0x25;    // "SHAD" 0x25 + u8 kind (0 host state, 1 guest asks) + u8 on + u32
-constexpr u8 ProgressType = 0x26; // "SHAD" 0x26 + u8 count + count x u32 the host's boss flags
-constexpr u8 HostBossType = 0x27; // "SHAD" 0x27 + s32 the boss on the host's boss bar (-1 none)
-constexpr u8 KeyItemsType = 0x29; // "SHAD" 0x29 + u32 the host's keys and badges + u32 sequence
-constexpr u8 CutsceneType = 0x28; // "SHAD" 0x28 + the host's cutscene request (bloodborne_re.cpp)
-constexpr u8 PeersType = 0x7F; // server -> client: "N other players are connected", 1 byte count
-constexpr u8 PeerLeftType = 0x7E; // server only: sender + session of a closed TCP connection
-constexpr u8 SessionLeaveType = 0x2A; // explicit departure, before the game changes its role
+constexpr u8 AimedPlacementType = Core::Bloodborne::Protocol::AimedPlacement;
+constexpr u8 LifeType = Core::Bloodborne::Protocol::Life;   // "SHAD" 0x23 + u32 player, u8 dead, u32 sequence
+constexpr u8 ScaleType = Core::Bloodborne::Protocol::Scale;  // "SHAD" 0x24 + 5 x u16 the host's scaling percentages
+constexpr u8 PvpType = Core::Bloodborne::Protocol::Pvp;    // "SHAD" 0x25 + u8 kind (0 host state, 1 guest asks) + u8 on + u32
+constexpr u8 ProgressType = Core::Bloodborne::Protocol::Progress; // "SHAD" 0x26 + u8 count + count x u32 the host's boss flags
+constexpr u8 HostBossType = Core::Bloodborne::Protocol::HostBoss; // "SHAD" 0x27 + s32 the boss on the host's boss bar (-1 none)
+constexpr u8 KeyItemsType = Core::Bloodborne::Protocol::KeyItems; // "SHAD" 0x29 + u32 the host's keys and badges + u32 sequence
+constexpr u8 CutsceneType = Core::Bloodborne::Protocol::Cutscene; // "SHAD" 0x28 + the host's cutscene request (bloodborne_re.cpp)
+constexpr u8 PeersType = Core::Bloodborne::Protocol::Peers; // server -> client: "N other players are connected", 1 byte count
+constexpr u8 PeerLeftType = Core::Bloodborne::Protocol::PeerLeft; // server only: sender + session of a closed TCP connection
+constexpr u8 SessionLeaveType = Core::Bloodborne::Protocol::SessionLeave; // explicit departure, before the game changes its role
 // Every frame since 2026-10-06: "SHAD" 0x40 + u32 sender + u32 session (the host's sender id, 0 = in
 // no session) + the packet above. The server sends each frame to everyone connected to it, so the
 // receiver keeps only its own session's packets (see "Relay sessions" in bloodborne_re.cpp).
 // Frames without it come from an older BBSC and are dropped.
-constexpr u8 EnvelopeType = 0x40;
+constexpr u8 EnvelopeType = Core::Bloodborne::Protocol::Envelope;
 constexpr size_t EnvelopeSize = 13;
 
 #pragma pack(push, 1)
@@ -270,7 +270,7 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         }
         return;
     }
-    if (wrapped.size() == 2 && wrapped[0] == PeersType) {
+    if (from_server && wrapped.size() == 2 && wrapped[0] == PeersType) {
         peers = wrapped[1];
         return;
     }
@@ -297,19 +297,20 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
     const bool sender_hosting = session != 0 && session == sender;
     // Host-only packets are taken from our host alone.
     const auto from_our_host = [&] {
-        return guest && sender_hosting && sender == Core::Bloodborne::GetBbscRelayHost();
+        return guest && sender_hosting && session == SessionKey() &&
+               sender == Core::Bloodborne::GetBbscRelayHost();
     };
-    if (frame[4] == 0x2B && session != 0 && session == SessionKey()) {
+    if (frame[4] == Core::Bloodborne::Protocol::Register && session != 0 && session == SessionKey()) {
         BbscMod::ReceiveSessionRegister(sender, session, frame.data(), static_cast<u32>(frame.size()));
-    } else if (frame[4] == 0x2C && session != 0 && session == SessionKey()) {
+    } else if (frame[4] == Core::Bloodborne::Protocol::RegisterKill && session != 0 && session == SessionKey()) {
         BbscMod::ReceiveRegisterKill(sender, session, frame.data(), static_cast<u32>(frame.size()));
-    } else if (frame[4] == SessionLeaveType && session != 0 && session == SessionKey()) {
+    } else if (frame[4] == SessionLeaveType && frame.size() == 5 && session != 0 && session == SessionKey()) {
         BbscMod::ForgetSessionRegister(sender);
         Core::Bloodborne::OnBbscPeerLeft(sender, from_our_host());
     } else if (frame[4] == FollowType && frame.size() >= 0x1E) {
         FollowPacket follow{};
         std::memcpy(&follow, frame.data(), std::min(frame.size(), sizeof(follow)));
-        if (sender_hosting) {
+        if (sender_hosting && (!guest || SessionKey() == 0 || session == SessionKey())) {
             Core::Bloodborne::NoteBbscRelayHost(sender, follow.packed_map, follow.x, follow.y,
                                                 follow.z);
         }

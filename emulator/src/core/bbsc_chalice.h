@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include "core/bbsc_protocol.h"
 
 namespace Core::Bloodborne::Chalice {
 // A map identifies a floor template, never a generated dungeon. No native pointers on wire.
@@ -48,7 +49,7 @@ struct Mount {
     bool operator==(const Mount&) const = default;
 };
 static_assert(sizeof(Mount) == 128);
-inline constexpr std::uint8_t MountPacketType = 0x2B;
+inline constexpr std::uint8_t MountPacketType = Protocol::ChaliceMount;
 inline constexpr std::size_t MountPacketSize = 8 + sizeof(Mount);
 inline bool ValidMount(const Mount& mount) {
     if (!Valid(mount.key) || mount.revision == 0 || !IsMap(mount.map) ||
