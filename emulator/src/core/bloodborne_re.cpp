@@ -14119,10 +14119,18 @@ void PS4_SYSV_ABI BbscGuestAwardHook(u64 /*tag*/, const GuestRegisterSnapshot* r
     GiveBbscGuestDrop(lot, 0);
 }
 
+// The Notebook's successful pickup queues its window before the native item list is shown.
+// Add the missing original co-op goods to this same queue, using the same native context.
+void TickBbscDuelBellGive(const GuestRegisterSnapshot* pickup = nullptr);
+
 void PS4_SYSV_ABI BbscGuestPopupHook(u64 /*tag*/, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscGuestPopupHook");
     if (registers == nullptr) {
         return;
+    }
+    if (registers->rdx == 0x40000000u && registers->rcx == 120 &&
+        static_cast<s32>(registers->r8) > 0 && !BbscGuestInHostWorld()) {
+        TickBbscDuelBellGive(registers);
     }
     const u64 caller = ReadablePointer(registers->rsp, 8) ? ReadValue<u64>(registers->rsp, 0) : 0;
     NoteBbscLedgerWindow(caller >= image_base ? caller - image_base : caller,
@@ -18947,10 +18955,10 @@ bool BackupBbscSavesUnchecked() {
 // from BOTH the carried items and the storage box goes into the carried items. Checked once per
 // loaded character (every new local player character), so a save loaded later is checked too; the
 // saves are backed up before anything is added.
-void TickBbscDuelBellGive() {
+void TickBbscDuelBellGive(const GuestRegisterSnapshot* pickup) {
     static s64 last_ms = 0;
     const s64 now = SteadyNowMs();
-    if (!BbscKitParamsReady() || now - last_ms < 5'000) {
+    if (!BbscKitParamsReady() || (pickup == nullptr && now - last_ms < 5'000)) {
         return;
     }
     last_ms = now;
@@ -19023,9 +19031,20 @@ void TickBbscDuelBellGive() {
             ++given;
             notice += given == 1 ? u"\n" : u", ";
             notice += BbscL(item->name, item->name_ru);
+            if (pickup != nullptr) {
+                // 0x016D8850(queue, runtime item handle, category, id, count, flags).
+                // Six SysV register arguments verified against the native give call at 0x017D9348.
+                // Ordinary goods use an empty runtime handle (native ctor accepts zero).
+                // Never reuse the Notebook's handle for a different item.
+                using Queue = u64 PS4_SYSV_ABI (*)(u64, const u32*, u32, u32, s32, u32);
+                const u32 handle = 0;
+                reinterpret_cast<Queue>(image_base + BbscItemPopupQueue)(
+                    pickup->rdi, &handle, 0x40000000u, item->id, 1,
+                    static_cast<u32>(pickup->r9));
+            }
         }
     }
-    if (given != 0) {
+    if (given != 0 && pickup == nullptr) {
         BbscAnnounce(notice.c_str(), "kit given");
     }
 
