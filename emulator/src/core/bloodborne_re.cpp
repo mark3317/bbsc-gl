@@ -10044,6 +10044,8 @@ u8 bbsc_quit_defer_store = 0;
 bool bbsc_quit_save_hooks_ready = false;
 std::atomic<bool> bbsc_quit_save_watch{false};
 std::atomic<s32> bbsc_quit_save_result{-1};
+std::atomic<bool> bbsc_talk_save_watch{false};
+std::atomic<s32> bbsc_talk_save_result{-1};
 
 bool BbscQuitInProgress() {
     return bbsc_pending_quit.global != 0;
@@ -10144,10 +10146,13 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
 // Capture only this manager's result for the save we requested, leaving its own
 // completion/error handling untouched. No engine teardown on the save stack.
 void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers) {
-    if (!registers || !bbsc_quit_save_watch.load() ||
+    if (!registers || (!bbsc_quit_save_watch.load() && !bbsc_talk_save_watch.load()) ||
         registers->rbx != ReadValue<u64>(image_base + BbscNativeSaveManagerOffset, 0)) return;
     const s32 result = static_cast<s32>(registers->rax);
-    if (result != 1) bbsc_quit_save_result = result;
+    if (result != 1) {
+        if (bbsc_quit_save_watch.load()) bbsc_quit_save_result = result;
+        if (bbsc_talk_save_watch.load()) bbsc_talk_save_result = result;
+    }
 }
 
 void TickBbscPendingQuit() {
@@ -13198,6 +13203,8 @@ void FinishBbscLedgerContext() {
 // down while no load ran) lowers what is expected.
 bool bbsc_ledger_loading = false;
 s64 bbsc_ledger_load_end_ms = 0;
+bool bbsc_ledger_home_ready = false;
+u32 bbsc_ledger_home_generation = 0;
 
 bool BbscLedgerWatched(u32 code) {
     const u32 type = code >> 28;
@@ -13954,9 +13961,14 @@ void TickBbscItemLedger() {
     const u64 global = GetGlobalState();
     const s32 state = GetSessionState();
     const bool loading_now = ReadablePointer(global, 0x10) && ReadValue<u8>(global, 0x08) != 0;
+    static u32 observed_load = bbsc_load_generation.load();
+    const u32 load = bbsc_load_generation.load();
     if (loading_now) {
         bbsc_ledger_loading = true;
-    } else if (bbsc_ledger_loading) {
+        bbsc_ledger_home_ready = false;
+    } else if (bbsc_ledger_loading || observed_load != load) {
+        observed_load = load;
+        bbsc_ledger_home_ready = false;
         bbsc_ledger_loading = false;
         bbsc_ledger_load_end_ms = now;
         home_checks = 0;
@@ -13964,6 +13976,7 @@ void TickBbscItemLedger() {
     }
     static s64 trip_checked_ms = 0;
     if (BbscGuestInHostWorld() || state == 6) {
+        bbsc_ledger_home_ready = false;
         home_since_ms = 0;
         home_checks = 0;
         // Every second, 3 s after a load and alive: the trip journal against the inventory (T5: one
@@ -13988,6 +14001,8 @@ void TickBbscItemLedger() {
             home_since_ms = now;
         } else if (slot_known && home_checks == 0 && now - home_since_ms >= 5'000) {
             home_checks = ReconcileBbscLedgerAtHome() ? 1 : 0; // the trip home: counted, put back
+            bbsc_ledger_home_ready = home_checks == 1;
+            bbsc_ledger_home_generation = load;
             trip_checked_ms = now;
         } else if (home_checks == 1 && now - trip_checked_ms >= 1'000 &&
                    now - bbsc_ledger_load_end_ms >= 3'000) {
@@ -14176,9 +14191,9 @@ std::mutex bbsc_progress_mutex;
 std::vector<u32> bbsc_progress_host_flags;                         // guest: host's boss flags seen
 std::map<u32, std::array<u8, BbscWorldGroupBytes>> bbsc_progress_groups; // guest: kind 1, OR-ed
 bool bbsc_progress_was_guest = false;
-void ApplyBbscTalkJournal(std::string_view when, bool finish); // "A guest's own quests"
+bool ApplyBbscTalkJournal(std::string_view when, bool finish); // "A guest's own quests"
 // The trip journal on disk (see "A guest's own quests"): our talks' flags, talk items and home awards.
-void WriteBbscTripJournal(const BbscSaveSlot& slot);
+bool WriteBbscTripJournal(const BbscSaveSlot& slot);
 bool LoadBbscTripJournal(const BbscSaveSlot& slot);
 void FinishBbscTripJournal(const BbscSaveSlot& slot);
 void DropBbscTripJournalMemory();
@@ -14478,6 +14493,7 @@ void TickBbscSharedProgress() {
         return;
     }
     if (state == 6) {
+        bbsc_talk_save_watch = false; // an older own-world commit cannot retire a new trip
         // Which character this is, and what an earlier session left for it (once per session).
         if (!bbsc_progress_slot.has_value()) {
             bbsc_progress_slot = BbscActiveSaveSlot();
@@ -14575,7 +14591,7 @@ void TickBbscSharedProgress() {
             WriteBbscTripJournal(*bbsc_progress_slot);
         }
     }
-    if (now - bbsc_progress_left_ms > BbscProgressHomeLimitMs) {
+    if (!own_world && now - bbsc_progress_left_ms > BbscProgressHomeLimitMs) {
         std::scoped_lock lock{bbsc_progress_mutex};
         LOG_WARNING(Debug, "BBSC shared progress: not home within {} s of the session end (quit to "
                            "the title?) - {} boss flag(s) and {} world group(s) kept in the file, "
@@ -14611,13 +14627,27 @@ void TickBbscSharedProgress() {
     if (now - bbsc_progress_home_ms < BbscProgressSettleMs) {
         return;
     }
-    bbsc_progress_was_guest = false;
     const bool at_load = bbsc_progress_merged_at_load;
-    bbsc_progress_merged_at_load = false;
+    if (bbsc_progress_slot.has_value()) {
+        const auto active_slot = BbscActiveSaveSlot();
+        if (!active_slot.has_value()) return;
+        if (active_slot->user != bbsc_progress_slot->user || active_slot->slot != bbsc_progress_slot->slot) {
+            if (!WriteBbscTripJournal(*bbsc_progress_slot)) return;
+            DropBbscTripJournalMemory();
+            bbsc_progress_was_guest = false;
+            bbsc_progress_slot.reset();
+            std::scoped_lock lock{bbsc_progress_mutex};
+            bbsc_progress_host_flags.clear();
+            bbsc_progress_groups.clear();
+            return; // never apply the old character's personal journal to a new character
+        }
+    }
     RestoreBbscOwnWorld("before the shared progress merge");
     const auto [bosses, bits] =
         share ? MergeBbscSharedProgress("after the home load") : std::pair<s64, size_t>{-1, 0};
-    ApplyBbscTalkJournal("after the home load", true);
+    if (!ApplyBbscTalkJournal("after the home load", true)) return;
+    bbsc_progress_was_guest = false;
+    bbsc_progress_merged_at_load = false;
     {
         std::scoped_lock lock{bbsc_progress_mutex};
         bbsc_progress_host_flags.clear();
@@ -14656,6 +14686,23 @@ void TickBbscSharedProgress() {
 // there, so the map comes up with the host's progress already in it. The tick above checks again
 // once we are settled (and merges whatever did not stick, should the own-world table come later).
 void ApplyBbscSharedProgressAtLoad() {
+    // Recover before home map events/talks, not fifteen seconds after they may
+    // already have consumed a gift trigger from a previous process.
+    const u64 home = GetGlobalState();
+    if (image_base != 0 && !bbsc_progress_was_guest && GetSessionState() == 0 &&
+        ReadablePointer(home, 0x1598) && ReadValue<u8>(home, 0x1592) != 0) {
+        if (const auto slot = BbscActiveSaveSlot(); slot.has_value()) {
+            const bool talk = LoadBbscTripJournal(*slot);
+            const bool progress = BbscSharedProgressEnabled() && LoadBbscPendingProgress(*slot);
+            if (talk || progress) {
+                bbsc_progress_slot = slot;
+                bbsc_progress_was_guest = true;
+                bbsc_progress_left_ms = SteadyNowMs();
+                bbsc_progress_home_ms = 0;
+                bbsc_progress_backed_up = false;
+            }
+        }
+    }
     if (image_base == 0 || !bbsc_progress_was_guest || bbsc_progress_merged_at_load) {
         return;
     }
@@ -15515,7 +15562,12 @@ bool bbsc_in_talk_step = false; // game thread only
 u32 bbsc_talk_step_id = 0;
 std::mutex bbsc_talk_journal_mutex;
 std::map<u32, u8> bbsc_talk_journal; // flag -> last value, from talks in the host's world
-bool bbsc_talk_journal_written = false; // the home load wrote it already (once per trip)
+bool bbsc_talk_journal_applying = false; // suppress only our own replay, not legitimate gift consumption
+u64 bbsc_talk_journal_revision = 0;
+u64 bbsc_talk_saved_revision = 0;
+u32 bbsc_talk_save_generation = 0;
+s64 bbsc_talk_save_started_ms = 0;
+s64 bbsc_talk_save_retry_ms = 0;
 
 // The guest's own talk state in the host's world (2026-10-27, Iosefka's vial: the host's talk set
 // 72410310 in the host's table, the world sync wrote it into ours and our copy of common 9100 gave
@@ -15572,9 +15624,30 @@ void PS4_SYSV_ABI BbscTalkStepEndHook(u64 /*tag*/, const GuestRegisterSnapshot* 
 // 0x0203FFD0; this is the return address of that call (the talk step window above misses them:
 // the dispatcher also runs outside of 0x0204C6D9).
 constexpr u64 BbscTalkSetFlagReturnOffset = 0x02043F5C;
+constexpr u64 BbscEventBank2003Begin = 0x017C0420;
+constexpr u64 BbscEventBank2003End = 0x017C1C80;
 
 void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event) {
+    if (bbsc_talk_journal_applying) return;
     if (!BbscGuestInHostWorld()) {
+        // While recovery is pending, home events may legitimately consume a gift
+        // trigger or advance a quest. Persist their new value before any replay.
+        const u64 global = GetGlobalState();
+        const bool home_action = bbsc_in_talk_step || caller_offset == BbscTalkSetFlagReturnOffset ||
+            (caller_offset >= BbscEventBank2003Begin && caller_offset < BbscEventBank2003End);
+        if (!home_action || !bbsc_progress_was_guest || !ReadablePointer(global, 0x1598) ||
+            ReadValue<u8>(global, 0x1592) == 0) return;
+        bool changed = false;
+        {
+            std::scoped_lock lock{bbsc_talk_journal_mutex};
+            const auto it = bbsc_talk_journal.find(flag);
+            if (it != bbsc_talk_journal.end() && it->second != value) {
+                it->second = value;
+                ++bbsc_talk_journal_revision;
+                changed = true;
+            }
+        }
+        if (changed && bbsc_progress_slot.has_value()) WriteBbscTripJournal(*bbsc_progress_slot);
         return;
     }
     // talk_event (2026-10-27): a flag of one of OUR talk-driven events (an Eileen step after our
@@ -15595,7 +15668,9 @@ void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event) {
             return;
         }
         bbsc_talk_journal[flag] = value;
+        ++bbsc_talk_journal_revision;
     }
+    if (bbsc_progress_slot.has_value()) WriteBbscTripJournal(*bbsc_progress_slot);
     LOG_INFO(Debug, "BBSC own quests: talk t{} set flag {} = {} in the host's world - kept for our "
                     "own world", bbsc_talk_step_id, flag, value);
     BBSC_TIMELINE("QUEST", "talk t{} set flag {} = {} (kept for our own world)", bbsc_talk_step_id,
@@ -15643,37 +15718,84 @@ void PS4_SYSV_ABI BbscAddItemHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
     }
 }
 
-// Writes the journal into our own world (after it is back); the journal is kept until `finish`.
-// The talk items and the awards owed are the item ledger's (TickBbscItemLedger, once home).
-void ApplyBbscTalkJournal(std::string_view when, bool finish) {
+// Early load replay is provisional. Retire only after a stable home table AND
+// a successful native own-world save of that exact journal revision. A later
+// table replacement is reconciled; gift triggers consumed at home become zero
+// in the journal instead of being blindly set again.
+bool ApplyBbscTalkJournal(std::string_view when, bool finish) {
+    if (image_base == 0 || ReadValue<u64>(image_base + 0x0553B0D8, 0) == 0 ||
+        ReadValue<u64>(image_base + EventFlagManPointerOffset, 0) == 0) return false;
     std::map<u32, u8> journal;
+    u64 revision = 0;
     {
         std::scoped_lock lock{bbsc_talk_journal_mutex};
-        // Written once per trip home: a second write would set a gift's trigger again after the
-        // home copy of the gift event had reset it (Iosefka's vial twice, 2026-10-27).
-        if (!bbsc_talk_journal_written) {
-            journal = bbsc_talk_journal;
-        }
-        bbsc_talk_journal_written = !finish && !journal.empty() ? true : bbsc_talk_journal_written;
-        if (finish) {
-            bbsc_talk_journal.clear();
-            bbsc_talk_journal_written = false;
-        }
+        journal = bbsc_talk_journal;
+        revision = bbsc_talk_journal_revision;
     }
-    if (journal.empty() || image_base == 0 ||
-        ReadValue<u64>(image_base + 0x0553B0D8, 0) == 0 ||
-        ReadValue<u64>(image_base + EventFlagManPointerOffset, 0) == 0) {
-        return;
+    if (journal.empty() && !finish) return false;
+    const auto active_slot = BbscActiveSaveSlot();
+    if (!active_slot.has_value() || !bbsc_progress_slot.has_value() ||
+        active_slot->user != bbsc_progress_slot->user || active_slot->slot != bbsc_progress_slot->slot) return false;
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 0x1592) == 0) return false;
+    const u32 generation = bbsc_load_generation.load();
+    const bool matches = std::ranges::all_of(journal, [](const auto& entry) {
+        return BbscEventFlag(entry.first) == (entry.second != 0);
+    });
+    if (!finish) bbsc_talk_save_watch = false; // early construction cannot acknowledge an old save
+    if (bbsc_talk_save_watch.load()) {
+        if (generation != bbsc_talk_save_generation) {
+            bbsc_talk_save_watch = false; // completion from an older load cannot retire this one
+        } else {
+            const s32 result = bbsc_talk_save_result.load();
+            if (result == 0 && ReadValue<s32>(global, 0x1554) == 0) {
+                bbsc_talk_save_watch = false;
+                if (matches && revision == bbsc_talk_saved_revision) {
+                    std::scoped_lock lock{bbsc_talk_journal_mutex};
+                    bbsc_talk_journal.clear();
+                    LOG_INFO(Debug, "BBSC own quests: {} talk flags verified in own-world save", journal.size());
+                    return true;
+                }
+            } else if ((result != -1 && result != 1 && result != 0) ||
+                       SteadyNowMs() - bbsc_talk_save_started_ms >= 30'000) {
+                bbsc_talk_save_watch = false;
+                bbsc_talk_save_retry_ms = SteadyNowMs() + 5'000;
+                LOG_WARNING(Debug, "BBSC own quests: own-world save not confirmed; journal retained");
+            } else return false;
+        }
     }
     using SetEventFlag = u64 PS4_SYSV_ABI (*)(u64 unused, u32 flag, u8 value);
     const auto set = reinterpret_cast<SetEventFlag>(image_base + 0x0132E5A0);
+    bbsc_talk_journal_applying = true;
+    size_t repaired = 0;
     for (const auto& [flag, value] : journal) {
-        set(0, flag, value);
+        if (BbscEventFlag(flag) != (value != 0)) {
+            set(0, flag, value);
+            ++repaired;
+        }
     }
-    LOG_INFO(Debug, "BBSC own quests ({}): {} flag(s) our talks set in the host's world written into "
-                    "our own world", when, journal.size());
-    BBSC_TIMELINE("QUEST", "{}: {} flag(s) of our talks in the host's world are now in our own world",
-                  when, journal.size());
+    bbsc_talk_journal_applying = false;
+    if (repaired != 0) LOG_INFO(Debug, "BBSC own quests ({}): {} talk flags reconciled; journal retained", when, repaired);
+    if (!finish) return false;
+    if (!bbsc_progress_slot.has_value()) return false;
+    if (!journal.empty() && !WriteBbscTripJournal(*bbsc_progress_slot)) return false;
+    // Save only after the settled-home check, never from an early map/character
+    // construction callback or while another save/quit owns the native manager.
+    if (!bbsc_quit_save_hooks_ready || BbscQuitInProgress() ||
+        !bbsc_ledger_home_ready || bbsc_ledger_home_generation != generation ||
+        SteadyNowMs() < bbsc_talk_save_retry_ms || ReadValue<u8>(global, 0x08) != 0 ||
+        ReadValue<s32>(global, 0x1554) != 0) return false;
+    bbsc_talk_save_result = -1;
+    bbsc_talk_save_generation = generation;
+    bbsc_talk_saved_revision = revision;
+    bbsc_talk_save_started_ms = SteadyNowMs();
+    bbsc_talk_save_watch = true;
+    using Save = u8 PS4_SYSV_ABI (*)(s32, s32, s32);
+    if (!reinterpret_cast<Save>(image_base + BbscNativeSaveRequestOffset)(-1, 0, 0)) {
+        bbsc_talk_save_watch = false;
+        bbsc_talk_save_retry_ms = SteadyNowMs() + 5'000;
+    }
+    return false;
 }
 
 // ---- The trip journal on disk (2026-10-29, docs/study WS-2) ---------------------------------------
@@ -15681,7 +15803,7 @@ void ApplyBbscTalkJournal(std::string_view when, bool finish) {
 // (the global flags were saved, the map flags not). It now goes to
 // <mod>/shared-progress/journal-<user>-<slot>.bin next to the pending progress (every 10 s while a
 // guest, and when the session ends), is read back the next time that character is home, and the
-// file becomes ".applied" once the trip home has written it. Flags are written once (as before).
+// file becomes ".applied" only after final home reconciliation and confirmed native save.
 // Version 2 (K2, 2026-10-29): the talk items and home awards of version 1 are the item ledger's
 // now; a version 1 file's lists are moved into the ledger as owed when it is read.
 constexpr u32 BbscTripJournalMagic = 0x4A544242; // "BBTJ"
@@ -15692,7 +15814,7 @@ std::filesystem::path BbscTripJournalPath(const BbscSaveSlot& slot) {
            "shared-progress" / fmt::format("journal-{}-{}.bin", slot.user, slot.slot);
 }
 
-void WriteBbscTripJournal(const BbscSaveSlot& slot) {
+bool WriteBbscTripJournal(const BbscSaveSlot& slot) {
     std::vector<u8> out;
     const auto put32 = [&out](u32 v) {
         const size_t at = out.size();
@@ -15702,7 +15824,7 @@ void WriteBbscTripJournal(const BbscSaveSlot& slot) {
     {
         std::scoped_lock lock{bbsc_talk_journal_mutex};
         if (bbsc_talk_journal.empty()) {
-            return;
+            return true;
         }
         put32(BbscTripJournalMagic);
         put32(BbscTripJournalVersion);
@@ -15719,11 +15841,13 @@ void WriteBbscTripJournal(const BbscSaveSlot& slot) {
     {
         std::ofstream file(temp, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        file.flush();
         if (!file) {
-            return;
+            return false;
         }
     }
     std::filesystem::rename(temp, path, ec);
+    return !ec;
 }
 
 void FlushBbscSessionJournals() {
@@ -15822,7 +15946,7 @@ bool LoadBbscTripJournal(const BbscSaveSlot& slot) {
     {
         std::scoped_lock lock{bbsc_talk_journal_mutex};
         for (const auto& [flag, value] : journal) {
-            bbsc_talk_journal.try_emplace(flag, value); // what this run noted since is newer
+            if (bbsc_talk_journal.try_emplace(flag, value).second) ++bbsc_talk_journal_revision; // newer live entries win
         }
     }
     LOG_INFO(Debug, "BBSC own quests: trip journal of user {} slot {} read (version {}) - {} talk "
@@ -15854,7 +15978,9 @@ void FinishBbscTripJournal(const BbscSaveSlot& slot) {
 void DropBbscTripJournalMemory() {
     std::scoped_lock lock{bbsc_talk_journal_mutex};
     bbsc_talk_journal.clear();
-    bbsc_talk_journal_written = false;
+    bbsc_talk_journal_applying = false;
+    bbsc_talk_save_watch = false;
+    ++bbsc_talk_journal_revision;
 }
 
 // Research 2026-10-27 (quest flags of a guest's talks): every event flag set, in a session, once
@@ -15961,8 +16087,7 @@ constexpr std::array<BbscTalkEventTrigger, 507> BbscTalkEventTriggers{{
     {13505610, 9061}, {13505820, 9064}, {13600942, 73600310}, {13600942, 73600314}, {13600943, 73600300}, {13600951, 1723},
     {13600951, 73600520}, {13600955, 1723}, {13605490, 9060}
 }};
-constexpr u64 BbscEventBank2003Begin = 0x017C0420;
-constexpr u64 BbscEventBank2003End = 0x017C1C80;
+
 struct BbscEventRun {
     u64 instance = 0;
     s64 event = -1;
