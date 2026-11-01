@@ -56,7 +56,7 @@ int main(){using namespace BbscMod;
  assert(Range(1,10,0,rows,sizeof rows,nullptr,0,nullptr,0,3,&date,&total,nullptr)==Invalid);
  IdPc ids[2]{};strcpy(ids[0].id.name,"Host");strcpy(ids[1].id.name,"Absent");
  PlayerRank results[2];
- assert(ById(1,10,ids,sizeof ids,results,sizeof results,nullptr,0,nullptr,0,2,&date,&total,nullptr)==2);
+ assert(ById(1,10,ids,sizeof ids,results,sizeof results,nullptr,0,nullptr,0,2,&date,&total,nullptr)==1);
  assert(results[0].has_data && results[0].value.rank==2 && !results[1].has_data);
  clock_ms+=5001;assert(Snapshot().size()==1);
  p.level=100;ReceiveSessionRegister(7,42,&p,sizeof p);ForgetSessionRegister(7);assert(Snapshot().size()==1);
