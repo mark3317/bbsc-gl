@@ -53,9 +53,9 @@ bool Ours(u32 board) {
     selected_board.compare_exchange_strong(expected,board);
     return selected_board.load()==board;
 }
-void PS4_SYSV_ABI BookUse(u64, const Core::GuestRegisterSnapshot* r) {
-    // 0x018C9174: before MOV r12d,edx / MOV r13d,esi. No RIP operands or branches.
-    if (static_cast<s32>(r->rsi)!=130) return;
+void PS4_SYSV_ABI BookUse(u64, const Core::GuestRegisterSnapshot*) {
+    // Goods opmeMenuType 8 selects 0x018F72F2, then queues this Ranking factory.
+    // Arm before 0x01BBC224 constructs the view and makes its first ranking request.
     selected_board=-1;
     used_at=GetTickCount64();
     LOG_INFO(Mod,"Session register: book used; ranking provider armed");
@@ -87,7 +87,7 @@ using BoardFn=s32 PS4_SYSV_ABI (*)(s32,u32,Board*,void*);
 RangeFn original_range=nullptr;
 ByIdFn original_by_id=nullptr;
 BoardFn original_board=nullptr;
-constexpr s32 Invalid=static_cast<s32>(0x80550003u);
+constexpr s32 Invalid=static_cast<s32>(0x80550704u);
 bool Buffers(void* out,u64 size,u64 stride,void* comments,u64 cs,void* info,u64 is,u64 n,void* option) {
     if(option || !out || !n || n>100 || size!=n*stride ||
        (comments && cs!=n*64) || (info && is!=n*200)) return false;
@@ -117,12 +117,13 @@ s32 PS4_SYSV_ABI ById(s32 req,u32 board,const IdPc* ids,u64 ids_size,PlayerRank*
     const auto all=Snapshot();
     if(date) *date=0;
     if(total) *total=static_cast<u32>(all.size());
+    s32 found=0;
     for(u64 i=0;i<n;++i) for(const auto& r:all) {
         if(std::memcmp(ids[i].id.name,r.id.name,16)==0) {
-            rows[i].has_data=1; rows[i].value=r; rows[i].value.pc=ids[i].pc; break;
+            rows[i].has_data=1; rows[i].value=r; rows[i].value.pc=ids[i].pc; ++found; break;
         }
     }
-    return static_cast<s32>(n);
+    return found;
 }
 s32 PS4_SYSV_ABI BoardInfo(s32 req,u32 board,Board* out,void* option) {
     if(!Ours(board)) return original_board(req,board,out,option);
@@ -170,8 +171,8 @@ void ReceiveSessionRegister(u32 sender,u32 session,const void* data,u32 size) {
 void ForgetSessionRegister(u32 sender) { std::scoped_lock lock{mutex}; members.erase(sender); }
 void InstallSessionRegister() {
     if(const char* v=std::getenv("BBSC_SESSION_REGISTER");v && *v=='0') return;
-    const std::array<u8,6> bytes{0x41,0x89,0xD4,0x41,0x89,0xF5};
-    if(!Core::InstallGuestCodeHook(reinterpret_cast<void*>(EbootAddress()+0x018C9174),bytes,0,BookUse)) {
+    const std::array<u8,6> bytes{0x55,0x48,0x89,0xE5,0x41,0x57};
+    if(!Core::InstallGuestCodeHook(reinterpret_cast<void*>(EbootAddress()+0x01BBC1E0),bytes,0,BookUse)) {
         LOG_ERROR(Mod,"Session register: book hook unavailable"); return;
     }
     const bool a=Wrap(0x053E5258,Range,original_range,"SessionRegister.Range");
