@@ -95,7 +95,11 @@ int main(){using namespace BbscMod;
  const auto before=sent.size();ServiceKills(false,clock_ms);ServiceKills(false,clock_ms+1001);assert(sent.size()==before+8);
  outgoing.kind=1;ReceiveRegisterKill(3,42,&outgoing,sizeof outgoing);assert(outgoing_kills.size()==4);
  ReceiveRegisterKill(2,42,&outgoing,sizeof outgoing);assert(outgoing_kills.size()==3);
+ const auto after=sent.size();ServiceKills(false,clock_ms+60000);assert(sent.size()==after+3); // long loads do not discard claims
  clock_ms+=15001;assert(Snapshot().size()==1);
+ clock_ms+=1001;TickSessionRegister(0,true,me);assert(members.empty());
+ p.identity.member=6;ReceiveSessionRegister(6,42,&p,sizeof p);assert(Snapshot().size()==2); // stale roster entries cannot block a replacement
+ ForgetSessionRegister(6);assert(Snapshot().size()==1);
  test_session=77;clock_ms+=1001;TickSessionRegister(20,true,me);
  assert(members.empty() && pending_kills.empty() && outgoing_kills.empty());
  test_session=0;clock_ms+=1001;TickSessionRegister(0,false,me);assert(Snapshot().empty());
