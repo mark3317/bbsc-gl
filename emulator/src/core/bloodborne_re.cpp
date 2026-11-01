@@ -19486,6 +19486,10 @@ void PS4_SYSV_ABI BbscDregLethalHook(u64 tag,const GuestRegisterSnapshot* r) {
     const u64 local=GetLocalPlayerCharacter();
     const u64 victim=tag==0 ? r->rcx : r->rax;
     if(!local || victim!=local || GetCharacterHp(local)!=0) return;
+    // Both native functions save HP before THIS hit in their own stack frame.
+    // Reject hitting an already-dead player (including a fall/environment death earlier this frame).
+    const u64 before_hp=r->rbp-(tag==0 ? 0x31C : 0x54);
+    if(!ReadablePointer(before_hp,sizeof(s32)) || ReadValue<s32>(before_hp,0)<=0) return;
     u64 killer=tag==0 ? r->r15 : 0;
     if(tag==1) {
         // Special-effect damage carries the actual effect owner's character handle in ECX.
