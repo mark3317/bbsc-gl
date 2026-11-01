@@ -3473,6 +3473,7 @@ void KeepBbscOwnTimeBits();                           // see "Time of night in t
 void ApplyBbscHostTime(std::string_view why);
 void KeepBbscHomeSpot();                              // see "Back home where we were"
 void CaptureBbscOwnWorldBeforeJoin();
+bool ApplyBbscTalkJournal(std::string_view when, bool finish);
 void WriteBbscOwnWorldFile();
 void NoteBbscOwnDreamRestored(u32 key, const u8* live);
 s32 GetSessionState();
@@ -7155,6 +7156,9 @@ void CaptureBbscOwnWorldBeforeJoin() {
     if (!ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 0x1592) == 0) {
         return; // not in our own world
     }
+    // A fast re-summon may precede the final home save. Freeze the latest
+    // personal delta into the next own-world baseline, not an older native table.
+    ApplyBbscTalkJournal("before a new summon snapshot", false);
     const u64 man = ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0);
     if (!ReadablePointer(man, 0x40)) {
         return;
