@@ -10124,7 +10124,10 @@ void PrepareBbscQuitToTitle() {
 
 // System's Exit Game opener (BB_BN(0x200C9F0)) binds the Yes functor
 // at 0x01C0D050. Its final store is MenuMan+250=1, NOT the generic
-// dialog result at +1B4. Hold this actual title request until save and Stop finish.
+// dialog result at +1B4. Defer this store until save and Stop finish.
+// Do not replay +250 afterwards: StageFlow reads it at 01940593 and starts
+// its world transition (the event request is cleared at 01941050). The separate
+// native OnReturnTitle command writes event request 2 at 0138BB2D.
 void CancelBbscPendingQuit(std::string_view why) {
     const auto pending = bbsc_pending_quit;
     bbsc_pending_quit = {};
@@ -10141,7 +10144,7 @@ void CancelBbscPendingQuit(std::string_view why) {
 void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers) {
     const s32 state = GetSessionState();
     if (!registers || !bbsc_quit_save_hooks_ready ||
-        (state != 3 && state != 4 && state != 6)) return;
+        (state != 0 && state != 3 && state != 4 && state != 6)) return;
     const u64 global = GetGlobalState();
     const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
     if (registers->rax != menu || !ReadablePointer(global, 0x1752) ||
@@ -10180,10 +10183,19 @@ void TickBbscPendingQuit() {
     }
     if (pending.stopping) {
         if (GetSessionState() == 0) {
+            const u64 request = BbscEventRequestAddress();
+            if (!request || !HasMemoryAccess(request, sizeof(s32), MemoryProt::CpuWrite)) {
+                CancelBbscPendingQuit("disconnected, but title request became unavailable");
+                return;
+            }
             const auto completed = pending;
             bbsc_pending_quit = {};
-            WriteValue<s32>(completed.menu, 0x250, 1);
-            LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; releasing title exit");
+            // Select title directly instead of starting another world-stage transition.
+            WriteValue<s32>(completed.menu, 0x250, 0);
+            WriteValue<s32>(completed.menu, 0x25C, 0);
+            using ReturnTitle = void PS4_SYSV_ABI (*)();
+            reinterpret_cast<ReturnTitle>(image_base + OnReturnTitleOffset)();
+            LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; requested title directly (no world reload)");
         } else if (SteadyNowMs() - pending.started_ms >= BbscQuitSaveTimeoutMs) {
             CancelBbscPendingQuit("native disconnect timed out; title exit remains cancelled");
         }
@@ -10222,7 +10234,12 @@ void TickBbscPendingQuit() {
     }
     if (result != 0 || save_state != 0) return; // completion must be observed, not guessed from idle
     const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
-    if (!ReadablePointer(manager, 0x128)) {
+    const u64 request = BbscEventRequestAddress();
+    if (!request || !HasMemoryAccess(request, sizeof(s32), MemoryProt::CpuWrite)) {
+        CancelBbscPendingQuit("saved, but title request became unavailable");
+        return;
+    }
+    if (pending.session != 0 && !ReadablePointer(manager, 0x128)) {
         CancelBbscPendingQuit("saved, but session manager became unavailable");
         return;
     }
