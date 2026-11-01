@@ -55,6 +55,10 @@
 #include "core/libraries/np/np_signaling/np_signaling_bbsc.h"
 #include "core/memory.h"
 
+#ifdef BBSC_MOD
+namespace BbscMod { void TickSessionRegister(s32 level, bool loaded); }
+#endif
+
 namespace Core::Bloodborne {
 namespace {
 
@@ -18545,6 +18549,7 @@ struct BbscKitItem {
     const char16_t* name_ru;
 };
 constexpr BbscKitItem BbscKit[] = {
+    {130, u"Vileblood Register", u"Книга Нечистокровных"},
     {200, u"Beckoning Bell", u"Зовущий колокол"},
     {205, u"Small Resonant Bell", u"Малый звонкий колокол"},
     {225, u"Sinister Resonant Bell", u"Зловещий звонкий колокол"},
@@ -20026,6 +20031,12 @@ void TickBbscPresence() {
     BbscPresence next;
     const u32 map = GetCurrentPackedMap();
     next.in_game = IsUsablePackedMap(map);
+#ifdef BBSC_MOD
+    const u64 register_slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
+    const u64 register_data = ReadablePointer(register_slots, 0x10) ? ReadValue<u64>(register_slots, 8) : 0;
+    const s32 register_level = ReadablePointer(register_data, 0x80) ? ReadValue<s32>(register_data, 0x78) : 0;
+    BbscMod::TickSessionRegister(register_level, next.in_game && GetLocalPlayerCharacter() != 0);
+#endif
     if (next.in_game) {
         next.area = BbscAreaName(map);
     }

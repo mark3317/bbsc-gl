@@ -60,6 +60,7 @@ void StartRelay();
 void StartP2PChannel(); // bbsc_channel.cpp
 bool GameServerIsPublic(std::string* host_out); // bbsc_relay.cpp
 void InstallHttpWrappers();
+void InstallSessionRegister();
 void MaintainSummonLifecycle();
 } // namespace BbscMod
 namespace Core::Bbsc {
@@ -423,6 +424,7 @@ DWORD WINAPI Worker(void*) {
     BbscMod::StartRelay();
     BbscMod::StartP2PChannel();
     BbscMod::InstallHttpWrappers();
+    BbscMod::InstallSessionRegister();
     Core::Bbsc::InstallPadWrapper();
     LOG_INFO(Mod, "BBSC mod ready after {} ms", GetTickCount() - started);
 

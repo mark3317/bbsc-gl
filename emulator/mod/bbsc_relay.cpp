@@ -32,6 +32,7 @@
 
 #include "common/types.h"
 #include "core/bloodborne_re.h"
+#include "bbsc_register.h"
 #include "core/libraries/np/np_signaling/np_signaling_bbsc.h"
 #include "core/libraries/np/np_signaling/np_signaling_helpers.h"
 
@@ -264,6 +265,7 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         std::memcpy(&player, wrapped.data() + 1, 4);
         std::memcpy(&session, wrapped.data() + 5, 4);
         if (session != 0 && session == SessionKey() && player != own_id) {
+            BbscMod::ForgetSessionRegister(player);
             Core::Bloodborne::OnBbscPeerLeft(player, player == session);
         }
         return;
@@ -297,7 +299,10 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
     const auto from_our_host = [&] {
         return guest && sender_hosting && sender == Core::Bloodborne::GetBbscRelayHost();
     };
-    if (frame[4] == SessionLeaveType && session != 0 && session == SessionKey()) {
+    if (frame[4] == 0x2B && session != 0 && session == SessionKey()) {
+        BbscMod::ReceiveSessionRegister(sender, session, frame.data(), static_cast<u32>(frame.size()));
+    } else if (frame[4] == SessionLeaveType && session != 0 && session == SessionKey()) {
+        BbscMod::ForgetSessionRegister(sender);
         Core::Bloodborne::OnBbscPeerLeft(sender, from_our_host());
     } else if (frame[4] == FollowType && frame.size() >= 0x1E) {
         FollowPacket follow{};
@@ -508,6 +513,9 @@ bool GameServerIsPublic(std::string* host_out) {
 }
 
 // Frames the P2P channel received (same format as the relay's, without the length).
+u32 RegisterSessionKey() { return SessionKey(); }
+u32 SendRegisterPacket(const void* data, u32 size) { return SendFrame(data, size); }
+
 void RelayDispatch(const std::vector<u8>& wrapped) {
     std::scoped_lock lock{dispatch_mutex};
     Dispatch(wrapped);
