@@ -23,7 +23,7 @@ using u64=uint64_t;using u32=uint32_t;using u16=uint16_t;using u8=uint8_t;using 
 #define LOG_WARNING(...)
 ''' + strip(header) + strip(rules) + r'''
 using Core::Bloodborne::DregLife;
-struct GuestRegisterSnapshot {u64 rax=0,rcx=0,r15=0;};
+struct GuestRegisterSnapshot {u64 rax=0,rcx=0,r15=0,rbp=5000;};
 std::vector<u16> credited;
 namespace BbscMod {
 u32 RegisterSessionKey(){return 42;}
@@ -53,6 +53,7 @@ u64 InventoryFitsOffset=(u64)&Fits,InventoryAddOffset=(u64)&Add;
 int main(){
  memory[1]=1000;memory[1000+0x30]=5;memory[1000+0x38]=2000;
  for(u64 i=0;i<5;++i){memory[2000+i*0x38]=(i+1)*100;memory[(i+1)*100+8]=10000+i;}
+ memory[5000-0x31c]=100;memory[5000-0x54]=100;
  GuestRegisterSnapshot hit;
  hit.rcx=100;
  for(u64 killer=200;killer<=500;killer+=100){
@@ -67,6 +68,8 @@ int main(){
  bbsc_dreg_life.Observe(100,42,true,100);hp=20;hit.r15=200;BbscDregLethalHook(0,&hit);assert(credited.size()==before);
  hp=0;hit.r15=400;BbscDregLethalHook(0,&hit);assert(credited.back()==4); // finisher, not earlier attacker
  before=credited.size();
+ bbsc_dreg_life.Observe(100,42,true,100);memory[5000-0x31c]=0;hit.r15=200;BbscDregLethalHook(0,&hit);assert(credited.size()==before); // already dead before this hit
+ memory[5000-0x31c]=100;
  GuestRegisterSnapshot periodic;periodic.rax=100;periodic.rcx=10002;
  bbsc_dreg_life.Observe(100,42,true,100);BbscDregLethalHook(1,&periodic);assert(credited.size()==before+1&&credited.back()==3);
  bbsc_dreg_life.Observe(100,42,true,100);periodic.rcx=0xffffffff;BbscDregLethalHook(1,&periodic);assert(credited.size()==before+1); // no guessed environmental killer
