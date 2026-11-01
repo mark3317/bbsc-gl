@@ -37,7 +37,9 @@ bool bbsc_boss_at_own_death=true;
 s64 bbsc_boss_bar_seen_ms=100, bbsc_boss_killed_ms=50;
 bool selected=true, writable=true, chalice_ready=true, valid=true;
 bool bbsc_chalice_transition_owned=false;
-int clears=0, transitions=0, notified=0;
+int clears=0, transitions=0, notified=0, penalties=0;
+bool bbsc_wipe_restock_pending=false;
+bool BbscApplyDeathPenalty(std::string_view) { ++penalties; return true; }
 u32 selected_map=24;
 template<class T> T ReadValue(u64 p,size_t off) {
     if(p==image_base+BossGaugePointerOffset) return static_cast<T>(gauge);
@@ -87,16 +89,17 @@ int main() {
     arm(); SummonPlacementDescriptor to;
     selected=false;
     assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
-    assert(clears==1 && BossFightActive()); // failed request preserves current encounter
+    assert(clears==1 && BossFightActive() && penalties==0); // failed request preserves current encounter
     selected=true; selected_map=25;
     assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
-    assert(clears==1 && BossFightActive());
+    assert(clears==1 && BossFightActive() && penalties==0);
     selected_map=24; writable=false;
     assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
-    assert(clears==1 && BossFightActive());
+    assert(clears==1 && BossFightActive() && penalties==0);
     writable=true;
     assert(RequestBbscSessionWarp(0x400000,to,"wipe"));
     assert(clears==2 && transitions==2 && !bbsc_chalice_transition_owned);
+    assert(penalties==1 && bbsc_wipe_restock_pending);
     arm(); to.packed_region=29; chalice_ready=false;
     assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
     assert(clears==2 && BossFightActive());
@@ -104,6 +107,11 @@ int main() {
     handles={40,-1,-1}; assert(BossFightActive());
 }
 '''
+warp = function('bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std::string_view why)')
+assert warp.index('BbscApplyDeathPenalty') < warp.index('reinterpret_cast<StageTransition>')
+reinsert = function('void TickBbscReinsertV8()')
+assert 'now - bbsc_v8_ready_since_ms < BbscReinsertSettleMs' not in reinsert
+assert reinsert.index('TickBbscRejoinLines();') < reinsert.index('set_state(task, 4)')
 home = function('void TickBbscStrandedGuest()')
 assert home.index('ClearBbscBossContext("before return home")') < home.index(
     'reinterpret_cast<Transition>(image_base + 0x013CDE30)()')

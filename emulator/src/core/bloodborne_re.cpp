@@ -3690,6 +3690,12 @@ constexpr u64 MemberIdEqualsOffset = 0x00CA1C70;
 constexpr s64 BbscReinsertSettleMs = 2'500;
 constexpr s64 BbscReinsertTimeoutMs = 120'000;
 
+void ArmBbscRejoinLines(bool guest, u32 target_map, s64 for_ms);
+void TickBbscRejoinLines();
+bool BbscApplyDeathPenalty(std::string_view why);
+void BbscRestockFromStorage(std::string_view why);
+bool bbsc_wipe_restock_pending = false;
+
 s32 bbsc_v8_saved_type = -1;
 s32 bbsc_v8_original_type = -1;     // [[0x0553B188]+4] before we swap it
 bool bbsc_v8_original_swapped = false;
@@ -3996,10 +4002,11 @@ void TickBbscReinsertV8() {
     if (bbsc_v8_ready_since_ms == 0) {
         bbsc_v8_ready_since_ms = now;
     }
-    if (now - bbsc_v8_ready_since_ms < BbscReinsertSettleMs) {
-        return;
-    }
+    // Loading is over and the local character is alive. Restart missing peers now;
+    // waiting another 2.5 seconds made them appear after the screen had faded in.
     bbsc_v8_pending = false;
+    ArmBbscRejoinLines(GetSessionState() == 6, GetCurrentPackedMap(), 15'000);
+    TickBbscRejoinLines();
     LogBbscSessionShape("v8 respawned", true);
 
     const s32 type_now = GetLocalPlayerType();
@@ -4834,6 +4841,12 @@ bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std
     const u64 rules = ReadValue<u64>(image_base + SummonSessionRulesPointerOffset, 0);
     if (ReadablePointer(rules, 0x88) && HasMemoryAccess(rules + 0x84, 4, MemoryProt::CpuWrite)) {
         WriteValue<s32>(rules, 0x84, 3);
+    }
+    if (why == "wipe") {
+        // Before StageTransition / ArmBbscRejoin snapshots the carried echoes.
+        // The death snapshot is consumed once, so a deferred retry cannot charge twice.
+        BbscApplyDeathPenalty("before guest wipe reload");
+        bbsc_wipe_restock_pending = true;
     }
     StartBbscLoadCover(why); // already on for the summon when this is the cross-map second reload
     // A kept guest bypasses the vanilla failed-mission teardown. Clear the old encounter
@@ -11297,6 +11310,7 @@ void TickBbscPostLoadRecovery() {
     }
     if (!recover_death_load) return;
     if (state != 3 && state != 6) {
+        bbsc_wipe_restock_pending = false;
         recover_death_load = false; // normal home/solo death belongs to the native scripts
         return;
     }
@@ -11307,8 +11321,13 @@ void TickBbscPostLoadRecovery() {
         last_revive_ms = now;
         ++revive_attempts;
         alive = BbscRespawnInPlace("completed co-op death load");
+        if (alive) bbsc_wipe_restock_pending = false; // respawn already restocked
     }
     if (alive) {
+        if (bbsc_wipe_restock_pending) {
+            BbscRestockFromStorage("completed guest wipe load");
+            bbsc_wipe_restock_pending = false;
+        }
         recover_death_load = false;
         bbsc_spectate_active = false;
         bbsc_spectate_releasing = false;
