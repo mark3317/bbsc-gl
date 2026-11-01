@@ -33,7 +33,7 @@ echo clang-cl: %CLANGCL%>> "%LOG%"
 set EXT=%SRC%..\externals
 if not exist "%EXT%\fmt\include\fmt\format.h" (echo fmt submodule missing: git submodule update --init emulator/externals/fmt emulator/externals/xbyak>> "%LOG%" & goto fail)
 set FLAGS=%CLMODE% /nologo /std:c++latest /O2 /MT /EHsc /W3 /DNOMINMAX /DWIN32_LEAN_AND_MEAN /D_CRT_SECURE_NO_WARNINGS /DBBSC_MOD /DFMT_HEADER_ONLY /I "%SRC%shim" /I "%SRC%..\src" /I "%EXT%\fmt\include" /I "%EXT%\xbyak"
-"%CLANGCL%" %FLAGS% /LD "%SRC%bbsc_mod.cpp" "%SRC%bbsc_hooks.cpp" "%SRC%bbsc_relay.cpp" "%SRC%bbsc_channel.cpp" "%SRC%bbsc_http.cpp" "%SRC%..\src\core\bbsc_memscan.cpp" "%SRC%..\src\core\bloodborne_re.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\bbsc.dll" /link ws2_32.lib winhttp.lib user32.lib >> "%LOG%" 2>&1 || goto fail
+"%CLANGCL%" %FLAGS% /LD "%SRC%bbsc_mod.cpp" "%SRC%bbsc_hooks.cpp" "%SRC%bbsc_relay.cpp" "%SRC%bbsc_channel.cpp" "%SRC%bbsc_register.cpp" "%SRC%bbsc_http.cpp" "%SRC%..\src\core\bbsc_memscan.cpp" "%SRC%..\src\core\bloodborne_re.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\bbsc.dll" /link ws2_32.lib winhttp.lib user32.lib >> "%LOG%" 2>&1 || goto fail
 "%CLANGCL%" %FLAGS% "%SRC%bbsc_launch.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\bbsc-launch.exe" /link user32.lib comdlg32.lib /SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup >> "%LOG%" 2>&1 || goto fail
 copy /y "%SRC%mod.json" "%OUT%\mod.json" >nul
 echo exit=0 >> "%LOG%"

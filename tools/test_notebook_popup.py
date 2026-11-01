@@ -34,11 +34,11 @@ void clear(){inventories[1].clear();inventories[2].clear();popups.clear();full=f
 int main(){GuestRegisterSnapshot pickup;
  clear();TickBbscDuelBellGive(&pickup);assert(popups.empty());
  inventories[2].insert(0x40000078);TickBbscDuelBellGive(&pickup);assert(popups.empty());
- inventories[1].insert(0x40000078);TickBbscDuelBellGive(&pickup);assert((popups==std::vector<u32>{200,205,225,111})&&notice==0);
- TickBbscDuelBellGive(&pickup);assert(popups.size()==4);
- clear();inventories[1].insert(0x40000078);inventories[2].insert(0x400000c8);TickBbscDuelBellGive(&pickup);assert(popups.size()==3);
+ inventories[1].insert(0x40000078);TickBbscDuelBellGive(&pickup);assert((popups==std::vector<u32>{130,200,205,225,111})&&notice==0);
+ TickBbscDuelBellGive(&pickup);assert(popups.size()==5);
+ clear();inventories[1].insert(0x40000078);inventories[2].insert(0x400000c8);TickBbscDuelBellGive(&pickup);assert(popups.size()==4);
  clear();inventories[1].insert(0x40000078);fail=true;TickBbscDuelBellGive(&pickup);assert(popups.empty());
- fail=false;full=true;TickBbscDuelBellGive(&pickup);assert(popups.size()==4&&inventories[2].size()==4);
+ fail=false;full=true;TickBbscDuelBellGive(&pickup);assert(popups.size()==5&&inventories[2].size()==5);
  clear();inventories[1].insert(0x40000078);state=6;TickBbscDuelBellGive(&pickup);assert(popups.empty());
  state=0;own=0;TickBbscDuelBellGive(&pickup);assert(popups.empty());
 }
@@ -46,4 +46,4 @@ int main(){GuestRegisterSnapshot pickup;
 build=root/'build';cpp=build/'test_notebook_popup.cpp';exe=cpp.with_suffix('.exe');cpp.write_text(fixture,encoding='utf8')
 subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20',str(cpp),'-o',str(exe)],check=True)
 env=dict(os.environ);env['PATH']='C:/msys64/clang64/bin;'+env.get('PATH','');subprocess.run([str(exe)],env=env,check=True)
-print('PASS: real kit function: Notebook carried/storage gate, same-queue four popups, no duplicate/overlay, existing goods, failed add, storage fallback, guest/foreign world guards')
+print('PASS: real kit function: Notebook carried/storage gate, same-queue five popups, no duplicate/overlay, existing goods, failed add, storage fallback, guest/foreign world guards')
