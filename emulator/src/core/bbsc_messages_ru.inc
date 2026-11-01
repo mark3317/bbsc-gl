@@ -124,7 +124,7 @@
 {30, 142380, u"Побеждён: <?npcNameId@899000?>."}, // <?npcNameId@899000?> defeated.
 {30, 106199, u"Босс побеждён."}, // Boss defeated.
 {30, 102002, u"Захватчик <?joinName?> вторгся в ваш мир!"}, // Invader <?joinName?> entered your world!
-{30, 109000, u"Появилась женщина-звонарь.\nВозможно вторжение."}, // A bell-ringing woman appeared.\nAn invader may come.
+{30, 109000, u"Появилась женщина-звонарь.\nМожет прийти захватчик."}, // A bell-ringing woman appeared.\nAn invader may come.
 {30, 103002, u"Захватчик <?deadName?> убит."}, // Invader <?deadName?> was killed.
 {30, 103003, u"Захватчик <?deadName?> убит."}, // Invader <?deadName?> was killed.
 {30, 103004, u"Захватчик <?deadName?> убит."}, // Invader <?deadName?> was killed.
@@ -162,7 +162,7 @@
 {30, 100110, u"Колокол родства звонит (пароль).\nПоиск хоста..."}, // Kin Bell rung (password).\nLooking for a host to join...
 {30, 101300, u"Хост найден, но он Палач,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is an Executioner, and thus an adversary.
 {30, 101400, u"Хост найден, но он Нечистокровный,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is a Vileblood, and thus an adversary.
-{30, 101500, u"Хост найден, но он опьянённый кровью охотник,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is a blood-addled hunter, and thus an adversary.
+{30, 101500, u"Хост найден, но он охотник смешанной крови,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is a blood-addled hunter, and thus an adversary.
 {30, 10011270, u"Позвоните в Колокол охоты, чтобы позвать\nдругих игроков в свою игру."}, // Ring the Hunt Bell to call\nother players into your game.
 {30, 10011280, u"Прощальный бланк завершает совместную игру."}, // Use the Parting Blank to end co-op.
 {200, 266302, u"Колокол кровожадности"}, // Bloodlust Bell
@@ -192,22 +192,3 @@
 {30, 15000011, u"Вы догнали <?hostName?>."}, // You caught up with <?hostName?>.
 {30, 15000012, u"<?joinName?> догоняет вас."}, // <?joinName?> caught up with you.
 {30, 15000035, u"Вы во Сне Охотника хоста."}, // You are in the host's Hunter's Dream.
-{10, 4016, u"Колокол охоты"}, // Hunt Bell
-{20, 4016, u"Позвоните, чтобы позвать других игроков в свою игру.\nНе тратит Озарение."}, // Ring to call other players into your game.\nCosts no Insight.
-{24, 4016, u"Старый колокол охотников мастерской.\nЕго звон слышен во всех мирах.\n\nПозвоните в него, и охотники, что ответят\nКолоколом родства, придут на вашу охоту.\nВместе вы пройдёте эту ночь: через каждую\nлампу, каждую смерть и каждого зверя."}, // An old bell carried by the hunters of the\nworkshop, its toll heard across every world.\n
-{10, 4121, u"Колокол родства"}, // Kin Bell
-{20, 4121, u"Позвоните, чтобы присоединиться к игре другого игрока.\nНе тратит Озарение."}, // Ring to join another players game.\nCosts no Insight.
-{24, 4121, u"Малый колокол Хора. Его звон тих,\nно верен.\n\nОхотник, услышавший Колокол охоты, может\nответить им и перейти в другой мир,\nчтобы встать рядом с родичем. Враг, убитый\nтам, погибает для обоих."}, // A small bell of the choir, its chime\nfaint, but true.\n\nHunters who hear a Hunt Bell may
-{10, 11201, u"Колокол кровожадности"}, // Bloodlust Bell
-{20, 11201, u"Позвоните, чтобы вторгнуться в мир другого игрока.\nНе тратит Озарение."}, // Ring to invade another players world.\nCosts no Insight.
-{24, 11201, u"Колокол, что звучит лишь для опьянённых кровью.\n\nНи одна звонарка не нужна, чтобы его\nуслышали: каждый охотник этой ночи —\nдобыча, один или в компании, где бы он ни был.\n\nОхота на охотников не кончается."}, // A bell that sounds only for the blood-drunk.\n\nNo maiden need ring for its toll to be\nhe
-{10, 11251, u"Прощальный бланк"}, // Parting Blank
-{20, 11251, u"Завершает совместную игру.\nГость уходит домой, хост отправляет домой всех."}, // Use to end co-op.\nGuests go home; the host sends everyone home.
-{24, 11251, u"Патрон с беззвучным порохом.\n\nЕго неслышный хлопок рвёт резонанс,\nчто связывает охотников разных миров,\nи каждый возвращается в свою ночь."}, // A blank of silent powder.\n\nIts inaudible burst breaks the resonance\nbinding hunters of 
-{20, 200, u"Больше не используется. Возьмите Колокол охоты."}, // No longer used. Use the Hunt Bell.
-{20, 205, u"Больше не используется. Возьмите Колокол родства."}, // No longer used. Use the Kin Bell.
-{20, 225, u"Больше не используется. Возьмите Колокол кровожадности."}, // No longer used. Use the Bloodlust Bell.
-{20, 111, u"Больше не используется. Возьмите Прощальный бланк."}, // No longer used. Use the Parting Blank.
-{10, 4313, u"Колокол дуэли"}, // Duel Bell
-{20, 4313, u"Позвоните в совместной игре, чтобы включить PvP\nмежду игроками. Позвоните ещё раз, чтобы выключить."}, // Ring in co-op to turn on PvP between players.\nRing again to turn it off.
-{24, 4313, u"Треснувший колокол с резким, нестройным звоном.\n\nПозвоните в него на совместной охоте, и\nрезонанс, что связывает охотников, станет\nсоперничеством: они смогут бить друг друга.\n\nПозвоните ещё раз, чтобы вернуть прежние узы.\nТолько хост принимает решение; колокол гостя\nлишь передаёт просьбу."}, // A cracked bell with a sour, discordant chime.\n\nRing it while hunting together, and the\n
