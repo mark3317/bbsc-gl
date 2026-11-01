@@ -301,6 +301,8 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
     };
     if (frame[4] == 0x2B && session != 0 && session == SessionKey()) {
         BbscMod::ReceiveSessionRegister(sender, session, frame.data(), static_cast<u32>(frame.size()));
+    } else if (frame[4] == 0x2C && session != 0 && session == SessionKey()) {
+        BbscMod::ReceiveRegisterKill(sender, session, frame.data(), static_cast<u32>(frame.size()));
     } else if (frame[4] == SessionLeaveType && session != 0 && session == SessionKey()) {
         BbscMod::ForgetSessionRegister(sender);
         Core::Bloodborne::OnBbscPeerLeft(sender, from_our_host());
@@ -514,6 +516,7 @@ bool GameServerIsPublic(std::string* host_out) {
 
 // Frames the P2P channel received (same format as the relay's, without the length).
 u32 RegisterSessionKey() { return SessionKey(); }
+u32 RegisterOwnId() { return own_id; }
 u32 SendRegisterPacket(const void* data, u32 size) { return SendFrame(data, size); }
 
 void RelayDispatch(const std::vector<u8>& wrapped) {
