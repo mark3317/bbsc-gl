@@ -169,56 +169,6 @@ replace(15000011, r'^\*$', 'You caught up with <?hostName?>.')
 replace(15000012, r'^\*$', '<?joinName?> caught up with you.')
 replace(15000035, r'^\*$', "You are in the host's Hunter's Dream.")
 
-# The Duel Bell (PvP toggle, bloodborne_re.cpp "PvP toggle item"): goods 4313 is an unused key item
-# with empty slots in the item name / info / caption tables (msg/engus/item.msgbnd: 10, 20, 24).
-items = bbfiles.read_bnd4(bbfiles.read_dcx(bbfiles.GAME + r'\msg\engus\item.msgbnd.dcx'))
-for _, (fid, data) in items.items():
-    by_category[fid] = bbfiles.read_fmg(data)
-
-
-def fill(msg_id, text, category):
-    """An item text slot that exists but is empty in the game."""
-    if msg_id not in by_category[category]:
-        raise SystemExit('message %d/%d has no slot' % (category, msg_id))
-    if by_category[category][msg_id] is not None:
-        raise SystemExit('message %d/%d is not empty: %r' % (category, msg_id,
-                                                             by_category[category][msg_id]))
-    entries.append((category, msg_id, text, '(empty)'))
-
-
-fill(4016, 'Hunt Bell', 10)
-fill(4016, 'Ring to call other players into your game.\nCosts no Insight.', 20)
-fill(4016, 'An old bell carried by the hunters of the\nworkshop, its toll heard across every world.\n\n'
-           'Ring it, and hunters who answer with a\nKin Bell may join your hunt. Together you\n'
-           'walk the night, through every lamp,\ndeath and dream, until the hunt is done.', 24)
-fill(4121, 'Kin Bell', 10)
-fill(4121, 'Ring to join another player''s game.\nCosts no Insight.', 20)
-fill(4121, 'A small bell of the choir, its chime\nfaint, but true.\n\n'
-           'Hunters who hear a Hunt Bell may answer\nwith it, crossing into another world to\n'
-           'stand at the side of kin. What is slain\nthere is slain for both.', 24)
-fill(11201, 'Bloodlust Bell', 10)
-fill(11201, 'Ring to invade another player''s world.\nCosts no Insight.', 20)
-fill(11201, 'A bell that sounds only for the blood-drunk.\n\n'
-           'No maiden need ring for its toll to be\nheard: every hunter of the night is prey,\n'
-           'alone or in company, wherever they walk.\n\nThe hunt for hunters never ends.', 24)
-fill(11251, 'Parting Blank', 10)
-fill(11251, 'Use to end co-op.\nGuests go home; the host sends everyone home.', 20)
-fill(11251, 'A blank of silent powder.\n\n'
-           'Its inaudible burst breaks the resonance\nbinding hunters of different worlds, and\n'
-           'each returns to their own night.', 24)
-# The vanilla bells and the Silencing Blank cannot be used any more; their info says what replaced them.
-replace(200, r'.', 'No longer used. Use the Hunt Bell.', category=20)
-replace(205, r'.', 'No longer used. Use the Kin Bell.', category=20)
-replace(225, r'.', 'No longer used. Use the Bloodlust Bell.', category=20)
-replace(111, r'.', 'No longer used. Use the Parting Blank.', category=20)
-fill(4313, 'Duel Bell', 10)
-fill(4313, 'Ring in co-op to turn on PvP between players.\nRing again to turn it off.', 20)
-fill(4313, 'A cracked bell with a sour, discordant chime.\n\n'
-           'Ring it while hunting together, and the\nresonance binding the hunters turns to\n'
-           'rivalry: they may strike one another as foes.\n\n'
-           'Ring it again to restore the old bond.\nOnly the beckoner decides; a cooperator\n'
-           'who rings it merely asks.', 24)
-
 
 def cpp(text):
     out = []
