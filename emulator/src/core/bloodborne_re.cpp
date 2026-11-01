@@ -4876,6 +4876,13 @@ bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std
     return true;
 }
 
+bool BbscChaliceArrivalReady(u32 map);
+bool BbscChaliceNeedsLoad(u32 map);
+bool BbscMapResident(u32 packed_map);
+
+bool BbscJoinDestinationKnown();
+bool BbscJoinWorldMatchesHost();
+
 void TickBbscJoinTeleport() {
     if (BbscQuitInProgress()) return;
     static bool done = false;
@@ -4915,7 +4922,11 @@ void TickBbscJoinTeleport() {
         bbsc_join_teleport_done = true;
         return;
     }
-    if (BbscChaliceJoinNeedsFollow()) {
+    if (!BbscJoinDestinationKnown()) {
+        stable_since_ms = 0;
+        return; // wait for map identity, never infer it from remote coordinates
+    }
+    if (!BbscJoinWorldMatchesHost() || BbscChaliceJoinNeedsFollow()) {
         // A summon can finish with a valid host transform while the guest still has its old map.
         // Never put dungeon coordinates into that map. The scoped follow owns the recovery load.
         done = true;
@@ -4925,7 +4936,7 @@ void TickBbscJoinTeleport() {
             std::scoped_lock lock{seamless_placement_mutex};
             bbsc_connect_first_placement.reset();
         }
-        LOG_WARNING(Debug, "BBSC chalice: initial summon has not mounted the host dungeon; handing off to scoped follow without teleporting");
+        LOG_WARNING(Debug, "BBSC join: initial summon destination does not match host world; handing off to scoped follow without teleporting");
         BBSC_TIMELINE("CHALICE", "initial summon: scoped follow owns recovery; no cross-world teleport");
         return;
     }
@@ -5442,6 +5453,34 @@ bool BbscChaliceJoinNeedsFollow() {
            (GetCurrentPackedMap() != target || !BbscChaliceArrivalReady(target) ||
             BbscChaliceNeedsLoad(target));
 }
+
+// Remote character transforms carry no map identity. A synced transform can belong to
+// the host's dungeon while the native summon has actually loaded our own Dream.
+bool BbscJoinDestinationKnown() {
+    std::scoped_lock lock{bbsc_follow_mutex};
+    const auto& host = bbsc_follow_latest;
+    const s64 age = SteadyNowMs() - host.received_ms;
+    return host.received_ms != 0 && age >= 0 && age < 6'000 &&
+           IsUsablePackedMap(host.packed_map);
+}
+
+bool BbscJoinWorldMatchesHost() {
+    const u32 here = GetCurrentPackedMap();
+    u32 target;
+    {
+        std::scoped_lock lock{bbsc_follow_mutex};
+        target = bbsc_follow_latest.packed_map;
+    }
+    if (!IsUsablePackedMap(here) || !IsUsablePackedMap(target)) return false;
+    if (Chalice::IsMap(target)) {
+        return here == target && BbscChaliceArrivalReady(target) &&
+               !BbscChaliceNeedsLoad(target);
+    }
+    return here == target ||
+           ((here >> 24) == (target >> 24) && BbscMapResident(target));
+}
+
+
 
 void TickBbscChaliceBorrow() {
     static s64 last_ms = 0;
@@ -13285,6 +13324,12 @@ void SyncBbscLedgerSlot() {
     bbsc_ledger_dirty = true;
 }
 
+constexpr std::array<u32, 25> BbscSharedKeyItems{
+    4000, 4006, 4009, 4010, 4012, 4013, 4015, 4018, 4019, 4020,        // keys
+    4110, 4111, 4112, 4113, 4114, 4115, 4116, 4117, 4118, 4119, 4120,  // hunter badges
+    4102, 4103, 4104, 4105};                                           // workshop tools
+static_assert(BbscSharedKeyItems.size() <= 32, "the packet carries one bit per item in a u32");
+
 bool BbscLedgerWatched(u32 code); // key / unique: kept by the trip journal, see below
 
 void NoteBbscLedgerGiven(BbscLedgerSource source, s32 lot, u32 flag, u32 code, s32 count) {
@@ -13292,7 +13337,8 @@ void NoteBbscLedgerGiven(BbscLedgerSource source, s32 lot, u32 flag, u32 code, s
         return;
     }
     const s32 now_count = BbscLedgerCount(code);
-    const bool kept = BbscLedgerAddable(code) && BbscLedgerWatched(code);
+    const bool kept = BbscLedgerAddable(code) &&
+                      (source == BbscLedgerSource::Key || BbscLedgerWatched(code));
     const s64 now = SteadyNowMs();
     {
         std::scoped_lock lock{bbsc_ledger_mutex};
@@ -13955,13 +14001,18 @@ bool ReconcileBbscLedgerAtHome() {
     return true;
 }
 
-// The trip home is over (60 s): its entries and its journal are done.
+// The trip home is over (60 s): close transient entries, retain permanent shared keys.
 void FinishBbscTripAtHome() {
     std::scoped_lock lock{bbsc_ledger_mutex};
     std::erase_if(bbsc_ledger,
                   [](const BbscLedgerEntry& e) { return e.state == BbscLedgerState::Given; });
     bbsc_ledger_host_counts.clear();
-    bbsc_ledger_trip.clear();
+    // Shared keys are permanent character receipts, including across restarts and rejoins.
+    // Keep them in the existing on-disk trip journal; other trip items retain their lifecycle.
+    std::erase_if(bbsc_ledger_trip, [](const auto& entry) {
+        return std::ranges::find(BbscSharedKeyItems, entry.first ^ 0x40000000u) ==
+               BbscSharedKeyItems.end();
+    });
 
     bbsc_ledger_dirty = true;
     WriteBbscLedgerLocked();
@@ -21940,11 +21991,6 @@ namespace {
 // Workshop Tool in the host's world, got its window but not the item, and could no longer use the
 // Memory Altar at home - a softlock of their own saves. The tools are now shared like the keys: a
 // guest whose host owns one gets it (appended after the badges: older builds ignore the new bits).
-constexpr std::array<u32, 25> BbscSharedKeyItems{
-    4000, 4006, 4009, 4010, 4012, 4013, 4015, 4018, 4019, 4020,        // keys
-    4110, 4111, 4112, 4113, 4114, 4115, 4116, 4117, 4118, 4119, 4120,  // hunter badges
-    4102, 4103, 4104, 4105};                                           // workshop tools
-static_assert(BbscSharedKeyItems.size() <= 32, "the packet carries one bit per item in a u32");
 constexpr u8 BbscKeyItemsType = 0x29;
 constexpr u32 BbscGoodsType = 0x40000000;
 std::atomic<u32> bbsc_host_key_items{0};
@@ -22044,6 +22090,8 @@ void TickBbscSharedKeyItems() {
     // Do not award into the temporary bag during loading; bound failed-grant retries.
     if (now - guest_ready_ms < 3'000 || now - guest_check_ms < 1'000) return;
     guest_check_ms = now;
+    // The ledger restores this generation's temporary phantom inventory first.
+    if (!BbscGuestLoadItemsReady()) return;
     const u32 items = bbsc_host_key_items.load();
     if (items == 0 || (items & ~last_applied) == 0) {
         return;
@@ -22060,7 +22108,20 @@ void TickBbscSharedKeyItems() {
             continue;
         }
         const u32 id = BbscSharedKeyItems[i];
-        if (!BbscOwnsGoods(player, id)) {
+        const u32 code = BbscGoodsType | id;
+        bool received = false;
+        {
+            std::scoped_lock lock{bbsc_ledger_mutex};
+            const auto it = bbsc_ledger_trip.find(code);
+            received = it != bbsc_ledger_trip.end() && it->second > 0;
+        }
+        if (received) {
+            // A receipt is ownership; restoration is quiet and never a new grant.
+            if (BbscLedgerCount(code) == 0 && !AddBbscLedgerItem(code, 1)) continue;
+            last_applied |= bit;
+            continue;
+        }
+        if (BbscLedgerCount(code) == 0) {
             add(player + 0x1D0, BbscGoodsType, id, 1, 1, 1, 0);
             const bool now_owned = BbscOwnsGoods(player, id);
             if (now_owned) {
