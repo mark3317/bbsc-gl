@@ -41,6 +41,7 @@ prefix = r'''
 using namespace Core::Bloodborne;
 #undef PS4_SYSV_ABI
 #define PS4_SYSV_ABI
+void NotifyBbscHostDeathReload() {}
 #define LOG_INFO(...)
 #define LOG_WARNING(...)
 #define LOG_ERROR(...)

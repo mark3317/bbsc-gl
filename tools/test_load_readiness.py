@@ -1,0 +1,59 @@
+"""Production inventory barrier: never open a guest world before its generation is reconciled."""
+from pathlib import Path
+import os, subprocess, tempfile
+src=(Path(__file__).resolve().parents[1]/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+def function(signature):
+ start=src.index(signature+' {'); end=src.index('{',start)+1; depth=1
+ while depth:
+  depth+=(src[end]=='{')-(src[end]=='}'); end+=1
+ return src[start:end]
+prefix=r'''
+#include <atomic>
+#include <cassert>
+#include <cstdint>
+#include <string>
+#include <string_view>
+using u64=uint64_t; using u32=uint32_t; using u8=uint8_t;
+#define LOG_INFO(...)
+#define BBSC_TIMELINE(...)
+int state=6, loading=0, fades=0; u64 global=0x10000;
+u64 GetGlobalState(){return global;}
+int GetSessionState(){return state;}
+bool ReadablePointer(u64 p,size_t){return p!=0;}
+template<class T>T ReadValue(u64,size_t){return static_cast<T>(loading);}
+std::atomic<u64> bbsc_world_load_pending{0};
+std::atomic<bool> bbsc_reload_finish_pending{false};
+std::atomic<u32> bbsc_load_generation{1};
+u32 bbsc_ledger_guest_ready_generation=0;
+struct Cover { bool active=true,own_screen=false; long long started_ms=0; std::string why="summon"; } bbsc_load_cover;
+std::string bbsc_load_cover_pending_end;
+void KeepClosingBbscLoadingScreen(std::string_view){}
+bool BbscCurtainActive(){return false;}
+void BbscFadeTo(float,float){++fades;}
+constexpr float BbscCurtainFadeInS=1;
+long long SteadyNowMs(){return 3000;}
+'''
+code=prefix+function('bool BbscGuestLoadItemsReady()')+function('void EndBbscLoadCover(std::string_view how)')+r'''
+int main(){
+ EndBbscLoadCover("placed");assert(bbsc_load_cover.active&&fades==0);
+ bbsc_ledger_guest_ready_generation=1;loading=1;
+ EndBbscLoadCover("placed");assert(fades==0);
+ loading=0;bbsc_world_load_pending=global;
+ EndBbscLoadCover("placed");assert(fades==0);
+ bbsc_world_load_pending=0;bbsc_reload_finish_pending=true;
+ EndBbscLoadCover("placed");assert(fades==0);
+ bbsc_reload_finish_pending=false;
+ EndBbscLoadCover("placed");assert(fades==1&&!bbsc_load_cover.active);
+ EndBbscLoadCover("placed");assert(fades==1);
+ bbsc_load_cover.active=true;bbsc_load_generation=2;
+ EndBbscLoadCover("placed");assert(fades==1); // previous load is not ready
+ EndBbscLoadCover("time limit");assert(fades==2); // bounded failure escape
+ bbsc_load_cover.active=true;state=0;
+ EndBbscLoadCover("no session");assert(fades==3); // departure cannot wait for guest items
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+ cpp=Path(tmp)/'test.cpp'; exe=Path(tmp)/'test.exe';cpp.write_text(code)
+ subprocess.run([os.environ.get('CXX','g++'),'-std=c++20',str(cpp),'-o',str(exe)],check=True)
+ subprocess.run([str(exe)],check=True)
+print('Production load readiness barrier: PASS')

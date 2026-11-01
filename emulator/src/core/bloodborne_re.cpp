@@ -4482,6 +4482,7 @@ s64 bbsc_boss_killed_ms = 0;
 // death step can arrive more than 15 seconds later; a time-limited bar cache is insufficient.
 bool bbsc_boss_at_own_death = false;
 std::atomic<u32> bbsc_load_generation{0}; // incremented after an actual load completes
+std::atomic<u64> bbsc_world_load_pending{0}; // spawn-resolution callback also runs on ordinary Continue
 std::atomic<bool> bbsc_reload_finish_pending{false}; // native load callback; ticks may pause in loads
 u32 bbsc_spectate_load_generation = 0;
 
@@ -8243,11 +8244,15 @@ bool BbscLoadCoverEnabled() {
     return enabled;
 }
 
+bool BbscGuestLoadItemsReady();
+std::string bbsc_load_cover_pending_end;
+
 void StartBbscLoadCover(std::string_view why) {
     if (!BbscLoadCoverEnabled() || image_base == 0 || bbsc_load_cover.active) {
         return; // one cover spans a summon and its second reload
     }
     bbsc_load_cover = {};
+    bbsc_load_cover_pending_end.clear();
     bbsc_load_cover.active = true;
     bbsc_load_cover.started_ms = SteadyNowMs();
     bbsc_load_cover.why = std::string{why};
@@ -8260,6 +8265,13 @@ void EndBbscLoadCover(std::string_view how) {
     if (!bbsc_load_cover.active) {
         return;
     }
+    // Placement completion does not imply inventory reconciliation. Keep the
+    // cover across the final native inventory reset and the existing ledger check.
+    if (GetSessionState() == 6 && how != "time limit" && !BbscGuestLoadItemsReady()) {
+        bbsc_load_cover_pending_end = std::string{how};
+        return;
+    }
+    bbsc_load_cover_pending_end.clear();
     bbsc_load_cover.active = false;
     if (bbsc_load_cover.own_screen) {
         bbsc_load_cover.own_screen = false;
@@ -8277,6 +8289,11 @@ void EndBbscLoadCover(std::string_view how) {
 
 void TickBbscLoadCover() {
     if (!bbsc_load_cover.active) {
+        return;
+    }
+    if (!bbsc_load_cover_pending_end.empty() && BbscGuestLoadItemsReady()) {
+        const std::string reason = bbsc_load_cover_pending_end;
+        EndBbscLoadCover(reason);
         return;
     }
     const s64 now = SteadyNowMs();
@@ -10059,6 +10076,7 @@ struct BbscPendingQuit {
     s32 menu_brake = 0;
     u8 load_wait = 0;
     bool menus_closed = false;
+    bool disconnect_warned = false;
 };
 BbscPendingQuit bbsc_pending_quit;
 BbscPendingQuit bbsc_title_quit; // retained until native character creation on Continue
@@ -10129,6 +10147,17 @@ void LogBbscQuitQueue(u64 manager) {
              ReadablePointer(task, 0x28) ? ReadValue<u32>(task, 0x24) : 0);
 }
 
+// The native StageTransition pairs Stop with remote teardown immediately
+// (0x013CDEF6 -> 0x013CDF17). Waiting for state 0 reverses that order.
+void CleanupBbscDepartingRemotes() {
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x1700)) return;
+    const u64 remote = ReadValue<u64>(global, 0x16F8);
+    if (!ReadablePointer(remote, 0xA0)) return;
+    using Cleanup = void PS4_SYSV_ABI (*)(u64);
+    reinterpret_cast<Cleanup>(image_base + WorldChrManRemoteCleanupOffset)(remote);
+}
+
 void PrepareBbscQuitToTitle() {
     const s32 state = GetSessionState();
     if ((BbscQuitInProgress() && !bbsc_pending_quit.stopping) || bbsc_quit_prepared ||
@@ -10143,6 +10172,7 @@ void PrepareBbscQuitToTitle() {
     bbsc_recover_session_cleanup = true;
     using Stop = u8 PS4_SYSV_ABI (*)(u64);
     reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(manager);
+    CleanupBbscDepartingRemotes();
     LOG_INFO(Debug, "BBSC quit: journals flushed, peers notified; stopped before title load");
 }
 
@@ -10231,8 +10261,8 @@ void TickBbscPendingQuit() {
             HasMemoryAccess(q.menu + 0x2DC, 4, MemoryProt::CpuWrite) &&
             ReadablePointer(lua_man, 0x10) && ReadValue<u64>(lua_man, 8) == q.lua &&
             HasMemoryAccess(q.lua + 0x8D, 1, MemoryProt::CpuWrite)) {
-            WriteValue<s32>(q.menu, 0x2DC, 1);
-            WriteValue<u8>(q.lua, 0x8D, 1);
+            if (ReadValue<s32>(q.menu, 0x2DC) != 1) WriteValue<s32>(q.menu, 0x2DC, 1);
+            if (ReadValue<u8>(q.lua, 0x8D) != 1) WriteValue<u8>(q.lua, 0x8D, 1);
         }
         return;
     }
@@ -10254,6 +10284,10 @@ void TickBbscPendingQuit() {
         WriteValue<u8>(pending.lua, 0x8D, 1);
     }
     if (pending.stopping) {
+        if (ReadValue<s32>(pending.menu, 0x2DC) != 1)
+            WriteValue<s32>(pending.menu, 0x2DC, 1);
+        if (ReadablePointer(pending.lua, 0x8E) && ReadValue<u8>(pending.lua, 0x8D) != 1)
+            WriteValue<u8>(pending.lua, 0x8D, 1);
         if (GetSessionState() == 0 || GetSessionState() == 2 || GetSessionState() == 5) {
             const u64 request = BbscEventRequestAddress();
             if (!request || !HasMemoryAccess(request, sizeof(s32), MemoryProt::CpuWrite)) {
@@ -10262,6 +10296,7 @@ void TickBbscPendingQuit() {
             }
             const auto completed = pending;
             bbsc_title_quit = completed;
+            bbsc_world_load_pending = 0; // a pre-title load cannot acknowledge the next Continue
             bbsc_pending_quit = {};
             // Select title directly instead of starting another world-stage transition.
             WriteValue<s32>(completed.menu, 0x250, 0);
@@ -10269,8 +10304,10 @@ void TickBbscPendingQuit() {
             using ReturnTitle = void PS4_SYSV_ABI (*)();
             reinterpret_cast<ReturnTitle>(image_base + OnReturnTitleOffset)();
             LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; requested title directly (no world reload)");
-        } else if (SteadyNowMs() - pending.started_ms >= BbscQuitSaveTimeoutMs) {
-            CancelBbscPendingQuit("native disconnect timed out; title exit remains cancelled");
+        } else if (!pending.disconnect_warned &&
+                   SteadyNowMs() - pending.started_ms >= 5'000) {
+            pending.disconnect_warned = true;
+            LOG_ERROR(Debug, "BBSC quit: native disconnect exceeds 5 seconds; exit intent retained");
         }
         return;
     }
@@ -10913,6 +10950,9 @@ void ReleaseBbscDeathLocks(std::string_view why) {
 }
 
 void TickBbscStuckLeaveLocks() {
+    // A committed title transition owns these locks; do not report a release
+    // that the release helpers are required to refuse.
+    if (BbscQuitInProgress()) return;
     static s64 last_ms = 0;
     static s64 ended_ms = 0;
     static s64 held_ms = 0;
@@ -11044,6 +11084,7 @@ void TickBbscKeptHome() {
 // StageTransition 0x013CDE30.
 constexpr s64 BbscStrandedMs = 15'000;
 void TickBbscStrandedGuest() {
+    if (BbscQuitInProgress()) return;
     static s64 since_ms = 0;
     static s64 last_ms = 0;
     const s64 now = SteadyNowMs();
@@ -11062,8 +11103,7 @@ void TickBbscStrandedGuest() {
         since_ms = now;
         return;
     }
-    const s64 grace = bbsc_confirmed_departure_ms != 0 &&
-                              now - bbsc_confirmed_departure_ms < 30'000 ? 1'000 : BbscStrandedMs;
+    const s64 grace = 1'000; // state 0 + foreign world is already a completed disconnect
     if (now - since_ms < grace) {
         return;
     }
@@ -11368,6 +11408,7 @@ void InstallBbscQuitHook() {
 void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global) {
     if (native_finish && bbsc_title_quit.global && GetSessionState() == 0 &&
         ReadValue<u8>(global, 0x1592) != 0) {
+        RestoreBbscQuitControls(bbsc_title_quit);
         bbsc_title_quit = {};
         LOG_INFO(Debug, "BBSC quit: Continue created our own character; exit guard released");
     }
@@ -11381,9 +11422,16 @@ void TickBbscLoadState() {
     // The game tick can be suspended for the entire loading screen. ReloadFinish runs
     // during character construction even then; consume it only once loading has ended.
     if (!loading) {
+        const u64 constructed_world = bbsc_world_load_pending.load();
+        const bool world_ready = constructed_world == global && !BbscReturningToTitle() &&
+                                 GetLocalPlayerCharacter() != 0;
+        if (constructed_world == global && !world_ready) return;
         const bool native_finish = bbsc_reload_finish_pending.exchange(false);
-        ReleaseBbscQuitTitleAtLoad(native_finish, global);
-        if (was_loading || native_finish) {
+        if (world_ready || (constructed_world != 0 && constructed_world != global)) {
+            bbsc_world_load_pending = 0;
+        }
+        ReleaseBbscQuitTitleAtLoad(native_finish || world_ready, global);
+        if (was_loading || native_finish || world_ready) {
             ++bbsc_load_generation;
             LOG_INFO(Debug, "BBSC load: completed generation {} (native finish {})",
                      bbsc_load_generation.load(), native_finish);
@@ -11555,12 +11603,13 @@ void TickBbscSessionExit(bool peer_work) {
         if (ReadablePointer(manager, 0x128)) {
             using Stop = u8 PS4_SYSV_ABI (*)(u64);
             reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(manager);
+            CleanupBbscDepartingRemotes();
         }
         bbsc_recover_session_cleanup = true;
     }
     if (bbsc_recover_session_cleanup.load() && GetSessionState() == 0 &&
         ReadValue<u8>(global, 0x1592) != 0 && ReadValue<u8>(global, 0x08) == 0 &&
-        GetCharacterHp(GetLocalPlayerCharacter()) > 0 && !returning_title) {
+        GetCharacterHp(GetLocalPlayerCharacter()) > 0 && !returning_title && !BbscQuitInProgress()) {
         // Same remote cleanup used by the game's StageTransition, without another load or quit.
         const u64 remote = ReadValue<u64>(global, 0x16F8);
         if (ReadablePointer(remote, 0xA0)) {
@@ -13362,6 +13411,14 @@ void FinishBbscLedgerContext() {
 // down while no load ran) lowers what is expected.
 bool bbsc_ledger_loading = false;
 s64 bbsc_ledger_load_end_ms = 0;
+u32 bbsc_ledger_guest_ready_generation = ~u32{0};
+bool BbscGuestLoadItemsReady() {
+    const u64 global = GetGlobalState();
+    return GetSessionState() != 6 ||
+           (ReadablePointer(global, 0x10) && ReadValue<u8>(global, 8) == 0 &&
+            !bbsc_world_load_pending.load() && !bbsc_reload_finish_pending.load() &&
+            bbsc_ledger_guest_ready_generation == bbsc_load_generation.load());
+}
 bool bbsc_ledger_home_ready = false;
 u32 bbsc_ledger_home_generation = 0;
 
@@ -14103,6 +14160,12 @@ void TickBbscItemLedger() {
     }
     FinishBbscLedgerContext();
     const s64 now = SteadyNowMs();
+    static s64 next_poll_ms = 0;
+    static u32 last_poll_generation = ~u32{0};
+    const u32 current_generation = bbsc_load_generation.load();
+    if (now < next_poll_ms && last_poll_generation == current_generation) return;
+    next_poll_ms = now + 100;
+    last_poll_generation = current_generation;
     static s64 slot_ms = 0;
     if (now - slot_ms >= 2'000) {
         slot_ms = now;
@@ -14144,7 +14207,9 @@ void TickBbscItemLedger() {
             GetCharacterHp(GetLocalPlayerCharacter()) > 0) {
             trip_checked_ms = now;
             const bool steady = false; // recounts never lower the received-item journal
-            CheckBbscTripItems(steady, steady ? "in the host's world" : "after a load as a guest");
+            size_t missing = 0;
+            CheckBbscTripItems(steady, steady ? "in the host's world" : "after a load as a guest", &missing);
+            bbsc_ledger_guest_ready_generation = missing == 0 ? load : ~u32{0};
         }
         if (BbscGuestInHostWorld()) {
             CheckBbscLedgerGiven(now);
@@ -20775,6 +20840,9 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         ApplyBbscGuestLootViewAtLoad();
     }
     if (site.offset == 0x01938F65) { // Warp.RespawnPoint.Resolve: a load picks its spawn point
+        // Observe construction even when the ordinary tick misses the whole load.
+        // Apply/cleanup stays on the first ready game tick, after native initialization.
+        if (!BbscReturningToTitle()) bbsc_world_load_pending = GetGlobalState();
         RestoreBbscOwnWorldAtLoad();
         ApplyBbscSharedProgressAtLoad();
     }
