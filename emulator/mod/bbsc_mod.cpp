@@ -60,6 +60,7 @@ void StartRelay();
 void StartP2PChannel(); // bbsc_channel.cpp
 bool GameServerIsPublic(std::string* host_out); // bbsc_relay.cpp
 void InstallHttpWrappers();
+void MaintainSummonLifecycle();
 } // namespace BbscMod
 namespace Core::Bbsc {
 void InstallPadWrapper();
@@ -427,6 +428,8 @@ DWORD WINAPI Worker(void*) {
 
     for (;;) {
         Sleep(WatchMs);
+        // Keep network I/O outside patch_mutex and off the game's frame thread.
+        BbscMod::MaintainSummonLifecycle();
         std::scoped_lock lock{patch_mutex};
         if (const int redone = SyncSites(); redone != 0) {
             LOG_WARNING(Mod, "{} patch site(s) had changed back - written again", redone);

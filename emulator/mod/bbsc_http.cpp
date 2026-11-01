@@ -30,7 +30,8 @@
 //     is known (connect-first), and the first seamless create of this run sends a forced delete
 //     for the same SessionId/UserId first (stale broker record after a crash).
 //   - a claim the broker delivered with a sign that never became a join, and a session that
-//     ended, re-arm that delete: the next sign starts clean (see "Stuck claims" below).
+//     ended, delete the old record in maintenance, before a host can ring it again.
+//     The next create is serialized with cleanup and refuses to publish on delete failure.
 // Not done: the emulator's 3 s "fast sign" re-posts. They replaced the game's own reply; extra
 // posts from here would take the broker's claim themselves and the game would never join.
 
@@ -121,6 +122,12 @@ std::atomic<s64> claim_delivered_ms{0}; // our sign's reply carried a host's cla
 std::atomic<bool> was_in_session{false};
 std::atomic<s64> own_user_id{0};          // UserId of our own sign (from its /create body)
 std::atomic<bool> placement_aimed{false}; // the placement came aimed at our sign
+// Serializes departure cleanup with the next native create. The maintenance thread
+// never sends a delete after a replacement sign has been dispatched.
+std::mutex summon_lifecycle_mutex;
+std::string own_sign_url;
+std::string own_sign_body;
+s64 cleanup_retry_ms = 0;
 
 s64 NowMs() {
     return static_cast<s64>(GetTickCount64());
@@ -345,14 +352,14 @@ DWORD Post(const std::string& url, const std::string& body) {
 
 // The broker keeps Preparing/Claimed/Delivered records 15 minutes and Bloodborne reuses its
 // SessionId/UserId after a restart, so the first seamless sign of this run removes any old one.
-void ClearStaleRecord(const std::string& url, const std::string& body) {
-    if (stale_cleared.exchange(true)) {
-        return;
+bool ClearStaleRecord(const std::string& url, const std::string& body) {
+    if (stale_cleared.load()) {
+        return true;
     }
     const std::string session = JsonString(body, "SessionId");
     const std::string user = JsonNumber(body, "UserId");
     if (session.empty() || user.empty()) {
-        return;
+        return false;
     }
     std::string removal_url = url;
     removal_url.replace(removal_url.find("/summon_messenger/create"),
@@ -366,6 +373,11 @@ void ClearStaleRecord(const std::string& url, const std::string& body) {
              status);
     BBSC_TIMELINE("JOIN", "HTTP: stale summon cleanup for session {} user {}: status {}", session, user,
              status);
+    // A failed delete must not let a new create receive the old room's claim.
+    const bool ok = status >= 200 && status < 300;
+    stale_cleared = ok;
+    cleanup_retry_ms = ok ? 0 : NowMs() + 2'000;
+    return ok;
 }
 
 // ---- Stuck claims (2026-10-06) -------------------------------------------------------------------
@@ -391,6 +403,8 @@ s32 SessionState() {
     return -1;
 }
 
+// Caller holds summon_lifecycle_mutex. Runs from HTTP dispatch and the mod's
+// maintenance thread, including while the native game tick is stopped in menus.
 void WatchSessionForStaleClaims() {
     const s32 state = SessionState();
     if (state == 3 || state == 4 || state == 6) {
@@ -406,20 +420,69 @@ void WatchSessionForStaleClaims() {
     }
     if (was_in_session.exchange(false)) {
         stale_cleared = false;
-        LOG_INFO(Mod, "HTTP: session over - the next sign first clears our old broker record");
-        BBSC_TIMELINE("JOIN", "HTTP: session over - the next sign first clears our old broker record");
+        cleanup_retry_ms = 0;
+        claim_delivered_ms = 0;
+        placement_received_ms = 0;
+        placement_aimed = false;
+        placement_sender = 0;
+        Core::Bloodborne::ClearSeamlessHostPlacementHeader();
+        LOG_INFO(Mod, "HTTP: session over - clearing our broker record now");
+        BBSC_TIMELINE("JOIN", "HTTP: session over - clearing our broker record now");
     }
     const s64 delivered = claim_delivered_ms.load();
     if (delivered != 0 && NowMs() - delivered > ClaimJoinWaitMs) {
         claim_delivered_ms = 0;
         stale_cleared = false;
+        cleanup_retry_ms = 0;
         LOG_WARNING(Mod, "HTTP: a host's claim was delivered {} s ago and never became a join - "
-                         "the next sign first clears it",
+                         "clearing it now",
                     (NowMs() - delivered) / 1000);
         BBSC_TIMELINE("JOIN", "HTTP: a host's claim was delivered {} s ago and never became a join - "
-                         "the next sign first clears it",
+                         "clearing it now",
                     (NowMs() - delivered) / 1000);
     }
+    if (!stale_cleared && !own_sign_url.empty() && NowMs() >= cleanup_retry_ms) {
+        ClearStaleRecord(own_sign_url, own_sign_body);
+    }
+}
+
+int SendCleanSummonCreate(int request, const std::string& url, const void* data, u64 size) {
+    std::string body(static_cast<const char*>(data), static_cast<size_t>(size));
+    std::scoped_lock lifecycle_lock{summon_lifecycle_mutex};
+    WatchSessionForStaleClaims();
+    // A different character / server has its own broker identity.
+    if (own_sign_url != url || JsonString(own_sign_body, "SessionId") != JsonString(body, "SessionId") ||
+        JsonNumber(own_sign_body, "UserId") != JsonNumber(body, "UserId")) {
+        stale_cleared = false;
+        cleanup_retry_ms = 0;
+    }
+    own_sign_url = url;
+    own_sign_body = body;
+    if (!ClearStaleRecord(url, body)) {
+        return static_cast<int>(0x80431068); // HTTP timeout; native error/retry path
+    }
+    if (const std::string user = JsonNumber(body, "UserId"); !user.empty()) {
+        const s64 id = std::atoll(user.c_str());
+        if (own_user_id.exchange(id) != id) {
+            LOG_INFO(Mod, "HTTP: our sign's user id is {}", id);
+        }
+    }
+    // A host's placement that has not been refreshed for a while is a host that stopped
+    // looking: forget it, as the emulator did when a create reply carried none.
+    const s64 received = placement_received_ms.load();
+    const s64 stale = placement_aimed.load() ? AimedPlacementStaleMs : PlacementStaleMs;
+    if (received != 0 && NowMs() - received > stale) {
+        placement_received_ms = 0;
+        placement_aimed = false;
+        placement_sender = 0;
+        Core::Bloodborne::ClearSeamlessHostPlacementHeader();
+    }
+    if (RewriteAreaId(body)) {
+        original_set_content_length(request, body.size());
+        // The emulator copies the body during the call, so a local buffer is fine.
+        return original_send(request, body.data(), body.size());
+    }
+    return original_send(request, data, size);
 }
 
 // ---- The wrappers -------------------------------------------------------------------------------
@@ -457,7 +520,8 @@ int PS4_SYSV_ABI SendRequest(int request, const void* data, u64 size) {
             url = it->second;
         }
     }
-    WatchSessionForStaleClaims();
+    // No network wait here: departure cleanup is done by maintenance. A create
+    // takes the same lock below before publishing the next sign.
     // Fewer messages / bloodstains per list (Panic 265 at Gascoigne / Cathedral Ward, see
     // CapBbscAreaListRequest). Not on public servers: their API calls go out unchanged.
     if (Contains(url, "/message_area") && !IsPublicServer(url) && data != nullptr && size != 0) {
@@ -545,29 +609,7 @@ int PS4_SYSV_ABI SendRequest(int request, const void* data, u64 size) {
         own_sign_created_ms = NowMs();
     }
     if (IsSummonCreate(url) && data != nullptr && size != 0) {
-        std::string body(static_cast<const char*>(data), static_cast<size_t>(size));
-        ClearStaleRecord(url, body);
-        if (const std::string user = JsonNumber(body, "UserId"); !user.empty()) {
-            const s64 id = std::atoll(user.c_str());
-            if (own_user_id.exchange(id) != id) {
-                LOG_INFO(Mod, "HTTP: our sign's user id is {}", id);
-            }
-        }
-        // A host's placement that has not been refreshed for a while is a host that stopped
-        // looking: forget it, as the emulator did when a create reply carried none.
-        const s64 received = placement_received_ms.load();
-        const s64 stale = placement_aimed.load() ? AimedPlacementStaleMs : PlacementStaleMs;
-        if (received != 0 && NowMs() - received > stale) {
-            placement_received_ms = 0;
-            placement_aimed = false;
-            placement_sender = 0;
-            Core::Bloodborne::ClearSeamlessHostPlacementHeader();
-        }
-        if (RewriteAreaId(body)) {
-            original_set_content_length(request, body.size());
-            // The emulator copies the body during the call, so a local buffer is fine.
-            return original_send(request, body.data(), body.size());
-        }
+        return SendCleanSummonCreate(request, url, data, size);
     }
     return original_send(request, data, size);
 }
@@ -771,6 +813,11 @@ void InstallHttpWrappers() {
     BBSC_TIMELINE("START", "HTTP: game's HTTP calls {} (URL overrides, seamless summon, connect-first, stale "
                   "cleanup)",
              ok ? "wrapped" : "NOT wrapped - an import slot was never filled");
+}
+
+void MaintainSummonLifecycle() {
+    std::scoped_lock lock{summon_lifecycle_mutex};
+    WatchSessionForStaleClaims();
 }
 
 // For an emulator that repeats the guest's sign post itself (the bbport launcher's emulator,
