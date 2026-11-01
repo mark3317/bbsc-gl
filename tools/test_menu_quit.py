@@ -34,7 +34,7 @@ using s32=int32_t; using s64=int64_t;
 struct GuestRegisterSnapshot { u64 rax=0, rbx=0; };
 namespace MemoryProt { constexpr int CpuWrite=1; }
 u64 image_base=0x100000, world=0x200000, menu=0x300000, manager=0x400000;
-constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88;
+constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88, SprjLuaEventManPointerOffset=0x90;
 std::map<u64,u64> memory;
 std::vector<int> events; // journal=1, save=2, notify=3, suspend=4, stop=5
 constexpr u64 request_address=0x700008;
@@ -53,7 +53,8 @@ void FlushBbscSessionJournals() { events.push_back(1); }
 void SendBbscSessionLeave() { events.push_back(3); }
 void SuspendBbscPersistence(std::string_view) { events.push_back(4); }
 u8 save_stub(s32 slot, s32 flag, s32 erase) {
-    assert(session==0 || session==3 || session==4 || session==6);
+    assert(session>=0 && session<=7);
+    assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
     assert(slot==-1 && flag==0 && erase==0);
     events.push_back(2);
     if (!accept_save) return 0;
@@ -62,11 +63,13 @@ u8 save_stub(s32 slot, s32 flag, s32 erase) {
 }
 u8 stop_stub(u64 value) { assert(value==manager); events.push_back(5); session=7; return 1; }
 void title_stub() {
-    assert(session==0 && memory[world+0x1554]==0);
+    assert((session==0 || session==2 || session==5) && memory[world+0x1554]==0);
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
     events.push_back(6); memory[request_address]=2;
 }
 u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
+int closed=0;
+void close_stub(s32 mode) { assert(mode==3); ++closed; }
 u64 MultiPlayStopRequestOffset=reinterpret_cast<u64>(&stop_stub)-image_base;
 '''
 
@@ -75,8 +78,10 @@ end = SOURCE.index('std::mutex bbsc_peer_left_mutex;', begin)
 state = SOURCE[begin:end].replace(
     'constexpr u64 BbscNativeSaveRequestOffset = 0x0156D570;',
     'u64 BbscNativeSaveRequestOffset = reinterpret_cast<u64>(&save_stub)-image_base;')
+state=state.replace('constexpr u64 BbscQuitCloseMenusOffset = 0x0176A900;', 'u64 BbscQuitCloseMenusOffset = reinterpret_cast<u64>(&close_stub)-image_base;')
 functions = '\n'.join(function(signature) for signature in (
     'void PrepareBbscQuitToTitle()',
+    'void RestoreBbscQuitControls(const BbscPendingQuit& pending)',
     'void CancelBbscPendingQuit(std::string_view why)',
     'void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers)',
     'void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers)',
@@ -85,17 +90,18 @@ functions = '\n'.join(function(signature) for signature in (
 
 fixture = r'''
 void reset(s32 role=6) {
-    memory.clear(); events.clear(); session=role; now=1000; accept_save=true;
+    memory.clear(); events.clear(); closed=0; session=role; now=1000; accept_save=true;
     bbsc_pending_quit={}; bbsc_quit_prepared=false; bbsc_quit_defer_store=0;
     bbsc_quit_save_hooks_ready=true; bbsc_quit_save_watch=false; bbsc_quit_save_result=-1;
     memory[image_base+MenuManPointerOffset]=menu;
+    memory[image_base+SprjLuaEventManPointerOffset]=0x600100; memory[0x600100+8]=0x600000;
     memory[image_base+MatchingStatePointerOffset]=manager;
     memory[image_base+BbscNativeSaveManagerOffset]=0x500000;
     memory[world+0x1490]=2; memory[0x700000]=request_address;
 }
 void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
-    memory[menu+0x25C]=1;
+    memory[menu+0x25C]=0; // hook runs before native side effects
     BbscNativeQuitConfirmHook(0,&r);
 }
 void result(s32 value, bool correct_manager=true) {
@@ -106,17 +112,18 @@ void result(s32 value, bool correct_manager=true) {
 bool stopped() { return std::find(events.begin(),events.end(),5)!=events.end(); }
 void assert_cancelled() {
     assert(!BbscQuitInProgress() && !stopped());
+    assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
 }
 int main() {
-    for (s32 role : {3,4,6}) {
+    for (s32 role : {1,3,4,6}) {
         reset(role); confirm();
         assert(BbscQuitInProgress() && bbsc_quit_defer_store==1);
         assert(memory[menu+0x250]==0 && !stopped());
-        confirm(); assert(events.size()==1); // duplicate preserves the pending save
+        confirm(); assert(events.size()==1 && closed==0); // duplicate preserves the pending save
         PrepareBbscQuitToTitle(); assert(!stopped()); // Lua/load fallback cannot bypass save
         TickBbscPendingQuit();
-        assert(events==std::vector<int>({1,2}));
+        assert(events==std::vector<int>({1,2}) && closed==1);
         result(1); TickBbscPendingQuit(); assert(!stopped());
         result(0,false); memory[world+0x1554]=0;
         TickBbscPendingQuit(); assert(!stopped()); // idle is not proof of success
@@ -139,8 +146,10 @@ int main() {
     TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); TickBbscPendingQuit(); now+=BbscQuitSaveTimeoutMs;
     TickBbscPendingQuit(); assert_cancelled();
-    reset(); confirm(); memory[world+0x08]=1; TickBbscPendingQuit(); assert_cancelled();
-    reset(); confirm(); session=0; TickBbscPendingQuit(); assert_cancelled();
+    reset(); confirm(); memory[world+0x08]=1; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && !stopped());
+    assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1); // native load owns cleanup
+    reset(3); confirm(); session=6; TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); memory[world+0x1490]=3; TickBbscPendingQuit(); assert_cancelled();
     reset(); memory[world+0x1490]=static_cast<u64>(-1); confirm();
     TickBbscPendingQuit(); assert_cancelled();
@@ -167,10 +176,22 @@ int main() {
     TickBbscPendingQuit(); assert(stopped());
     memory[0x700000]=0; session=0; TickBbscPendingQuit();
     assert(!BbscQuitInProgress() && events.back()==5 && memory[menu+0x250]==0);
-    for (s32 role : {-1,1,2,5,7}) {
+    for (s32 role : {-1,8}) {
         reset(role); confirm();
         assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
     }
+    for (s32 role : {2,5,7}) {
+        reset(role); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
+        TickBbscPendingQuit(); if(role==7) session=0; TickBbscPendingQuit();
+        assert(memory[request_address]==2 && !stopped());
+    }
+    // Departure during save still honors confirmation.
+    reset(); confirm(); TickBbscPendingQuit(); session=0; result(0); memory[world+0x1554]=0;
+    TickBbscPendingQuit(); TickBbscPendingQuit();
+    assert(memory[request_address]==2 && !stopped());
+    reset(); memory[menu+0x2DC]=9; memory[0x600000+0x8D]=1;
+    confirm(); now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && memory[menu+0x2DC]==9 && memory[0x600000+0x8D]==1);
     reset(); bbsc_quit_save_hooks_ready=false; confirm();
     assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
 }

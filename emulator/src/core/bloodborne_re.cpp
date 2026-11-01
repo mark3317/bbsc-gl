@@ -8920,6 +8920,7 @@ void ArmBbscDeathLockClear() {
 }
 
 void TickBbscDeathLockClear() {
+    if (BbscQuitInProgress()) return;
     if (bbsc_death_lock_until_ms == 0) {
         return;
     }
@@ -9935,6 +9936,7 @@ void PS4_SYSV_ABI BbscBossClearHook(u64 tag, const GuestRegisterSnapshot* regist
 // game's leave variant 0x013859F0 (+0x2F0 = 0 and, when 4092 is set, 4047/4000/4092 = 0, then it
 // leaves the session). The guest skips both, so here are their unlocking parts without the leaving.
 void TickBbscBossUnlock() {
+    if (BbscQuitInProgress()) return;
     if (bbsc_boss_unlock_until_ms == 0) {
         return;
     }
@@ -10039,10 +10041,11 @@ s64 bbsc_persistence_restore_at_ms = 0;
 s64 bbsc_partner_missing_since_ms = 0;
 bool bbsc_quit_prepared = false; // game-thread hooks and tick only
 // Confirmed native System menu exit, distinct from the Lua return-to-title path.
-constexpr u64 BbscNativeQuitConfirmOffset = 0x01C0D0C4; // actual System Exit Game Yes functor
+constexpr u64 BbscNativeQuitConfirmOffset = 0x01C0D057; // actual System Exit Game Yes functor
 constexpr u64 BbscNativeSaveRequestOffset = 0x0156D570;
 constexpr u64 BbscNativeSaveResultOffset = 0x018322F4;
 constexpr u64 BbscNativeSaveManagerOffset = 0x0556D438;
+constexpr u64 BbscQuitCloseMenusOffset = 0x0176A900;
 constexpr s64 BbscQuitSaveTimeoutMs = 30'000;
 struct BbscPendingQuit {
     u64 global = 0;
@@ -10052,6 +10055,10 @@ struct BbscPendingQuit {
     s64 started_ms = 0;
     bool requested = false;
     bool stopping = false;
+    u64 lua = 0;
+    s32 menu_brake = 0;
+    u8 load_wait = 0;
+    bool menus_closed = false;
 };
 BbscPendingQuit bbsc_pending_quit;
 u8 bbsc_quit_defer_store = 0;
@@ -10109,7 +10116,7 @@ bool BbscReturningToTitle() {
 void PrepareBbscQuitToTitle() {
     const s32 state = GetSessionState();
     if ((BbscQuitInProgress() && !bbsc_pending_quit.stopping) || bbsc_quit_prepared ||
-        (state != 3 && state != 4 && state != 6)) return;
+        (state != 1 && state != 3 && state != 4 && state != 6)) return;
     const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
     if (!ReadablePointer(manager, 0x128)) return; // retry at the next load step / tick
     bbsc_quit_prepared = true; // StopRequest can re-enter engine hooks
@@ -10122,14 +10129,29 @@ void PrepareBbscQuitToTitle() {
     LOG_INFO(Debug, "BBSC quit: journals flushed, peers notified; stopped before title load");
 }
 
-// System's Exit Game opener (BB_BN(0x200C9F0)) binds the Yes functor
-// at 0x01C0D050. Its final store is MenuMan+250=1, NOT the generic
-// dialog result at +1B4. Defer this store until save and Stop finish.
-// Do not replay +250 afterwards: StageFlow reads it at 01940593 and starts
-// its world transition (the event request is cleared at 01941050). The separate
-// native OnReturnTitle command writes event request 2 at 0138BB2D.
+// Intercept the Yes functor after its initial LEA, before any native save/latch
+// writes. No stack frame exists here; skipping with RET is safe. The copied MOV
+// and CMP are position independent. The old final-store hook let +1547/+1548
+// start a competing stage flow while BBSC was still waiting for save/Stop.
+void RestoreBbscQuitControls(const BbscPendingQuit& pending) {
+    // Once a real load owns these locks, its native reset must release them.
+    if (GetGlobalState() != pending.global || ReadValue<u8>(pending.global, 8) != 0) return;
+    if (pending.menu == ReadValue<u64>(image_base + MenuManPointerOffset, 0) &&
+        HasMemoryAccess(pending.menu + 0x2DC, 4, MemoryProt::CpuWrite) &&
+        ReadValue<s32>(pending.menu, 0x2DC) == 1) {
+        WriteValue<s32>(pending.menu, 0x2DC, pending.menu_brake);
+    }
+    const u64 man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
+    if (ReadablePointer(man, 0x10) && ReadValue<u64>(man, 8) == pending.lua &&
+        HasMemoryAccess(pending.lua + 0x8D, 1, MemoryProt::CpuWrite) &&
+        ReadValue<u8>(pending.lua, 0x8D) == 1) {
+        WriteValue<u8>(pending.lua, 0x8D, pending.load_wait);
+    }
+}
+
 void CancelBbscPendingQuit(std::string_view why) {
     const auto pending = bbsc_pending_quit;
+    RestoreBbscQuitControls(pending);
     bbsc_pending_quit = {};
     bbsc_quit_save_watch = false;
     bbsc_quit_prepared = false; // a failed Stop must not poison a later confirmed attempt
@@ -10144,17 +10166,26 @@ void CancelBbscPendingQuit(std::string_view why) {
 void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers) {
     const s32 state = GetSessionState();
     if (!registers || !bbsc_quit_save_hooks_ready ||
-        (state != 0 && state != 3 && state != 4 && state != 6)) return;
+        state < 0 || state > 7) return;
     const u64 global = GetGlobalState();
     const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
-    if (registers->rax != menu || !ReadablePointer(global, 0x1752) ||
-        !HasMemoryAccess(menu + 0x250, 0x10, MemoryProt::CpuWrite)) return;
-    bbsc_quit_defer_store = 1; // skip MOV [RAX+250],1, then the native functor returns normally
+    const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
+    const u64 lua = ReadablePointer(lua_man, 0x10) ? ReadValue<u64>(lua_man, 8) : 0;
+    if (!ReadablePointer(global, 0x1752) ||
+        !HasMemoryAccess(menu + 0x250, 0x90, MemoryProt::CpuWrite) ||
+        !HasMemoryAccess(lua + 0x8D, 1, MemoryProt::CpuWrite)) return;
+    bbsc_quit_defer_store = 1; // return from Yes before its native save/stage side effects
     WriteValue<s32>(menu, 0x250, 0);
     if (BbscQuitInProgress()) return; // duplicate confirmation does not restart the save
     CancelBbscReinsert("confirmed System menu exit");
     FlushBbscSessionJournals(); // record the trip before the native save or any teardown
     bbsc_pending_quit = {global, menu, state, ReadValue<s32>(global, 0x1490), SteadyNowMs(), false};
+    bbsc_pending_quit.lua = lua;
+    bbsc_pending_quit.menu_brake = ReadValue<s32>(menu, 0x2DC);
+    bbsc_pending_quit.load_wait = ReadValue<u8>(lua, 0x8D);
+    // The same menu close/brake and load-wait used by native EventMenuBrake/leave.
+    WriteValue<s32>(menu, 0x2DC, 1);
+    WriteValue<u8>(lua, 0x8D, 1);
     bbsc_quit_save_result = -1;
     LOG_INFO(Debug, "BBSC quit: native menu confirmed; saving slot {} before disconnect", bbsc_pending_quit.slot);
 }
@@ -10181,8 +10212,17 @@ void TickBbscPendingQuit() {
         CancelBbscPendingQuit("world or menu context changed");
         return;
     }
+    if (!pending.menus_closed) {
+        // The confirmation functor has returned. Closing its owning menu on the
+        // confirmation stack could destroy a still-executing command object.
+        pending.menus_closed = true;
+        using CloseMenus = void PS4_SYSV_ABI (*)(s32);
+        reinterpret_cast<CloseMenus>(image_base + BbscQuitCloseMenusOffset)(3);
+        WriteValue<s32>(pending.menu, 0x2DC, 1);
+        WriteValue<u8>(pending.lua, 0x8D, 1);
+    }
     if (pending.stopping) {
-        if (GetSessionState() == 0) {
+        if (GetSessionState() == 0 || GetSessionState() == 2 || GetSessionState() == 5) {
             const u64 request = BbscEventRequestAddress();
             if (!request || !HasMemoryAccess(request, sizeof(s32), MemoryProt::CpuWrite)) {
                 CancelBbscPendingQuit("disconnected, but title request became unavailable");
@@ -10201,7 +10241,10 @@ void TickBbscPendingQuit() {
         }
         return;
     }
-    if (GetSessionState() != pending.session ||
+    const s32 state = GetSessionState();
+    // A peer may depart while the native save is finishing. This must not consume
+    // our confirmation without exiting. A different live session still cancels.
+    if ((state != pending.session && state != 0 && state != 2 && state != 5 && state != 7) ||
         ReadValue<s32>(pending.global, 0x1490) != pending.slot) {
         CancelBbscPendingQuit("session, world or save slot changed");
         return;
@@ -10239,7 +10282,7 @@ void TickBbscPendingQuit() {
         CancelBbscPendingQuit("saved, but title request became unavailable");
         return;
     }
-    if (pending.session != 0 && !ReadablePointer(manager, 0x128)) {
+    if (state != 0 && state != 2 && state != 5 && !ReadablePointer(manager, 0x128)) {
         CancelBbscPendingQuit("saved, but session manager became unavailable");
         return;
     }
@@ -10696,6 +10739,7 @@ bool bbsc_release_leave_locks = false;
 // skipped, the locks stayed - and nobody got the boss fog prompt after that ("no prompt to enter
 // the fog", host and guest). Same lock as the host's Blank (mod 36).
 void ReleaseBbscLeaveLocks(std::string_view why) {
+    if (BbscQuitInProgress()) return;
     if (image_base == 0 || ReadValue<u64>(image_base + 0x0553B0D8, 0) == 0 ||
         ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0) == 0) {
         return;
@@ -10774,6 +10818,7 @@ bool BbscDeathLocksHeld() {
 }
 
 void ReleaseBbscDeathLocks(std::string_view why) {
+    if (BbscQuitInProgress()) return;
     bool brake = false;
     bool pending = false;
     u32 leaving = 0;
@@ -11216,7 +11261,7 @@ void InstallBbscQuitHook() {
     static constexpr std::array<u8, 17> SavePrologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57, 0x41, 0x56,
         0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x48};
     static constexpr std::array<u8, 5> SaveResult{0x48, 0x83, 0xC4, 0x58, 0x5B};
-    static constexpr std::array<u8, 10> ConfirmQuit{0xC7, 0x80, 0x50, 0x02, 0, 0, 1, 0, 0, 0};
+    static constexpr std::array<u8, 8> ConfirmQuit{0x48, 0x8B, 0x00, 0x48, 0x83, 0x78, 0x08, 0x00};
     bbsc_quit_save_hooks_ready =
         std::memcmp(reinterpret_cast<const void*>(image_base + BbscNativeSaveRequestOffset),
                     SavePrologue.data(), SavePrologue.size()) == 0 &&
@@ -11225,7 +11270,7 @@ void InstallBbscQuitHook() {
     if (bbsc_quit_save_hooks_ready) {
         if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscNativeQuitConfirmOffset),
                                   std::span<const u8>{ConfirmQuit}, 0, BbscNativeQuitConfirmHook,
-                                  &bbsc_quit_defer_store, true)) {
+                                  &bbsc_quit_defer_store)) {
             LOG_ERROR(Debug, "BBSC quit: System Exit Game Yes hook failed at {:#x}", BbscNativeQuitConfirmOffset);
         } else {
             LOG_INFO(Debug, "BBSC quit: System Exit Game Yes hook installed at {:#x}", BbscNativeQuitConfirmOffset);
