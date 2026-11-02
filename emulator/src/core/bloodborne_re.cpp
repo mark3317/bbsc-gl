@@ -11776,6 +11776,32 @@ void InstallBbscWallHooks() {
              "(base game, DLC, Chalice); boss walls untouched");
 }
 
+// Lecture Building exits: MSB ObjActs 13200123/13200124 on objects
+// 3201123/3201124 use ObjActParam/ActionButtonParam 3200000/3200001.
+// Events 13200311/13200310 wait for these actions, then warp after six seconds.
+// Refuse the action before animation/ObjAct replication, rather than dropping the warp.
+constexpr u64 BbscActionButtonAcceptOffset = 0x01CD91F0;
+
+void PS4_SYSV_ABI BbscGuestTransitionDoorHook(u64 /*tag*/,
+                                            const GuestRegisterSnapshot* registers) {
+    if (registers == nullptr) return;
+    const u32 action = static_cast<u32>(registers->rdx);
+    if ((action == 3200000 || action == 3200001) && GetSessionState() == 6) {
+        // Native fourth argument: nonzero returns false at 0x01CD9263, before
+        // registration or any action side effects. Hosts and solo keep their args.
+        const_cast<GuestRegisterSnapshot*>(registers)->rcx = 1;
+    }
+}
+
+void InstallBbscGuestTransitionDoorHook() {
+    if (image_base == 0) return;
+    static constexpr std::array<u8, 6> Prologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
+    if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscActionButtonAcceptOffset),
+                              std::span<const u8>{Prologue}, 0, BbscGuestTransitionDoorHook)) {
+        LOG_ERROR(Debug, "BBSC transition doors: failed to install guest action guard");
+    }
+}
+
 // ---- The Hunter's Dream together (2026-09-25) --------------------------------------------------
 // A summoned guest who follows the host into the Hunter's Dream (map 0x15000000) may use the Doll,
 // Gehrman, the workshop and the messengers there. The headstones and the Ritual Altars stay the
@@ -23475,6 +23501,7 @@ void InstallReverseEngineeringTrace() {
     BBSC_TIMELINE("START", "BBSC hooks installed: {} of {} selected", hook_count, selected_count);
     InstallBbscSpectateHooks();
     InstallBbscWallHooks();
+    InstallBbscGuestTransitionDoorHook();
     InstallBbscEchoPathHooks();
     InstallBbscDreamHooks();
     static constexpr std::array<u8, 6> RemoStartStore{0x88, 0x83, 0x68, 0x01, 0x00, 0x00};
