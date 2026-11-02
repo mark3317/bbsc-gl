@@ -58,7 +58,6 @@ bool PrepareBbscChaliceLoad(u32) { return chalice_ready; }
 void CancelBbscChaliceLoad() {}
 bool IsUsablePackedMap(u32) { return valid; }
 bool WriteTransportedSummonPlacement(u64,const SummonPlacementDescriptor&) { return writable; }
-void StartBbscLoadCover(std::string_view) {}
 void Placement(const void*) {}
 void Flag() {}
 bool Select(u64,s32) { return selected; }

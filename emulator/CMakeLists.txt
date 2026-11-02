@@ -1187,8 +1187,6 @@ set(IMGUI src/imgui/imgui_config.h
           src/imgui/notifications_layer.h
           src/imgui/bbsc_intro_layer.cpp
           src/imgui/bbsc_intro_layer.h
-          src/imgui/bbsc_loading_layer.cpp
-          src/imgui/bbsc_loading_layer.h
           src/imgui/renderer/imgui_core.cpp
           src/imgui/renderer/imgui_core.h
           src/imgui/renderer/imgui_impl_sdl3.cpp

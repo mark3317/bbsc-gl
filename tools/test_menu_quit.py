@@ -42,8 +42,6 @@ void SetBbscQuitDisableMove(u8 on){memory[0xb00111]=on;}
 constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
-int loading_opens=0;
-bool BbscLoadingScreen(bool open){assert(open);assert(session==0 || session==2 || session==5);++loading_opens;return true;}
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 std::atomic<u64> bbsc_world_load_pending{0};
 std::atomic<bool> bbsc_reload_finish_pending{false};
@@ -78,7 +76,6 @@ u8 stop_stub(u64 value) { assert(value==manager); events.push_back(5); session=7
 void title_stub() {
     assert((session==0 || session==2 || session==5) && memory[world+0x1554]==0);
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
-    assert(loading_opens==0);
     events.push_back(6); memory[request_address]=2;
 }
 u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
@@ -109,7 +106,6 @@ functions = '\n'.join(function(signature) for signature in (
 fixture = r'''
 void reset(s32 role=6) {
     memory.clear(); events.clear(); closed=0; session=role; now=1000; accept_save=true;
-    loading_opens=0;
     bbsc_pending_quit={}; bbsc_title_quit={}; bbsc_quit_prepared=false; bbsc_quit_defer_store=0;
     bbsc_quit_save_hooks_ready=true; bbsc_quit_save_watch=false; bbsc_quit_save_result=-1;
     memory[character+0x58]=0xb00000;
@@ -175,7 +171,6 @@ int main() {
     
         session=0; TickBbscPendingQuit();
         assert(memory[0xb00111]==1);
-        assert(loading_opens==0);
         assert(memory[menu+0x250]==0 && memory[request_address]==2 && BbscQuitInProgress());
         memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
         TickBbscPendingQuit(); assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);

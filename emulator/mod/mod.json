@@ -171,14 +171,6 @@
       "env": "SHADPS4_BBSC_MESSAGES"
     },
     {
-      "id": "load_cover",
-      "name": "Black fade on joins",
-      "description": "The guest's loads happen behind a black fade",
-      "type": "bool",
-      "default": true,
-      "env": "SHADPS4_BBSC_LOAD_COVER"
-    },
-    {
       "id": "floor_guard",
       "name": "Floor guard",
       "description": "No crash when a character's floor was unloaded",

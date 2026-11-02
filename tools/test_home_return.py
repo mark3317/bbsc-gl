@@ -44,11 +44,10 @@ struct GuestRegisterSnapshot {u64 rsi=0,rcx=0,rbp=0,rax=0;};
 struct Quit {int session=0;} bbsc_pending_quit,bbsc_title_quit;
 bool quit=false; bool BbscQuitInProgress(){return quit;}
 std::string ReadGuestAscii(u64 p,size_t){return (const char*)p;}
-int captures=0,ledger=0,world=0,cover=0,leaves=0,ending=0,releases=0;
+int captures=0,ledger=0,world=0,leaves=0,ending=0,releases=0;
 void CaptureBbscGuestRespawnPoint(){++captures;}
 void DeliverBbscLedgerAtJoin(std::string_view){++ledger;}
 void CaptureBbscOwnWorldBeforeJoin(){++world;}
-void StartBbscLoadCover(std::string_view){++cover;}
 void BbscLeaveItemUsed(std::string_view){++leaves;}
 void NoteBbscSessionEnding(std::string_view){++ending;}
 void ReleaseBbscGuestRespawnPoint(std::string_view){++releases;WriteValue<int>(GetGlobalState(),0x1528,2102961);}
@@ -63,7 +62,7 @@ int main(){
  bbsc_save_home_hooks_ready=true;auto g=GetGlobalState();GuestRegisterSnapshot r{};r.rcx=g;
  WriteValue<u8>(g,0x1592,1);event("JoinSession_White");
  assert(bbsc_home_spot.valid && bbsc_home_spot.map==0x15000000);
- assert(captures==1&&ledger==1&&world==1&&cover==1);
+ assert(captures==1&&ledger==1&&world==1);
  state=6;WriteValue<u8>(g,0x1592,0);TickBbscHomeSpot();
  map=0x1d000000;WriteValue<u32>(g,0x14f0,map);WriteValue<u8>(g,0x1520,1);
  // A follow/death reload while connected keeps its host destination.
