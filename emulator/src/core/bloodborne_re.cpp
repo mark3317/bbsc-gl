@@ -19513,6 +19513,62 @@ void TickBbscInvadable() {
     }
 }
 
+// HTTP completion is observed on another thread; only the game tick touches
+// the native own-sign list. ServerInfo+89C/+190 alone leaves its dirty flag
+// dormant until the next native sign update (30s in the recorded run).
+std::atomic<s64> bbsc_native_sign_sent_ms{0};
+std::atomic<u32> bbsc_native_sign_pending{0};
+std::atomic<bool> bbsc_native_sign_claim_pending{false};
+
+u32 QueueBbscNativeSignRefresh(u64 broker) {
+    if (!ReadablePointer(broker, 0x160)) return 0;
+    const u64 head = ReadValue<u64>(broker, 0x158);
+    if (!ReadablePointer(head, 0x18)) return 0;
+    // Native own signs, not search results: 014B9180 inserts these at +158.
+    // 014B9246 marks +A0 dirty; 014B631D consumes it and 014B632A clears it
+    // before the normal create/response path. Keep +194 and entry+E8 lifetime.
+    std::array<u64, 34> signs{};
+    size_t count = 0, visited = 0;
+    u64 node = ReadValue<u64>(head, 0);
+    while (node != head) {
+        if (++visited > signs.size() || !ReadablePointer(node, 0x18)) return 0;
+        const u64 sign = ReadValue<u64>(node, 0x10);
+        if (sign != 0) {
+            if (!ReadablePointer(sign, 0xA1) ||
+                !HasMemoryAccess(sign + 0xA0, 1, MemoryProt::CpuWrite)) return 0;
+            signs[count++] = sign;
+        }
+        node = ReadValue<u64>(node, 0);
+    }
+    u32 queued = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (ReadValue<u8>(signs[i], 0xA0) == 0 &&
+            WriteValue<u8>(signs[i], 0xA0, 1)) ++queued;
+    }
+    return queued;
+}
+
+void TickBbscNativeSignPolling() {
+    static s64 retry_ms = 0;
+    const s64 sent = bbsc_native_sign_sent_ms.load();
+    if (sent == 0 || bbsc_native_sign_pending.load() != 0 ||
+        bbsc_native_sign_claim_pending.load()) return;
+    const s64 now = SteadyNowMs();
+    if (now - sent < 2'000 || now < retry_ms) return;
+    retry_ms = now + 250; // inactive bells/stale lists are not scanned every frame
+    if (GetSessionState() != 0 || BbscInAnotherWorld()) return;
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 0x08) != 0 ||
+        ReadValue<u8>(global, 0x1592) == 0 ||
+        (BbscLocalEffectNode(9005) == 0 && BbscLocalEffectNode(9025) == 0)) return;
+    const u32 queued = QueueBbscNativeSignRefresh(GetSummonManager());
+    if (queued != 0) {
+        bbsc_native_sign_sent_ms = now;
+        LOG_INFO(Debug, "BBSC matchmaking: queued native refresh of {} own sign(s), 2s cadence", queued);
+        BBSC_TIMELINE("JOIN", "queued native refresh of {} own sign(s), 2s cadence", queued);
+    }
+}
+
 // Erasing the Beckoning effect silences matchmaking through the native bell path;
 // unlike Silencing Blank it does not dismiss hunters already in the host's room.
 void TickBbscHostSearchLimit() {
@@ -19831,6 +19887,7 @@ void TickBbscPvp() {
     }
     StartBbscDuelBell();
     TickBbscDuelBellGive();
+    TickBbscNativeSignPolling();
     TickBbscHostSearchLimit();
     TickBbscHostBlank();
     TickBbscInvadable();
@@ -22685,6 +22742,21 @@ std::string CapBbscAreaListRequest(std::string_view path, std::string& body) {
 // 01E89A57 reads +89C; search completion 01E9597C / 01E97AF6 reads +8A0.
 // Change the actual consumed settings, rather than ss.info's versioned XML only.
 // Only called by the DLL's private-server HTTP route, before dispatching a summon.
+void BeginBbscNativeSignRequest() {
+    bbsc_native_sign_pending.fetch_add(1);
+    bbsc_native_sign_sent_ms = SteadyNowMs();
+}
+
+void SetBbscNativeSignClaimPending(bool pending) {
+    bbsc_native_sign_claim_pending = pending;
+}
+
+void EndBbscNativeSignRequest() {
+    u32 pending = bbsc_native_sign_pending.load();
+    while (pending != 0 &&
+           !bbsc_native_sign_pending.compare_exchange_weak(pending, pending - 1)) {}
+}
+
 bool ConfigureBbscSummonPolling() {
     if (image_base == 0) return false;
     const u64 manager = ReadValue<u64>(image_base + 0x05540288, 0);
