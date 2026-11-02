@@ -41,6 +41,7 @@ using s16=int16_t; using s32=int32_t; using s64=int64_t;
 #define PS4_SYSV_ABI
 #define LOG_INFO(...) ((void)0)
 #define BBSC_TIMELINE(...) ((void)0)
+#define BBSC_PERF_NESTED(...) ((void)0)
 struct CountingMutex {
     std::mutex mutex; int locks=0;
     void lock() { mutex.lock(); ++locks; }
@@ -56,10 +57,19 @@ u32 GetCurrentPackedMap() { return 24; }
 bool BbscScalingEnabled() { return true; }
 s32 GetBbscGuestCount() { return extra; }
 s32 GetBbscScalingGuests() { return extra; }
-template<class T> void WriteValue(u64, size_t, T) { ++writes; }
-enum class BbscScaleState { Ready };
+template<class T> bool WriteValue(u64, size_t, T) { ++writes; return true; }
+enum class MemoryProt { CpuWrite };
+bool HasMemoryAccess(u64,size_t,MemoryProt){return true;}
+u64 bbsc_scale_npc_table=0x1000,bbsc_scale_effect_table=0x2000;
+u16 bbsc_scale_npc_count=1;
+u64 bbsc_scale_armor_begin=0,bbsc_scale_armor_end=0;
+u64 BbscGameParamTable(std::string_view type){return type=="NPC_PARAM_ST"?bbsc_scale_npc_table:bbsc_scale_effect_table;}
+template<class T>T ReadValue(u64,size_t){return T{1};}
+void StartBbscScaling(){}
+enum class BbscScaleState { Idle, Ready };
 BbscScaleState bbsc_scale_state=BbscScaleState::Ready;
-std::vector<u64> bbsc_scale_rows_enemy{1}, bbsc_scale_rows_boss{2};
+std::array<unsigned char,528> enemy_row{}, boss_row{};
+std::vector<u64> bbsc_scale_rows_enemy{reinterpret_cast<u64>(enemy_row.data())}, bbsc_scale_rows_boss{reinterpret_cast<u64>(boss_row.data())};
 struct BbscScaledNpc { u64 row; s16 armor; bool boss; };
 std::vector<BbscScaledNpc> bbsc_scaled_npcs{{3,100,false}};
 constexpr s64 BbscScaleFreshMs=15000;
@@ -141,13 +151,14 @@ int main() {
     assert(TakeBbscWork()==0 && bbsc_cutscene_queue.empty());
     std::cout << "cutscenes: deduplicated, one replay/frame, backlog rearmed\n";
 
-    TickBbscScaling(); assert(writes==11);
+    TickBbscScaling(); assert(writes==1);
+    float hp; std::memcpy(&hp,enemy_row.data()+16,4); assert(hp>1.39f && hp<1.41f);
     const auto initial=writes;
     for (int i=0;i<10000;++i) TickBbscScaling();
     assert(writes==initial && bbsc_scale_host_mutex.locks==0);
     const u16 host[5]{80,200,30,30,40};
     OnBbscScalePacket(host);
-    TickBbscScaling(); assert(writes==initial+11);
+    TickBbscScaling(); assert(writes==initial+1);
     assert(bbsc_scale_written->numbers.percent[0]==80);
     const auto applied=writes; const int locks=bbsc_scale_host_mutex.locks;
     for (int i=0;i<10000;++i) TickBbscScaling();
@@ -155,7 +166,7 @@ int main() {
     now=14000; OnBbscScalePacket(host); TickBbscScaling();
     assert(writes==applied); // heartbeat refreshes expiry without rewriting rows
     now=15100; TickBbscScaling(); assert(writes==applied);
-    now=29000; TickBbscScaling(); assert(writes==applied+11);
+    now=29000; TickBbscScaling(); assert(writes==applied+1);
     assert(bbsc_scale_written->numbers.percent[0]==40); // exact expiry
     now=30000; OnBbscScalePacket(host); TickBbscScaling();
     extra=2; TickBbscScaling(); assert(bbsc_scale_written->guests==2);
@@ -168,10 +179,10 @@ int main() {
     assert(bbsc_scale_written->numbers.percent[0]==90);
     bbsc_scaled_npcs.assign(1000, {3,100,false});
     extra=3; const auto batch_before=writes;
-    TickBbscScaling(); assert(!bbsc_scale_written && writes-batch_before==138);
+    TickBbscScaling(); assert(!bbsc_scale_written && writes-batch_before==8);
     extra=0; session=0; // interrupted update must restart even if returning to older key
     TickBbscScaling(); assert(!bbsc_scale_written);
-    for(int i=0;i<10;++i) TickBbscScaling();
+    for(int i=0;i<200;++i) TickBbscScaling();
     assert(bbsc_scale_written && bbsc_scale_written->guests==0);
     auto complete=writes; TickBbscScaling(); assert(writes==complete);
     std::cout << "scaling: idle cache, packets, heartbeat, expiry, guests, solo/rejoin PASS\n";
