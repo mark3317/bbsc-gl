@@ -59,7 +59,7 @@ int main(){
  bbsc_progress_host_flags={2};result=MergeBbscSharedProgress("boss");assert(sets==1);
  alignas(16) std::array<u8,0x200> inst{},ref{},file{},events{};
  auto ptr=[](auto& a){return reinterpret_cast<u64>(a.data());};
- const u64 instance=ptr(inst),r=ptr(ref),f=ptr(file),ev=ptr(events),instructions=0x100000;
+ const u64 instance=ptr(inst),r=ptr(ref),f=ptr(file),ev=f+0x100,instructions=f+0x100000;
  WriteValue(instance,0xA8,r);WriteValue(instance,0xB0,instructions+0x20);
  WriteValue(r,8,f);WriteValue<s64>(f,0x10,2);
  WriteValue(f,0x18,ev-f);WriteValue(f,0x28,instructions-f);

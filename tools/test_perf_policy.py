@@ -96,7 +96,7 @@ int main() {
     assert(BbscGameParamTable("ITEMLOT_PARAM_ST") == l);
     reads = 0;
     for (int i=0; i<100; ++i) assert(BbscGameParamTable("ITEMLOT_PARAM_ST") == l);
-    assert(reads < 2000); // cached lookup must not traverse the 480 preceding repository slots
+    assert(reads == 600); // six validations/reads per late-slot lookup, no duplicate per-field queries
     put(r, 0x70, n); assert(BbscGameParamTable("ITEMLOT_PARAM_ST") == n); // reload, same holder
     put(root, 0x148, s32{0}); assert(BbscGameParamTable("ITEMLOT_PARAM_ST") == 0); // unloaded
     root = alternate; put(root, 0x148, s32{1}); put(root, 0x700, h);
@@ -104,6 +104,11 @@ int main() {
     put(r, 0x70, g); assert(BbscGameParamTable("ITEMLOT_PARAM_ST") == 0); // wrong type/reused resource
     assert(BbscGameParamTable("EQUIP_PARAM_GOODS_ST") == g);
     put(r, 0x70, u64{0xDEAD}); assert(BbscGameParamTable("EQUIP_PARAM_GOODS_ST") == 0);
+    put(root, 0x700, u64{0xDEAD}); assert(BbscGameParamTable("ITEMLOT_PARAM_ST") == 0);
+    std::array<unsigned char, 0x158> prefix_repo{};
+    root=reg(prefix_repo); put(root,0x148,s32{1});put(root,0x150,h);put(r,0x70,l);
+    assert(BbscGameParamTable("ITEMLOT_PARAM_ST")==l); // last fully validated prefix slot
+    root=0;assert(BbscGameParamTable("ITEMLOT_PARAM_ST")==0);
     assert(!BbscQuietMessage(30, 102001)); // host sees join
     assert(!BbscQuietMessage(30, 102100)); // guest sees join
     assert(!BbscQuietMessage(30, 20000407)); // departure
