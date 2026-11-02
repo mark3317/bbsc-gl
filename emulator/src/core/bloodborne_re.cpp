@@ -10002,9 +10002,16 @@ void TickBbscCoopCountFix() {
 
 void PS4_SYSV_ABI BbscBossClearHook(u64 tag, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscBossClearHook");
-    if (registers == nullptr || !BbscSessionAlive()) {
+    if (registers == nullptr) return;
+    // The boss-clear Lua chain can finish after Stop has changed the host to
+    // state 0. Its delayed reload must not replace a confirmed System menu exit.
+    // Keep this before the live-session check and independent of character type.
+    if (BbscQuitInProgress()) {
+        if (tag == 1) bbsc_boss_leave_skip = 1;
+        if (tag == 2) bbsc_boss_home_skip = 1;
         return;
     }
+    if (!BbscSessionAlive()) return;
     if (tag == 0) {
         GuardBbscBossClearCoopCount();
         bbsc_boss_killed_ms = SteadyNowMs();
