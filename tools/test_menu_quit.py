@@ -32,7 +32,7 @@ using s32=int32_t; using s64=int64_t;
 #define LOG_INFO(...)
 #define LOG_ERROR(...)
 
-struct GuestRegisterSnapshot { u64 rax=0, rbx=0; };
+struct GuestRegisterSnapshot { u64 rax=0, rbx=0, r12=0; };
 namespace MemoryProt { constexpr int CpuWrite=1; }
 u64 image_base=0x100000, world=0x200000, menu=0x300000, manager=0x400000;
 constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88, SprjLuaEventManPointerOffset=0x90;
@@ -94,6 +94,7 @@ functions = '\n'.join(function(signature) for signature in (
     'void CleanupBbscDepartingRemotes()',
     'void PrepareBbscQuitToTitle()',
     'void HoldBbscQuitCharacter(const BbscPendingQuit& q)',
+    'void PS4_SYSV_ABI BbscQuitMovementHook(u64, const GuestRegisterSnapshot* registers)',
     'void RestoreBbscQuitControls(const BbscPendingQuit& pending)',
     'void CancelBbscPendingQuit(std::string_view why)',
     'void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers)',
@@ -236,6 +237,19 @@ int main() {
     reset(); memory[menu+0x2DC]=9; memory[0x600000+0x8D]=1;
     confirm(); now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
     assert(!BbscQuitInProgress() && memory[menu+0x2DC]==9 && memory[0x600000+0x8D]==1);
+    // Title loading begins while the same living player can still consume movement.
+    // Model a native/menu reset AFTER the ordinary tick, then enter the real gate hook.
+    reset(); confirm(); memory[world+8]=1; memory[0xb00111]=0;
+    GuestRegisterSnapshot movement{}; movement.r12=0xb00000;
+    BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==1);
+    bbsc_title_quit=bbsc_pending_quit; bbsc_pending_quit={};
+    memory[0xb00111]=0; BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==1);
+    memory[0xb00111]=0; movement.r12=0xc00000;
+    BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==0); // remote control
+    movement.r12=0xb00000; character=0xd00000;
+    BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==0); // replacement player
+    reset(); memory[0xb00111]=0; BbscQuitMovementHook(0,&movement);
+    assert(memory[0xb00111]==0); // ordinary play
     // Existing native movement restriction must survive cancellation.
     reset(); memory[0xb00111]=1; confirm(); now+=BbscQuitSaveTimeoutMs;
     TickBbscPendingQuit(); assert(memory[0xb00111]==1 && !BbscQuitInProgress());

@@ -19,6 +19,10 @@ u64 EbootAddress() { return image; }
 void LogPlain(const char* text) { std::puts(text); }
 }
 void PS4_SYSV_ABI callback(u64 tag, const Core::GuestRegisterSnapshot* snapshot) {
+    if (tag==3) {
+        if (should_skip) *reinterpret_cast<u8*>(snapshot->r12+0x111)=1;
+        return;
+    }
     skip=should_skip ? 1 : 0;
     if (tag==1 && should_skip) const_cast<Core::GuestRegisterSnapshot*>(snapshot)->rax=13;
     if (tag==2 && should_skip) const_cast<Core::GuestRegisterSnapshot*>(snapshot)->rsi=0xDEADCAFE;
@@ -53,6 +57,21 @@ int main() {
     assert(Core::InstallGuestCodeHook(vector_start+10,std::span<const u8>{vector_code+10,8},2,callback));
     should_skip=false;assert(vector(0x1234)==0x1234);
     should_skip=true;assert(vector(0x1234)==0xDEADCAFE);
+    // Exact native movement CMP followed by its JNE: callback must run before
+    // CMP, then displaced instruction must establish the flags consumed by JNE.
+    const u8 move_code[]={0x41,0x54,0x49,0x89,0xFC,
+        0x41,0x80,0xBC,0x24,0x11,0x01,0,0,0,0x75,7,
+        0xB8,1,0,0,0,0xEB,2,0x31,0xC0,0x41,0x5C,0xC3};
+    auto* move_start=start+0x4000;
+    std::memcpy(move_start,move_code,sizeof(move_code));
+    auto move=reinterpret_cast<Vector>(move_start);
+    assert(Core::InstallGuestCodeHook(move_start+5,std::span<const u8>{move_code+5,9},3,callback));
+    u8 control[0x112]{};
+    for(bool enabled : {false,true,false,true}) {
+        control[0x111]=0; should_skip=enabled;
+        assert(move(reinterpret_cast<u64>(control))==(enabled ? 0 : 1));
+        assert(control[0x111]==(enabled ? 1 : 0));
+    }
     const u8 entry_code[]={0xB8,99,0,0,0,0xC3};
     std::memcpy(start+0x1000,entry_code,sizeof(entry_code));
     using Entry=u64 PS4_SYSV_ABI (*)();
