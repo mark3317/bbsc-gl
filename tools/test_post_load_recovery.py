@@ -71,7 +71,6 @@ bool BbscRespawnInPlace(std::string_view) { ++revived; if(revive_ok) { hp=100; +
 namespace Bbsc { void CinematicForceOff() { ++camera_off; } }
 void ClearBbscBossContext(std::string_view) {}
 void ReleaseBbscDeathLocks(std::string_view) {}
-void EndBbscLoadCover(std::string_view) {}
 void RequestBbscDeathReload(std::string_view) { ++reloaded; }
 u8 Stop(u64) { ++stopped; state=0; return 1; }
 u64 MultiPlayStopRequestOffset=reinterpret_cast<u64>(&Stop)-image_base;

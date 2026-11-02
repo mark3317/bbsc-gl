@@ -153,8 +153,6 @@ inline constexpr BuiltInSwitch BbscSwitches[] = {
     {"five_hunters", "Five hunters", "The host may summon up to 4 guests", "SHADPS4_BBSC_FIVE_HUNTERS"},
     {"messages", "Co-op texts", "Texts that fit seamless play (no \"Returning to your world\")",
      "SHADPS4_BBSC_MESSAGES"},
-    {"load_cover", "Black fade on joins", "The guest's loads happen behind a black fade",
-     "SHADPS4_BBSC_LOAD_COVER"},
     {"floor_guard", "Floor guard", "No crash when a character's floor was unloaded",
      "SHADPS4_BBSC_FLOOR_GUARD"},
     {"cinematic", "Free camera (F1)", "Keyboard + mouse camera for filming",

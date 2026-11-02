@@ -1,4 +1,4 @@
-"""Execute production Stop drain hook and loading UI close against memory fixtures."""
+"""Execute production Stop drain hook against memory fixtures."""
 from pathlib import Path
 import os, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
@@ -28,12 +28,6 @@ bool HasMemoryAccess(u64,size_t,MemoryProt){return writable;}
 template<class T>T ReadValue(u64 p,size_t o){return static_cast<T>(memory[p+o]);}
 template<class T>void WriteValue(u64 p,size_t o,T v){memory[p+o]=v;}
 s64 SteadyNowMs(){return now;}
-constexpr u64 MenuManPointerOffset=0x100;
-int closes=0;
-bool close_stub(){++closes;memory[0x90000+0x804]=3;return false;}
-bool open_stub(const void*){return false;}
-u64 NowLoadingCloseOffset=reinterpret_cast<u64>(&close_stub)-image_base;
-u64 NowLoadingOpenOffset=reinterpret_cast<u64>(&open_stub)-image_base;
 '''
 main=r'''
 int main(){
@@ -58,17 +52,12 @@ int main(){
  BbscStopPhaseHook(0xcc53c0,&r);now+=30000;BbscStopPhaseHook(0xcc53c0,&r);
  assert(memory[t+0x18]==9000000); // never expire the network request wait
  memory[end]=end;BbscStopPhaseHook(0xc9b960,&r);
- memory[image_base+MenuManPointerOffset]=0x90000;
- memory[0x90000+0x804]=2;assert(!BbscLoadingScreen(false)&&closes==1);
- for(int i=0;i<1000;++i)assert(!BbscLoadingScreen(false));
- assert(closes==1);memory[0x90000+0x804]=4;assert(!BbscLoadingScreen(false)&&closes==1);
- memory[0x90000+0x804]=0;assert(BbscLoadingScreen(false)&&closes==1);
- memory[0x90000+0x804]=1;assert(!BbscLoadingScreen(false)&&closes==2);
+
 }
 '''
-code=prefix+function('void PS4_SYSV_ABI BbscStopPhaseHook(u64 phase, const GuestRegisterSnapshot* registers)')+function('bool BbscLoadingScreen(bool open)')+main
+code=prefix+function('void PS4_SYSV_ABI BbscStopPhaseHook(u64 phase, const GuestRegisterSnapshot* registers)')+main
 with tempfile.TemporaryDirectory() as tmp:
  cpp=Path(tmp)/'test.cpp';exe=Path(tmp)/'test.exe';cpp.write_text(code,encoding='utf-8')
  subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-I'+str(root/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True)
-print('Production Stop: exact drain phase/2s boundary/task identity/native deadline; loading close handshake: PASS')
+print('Production Stop: exact drain phase/2s boundary/task identity/native deadline: PASS')

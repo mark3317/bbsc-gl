@@ -47,7 +47,6 @@
 #include "core/bbsc_persistence.h"
 #include "core/bbsc_quest_event_rules.h"
 #include "core/bbsc_cinematic.h"
-#include "imgui/bbsc_loading_layer.h"
 #include "core/cpu_patches.h"
 #include "core/debugger.h"
 #include "core/file_format/psf.h"
@@ -3473,9 +3472,7 @@ void WriteEnginePanicStack(std::ostream& out, const GuestRegisterSnapshot& regis
     out << "]}";
 }
 
-// The guest's loads under the death curtain's fade, see "Load cover".
-void StartBbscLoadCover(std::string_view why);
-void EndBbscLoadCover(std::string_view how);
+
 // The host's world state for a follow load, see "World state when warping together".
 bool BbscHostWorldFlagsReady(u32 packed_map);
 bool ApplyBbscHostWorldFlags(u32 packed_map, std::string_view why);
@@ -3519,7 +3516,7 @@ void WriteLuaSessionEvent(std::ostream& out, const GuestRegisterSnapshot& regist
 // Session actions must run even when diagnostic capture/research is disabled.
 void HandleBbscLuaSessionEvent(const GuestRegisterSnapshot& registers) {
     const std::string name = ReadGuestAscii(registers.rsi, 64);
-    // The guest accepted a summon: its summon load is next (see "Load cover").
+    // The guest accepted a summon: its native summon load is next.
     if (name.starts_with("JoinSession_") && GetSessionState() != 3) {
         KeepBbscHomeSpot(); // where we stand now is where the trip home goes back to
     }
@@ -4594,8 +4591,7 @@ u64 FindLivingPartnerCharacter() {
 // in your session. 4-player test 2026-10-06: several players rang their own Beckoning Bell (each
 // one hosting, session state 3) while others were guests, so a guest got the follow packets, world
 // flags and scaling of every host on the server, and the life reports of strangers. The follow
-// code took another host's position as "the host travelled" (a guest pulled to someone else's map
-// behind a black screen). Every frame now carries its sender and the sender's session (the host's
+// code took another host's position as "the host travelled" (a guest pulled to someone else's map). Every frame now carries its sender and the sender's session (the host's
 // sender id; bbsc_relay.cpp), and a guest locks onto its own host's sender:
 //   - the only player on the server who is hosting, or
 //   - with several, the host whose follow packet puts it in our map within BbscRelayLockMetres of
@@ -4847,7 +4843,6 @@ bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std
         BbscApplyDeathPenalty("before guest wipe reload");
         bbsc_wipe_restock_pending = true;
     }
-    StartBbscLoadCover(why); // already on for the summon when this is the cross-map second reload
     // A kept guest bypasses the vanilla failed-mission teardown. Clear the old encounter
     // before StageTransition snapshots the world, not after the new character is built.
     ClearBbscBossContext("before session warp");
@@ -4960,7 +4955,6 @@ void TickBbscJoinTeleport() {
     const u64 warp = ReadablePointer(vtable, 0x600) ? ReadValue<u64>(vtable, 0x5F8) : 0;
     if (!IsEbootCodeAddress(warp)) {
         LOG_WARNING(Debug, "BBSC join teleport: character vtable unexpected");
-        EndBbscLoadCover("joined, not placed");
         return;
     }
     const auto own = ReadCharacterTransform(player);
@@ -4981,7 +4975,6 @@ void TickBbscJoinTeleport() {
              "({:.2f}, {:.2f}, {:.2f})",
              own ? own->position[0] : 0.0f, own ? own->position[1] : 0.0f,
              own ? own->position[2] : 0.0f, position[0], position[1], position[2]);
-    EndBbscLoadCover("guest placed beside the host");
 }
 
 // ---- Warping together --------------------------------------------------------------------------
@@ -5664,7 +5657,6 @@ void TickBbscFollowHost() {
                             "{:#x}), attempt {} of {}",
                             target_map, BbscFollowArriveTimeoutMs / 1000, GetCurrentPackedMap(),
                             attempts, BbscFollowMaxAttempts);
-                EndBbscLoadCover("follow load did not arrive");
             }
             return; // still on the way
         }
@@ -5680,7 +5672,6 @@ void TickBbscFollowHost() {
                         "BBSC warp together: arrived in map {:#x} but the character vtable is "
                         "unexpected, staying where the load left us",
                         target_map);
-            EndBbscLoadCover("arrived, not placed");
             return;
         }
         if (host.packed_map != target_map ||
@@ -5694,7 +5685,6 @@ void TickBbscFollowHost() {
                      "{:#x} since - staying where the load put us (positions are per map)",
                      target_map, host.packed_map);
             ArmBbscRejoinLines(true, target_map, BbscGuestRejoinGraceMs);
-            EndBbscLoadCover("arrived, host moved on");
             return;
         }
         const BbscFollowSpot spot = BbscFollowSpotOf(host);
@@ -5714,7 +5704,6 @@ void TickBbscFollowHost() {
         // see TickBbscRejoinLines; keep it pointed there a little longer.
         ArmBbscRejoinLines(true, target_map, BbscGuestRejoinGraceMs);
         LogBbscHostWorldFlagsDiff(target_map, "after arriving");
-        EndBbscLoadCover("arrived beside the host");
         return;
     }
 
@@ -8118,206 +8107,10 @@ void ClearBbscStaleDeathRequest(std::string_view why) {
     }
 }
 
-// ---- Death curtain (2026-09-25) --------------------------------------------------------------
-// A kept death used to pop the player to the lamp in plain view. Now it looks like the game's own
-// death: fade to black, the game's loading screen, the revive and warp happen in the dark, then
-// the screen fades back in. There is no real load. The pieces, CONFIRMED statically:
-//   * SprjFade [0x05540068]+0x20 is the screen fade the stage flow uses for its own transitions:
-//     +0x0C current RGBA, +0x1C target RGBA, +0x38 seconds left. Target (0,0,0,1) with 0.5 s is
-//     its fade to black, (0,0,0,0) its fade back in (0x0193AC10; 0x04906F70 = {0.0f, 1.0f}).
-//   * the loading screen: 0x0176D380(args) opens it (args+8 -> MenuMan+0x17C0, state
-//     MenuMan[0x05562878]+0x804 = 1, true once the menu shows it, state 2); 0x0176D3C0() closes
-//     it (state 3, true once back to 0). The stage flow calls the opener every frame until shown.
-constexpr u64 SprjFadePointerOffset = 0x05540068;
 constexpr u64 MenuManPointerOffset = 0x05562878;
-constexpr u64 NowLoadingOpenOffset = 0x0176D380;
-constexpr u64 NowLoadingCloseOffset = 0x0176D3C0;
-constexpr u64 NowLoadingSetStateOffset = 0x0176D320;
-constexpr float BbscCurtainFadeOutS = 0.6f;
-constexpr float BbscCurtainFadeInS = 0.8f;
-constexpr s64 BbscCurtainHoldMs = 500;        // black after the respawn (T3: 6-8 s was too long)
-constexpr s64 BbscCurtainCloseWaitMs = 3'000; // give up waiting for it to close
-constexpr s64 BbscCurtainLimitMs = 15'000;    // whatever happens, the screen comes back
-
-enum class BbscCurtainStep : u8 { Idle, FadingOut, Loading, Closing, FadingIn };
-
-struct BbscCurtainState {
-    BbscCurtainStep step = BbscCurtainStep::Idle;
-    s64 started_ms = 0;
-    s64 step_ms = 0;
-    std::string why;
-    bool shown = false;
-    const char16_t* notice = nullptr; // the respawn line, shown once the screen is back
-    std::string_view notice_what;
-};
-BbscCurtainState bbsc_curtain;
-bool BbscRespawnInPlace(std::string_view why); // below
-void BbscRestockFromStorage(std::string_view why); // below
-s64 bbsc_inplace_respawn_ms = 0; // last BbscRespawnInPlace revive
-
-bool BbscCurtainActive() {
-    return bbsc_curtain.step != BbscCurtainStep::Idle;
-}
-
-// The respawn lines wait for the screen to come back.
-void BbscAnnounceAfterCurtain(const char16_t* text, std::string_view what) {
-    if (BbscCurtainActive()) {
-        bbsc_curtain.notice = text;
-        bbsc_curtain.notice_what = what;
-        return;
-    }
-    BbscAnnounce(text, what);
-}
-
-u64 BbscFadePlate() {
-    const u64 fade = ReadValue<u64>(image_base + SprjFadePointerOffset, 0);
-    const u64 plate = ReadablePointer(fade, 0x28) ? ReadValue<u64>(fade, 0x20) : 0;
-    return ReadablePointer(plate, 0x40) ? plate : 0;
-}
-
-bool BbscFadeTo(float alpha, float seconds) {
-    const u64 plate = BbscFadePlate();
-    if (plate == 0) {
-        return false;
-    }
-    const std::array<float, 4> target{0.0f, 0.0f, 0.0f, alpha};
-    WriteValue(plate, 0x1C, target);
-    WriteValue<float>(plate, 0x38, seconds);
-    return true;
-}
-
-bool BbscLoadingScreen(bool open) {
-    if (ReadValue<u64>(image_base + MenuManPointerOffset, 0) == 0) {
-        return true; // no menu manager: nothing to show or close
-    }
-    if (open) {
-        // MenuMan+0x808 is the loading screen's kind; the stage flow sets 2 for a death reload.
-        WriteValue<s32>(ReadValue<u64>(image_base + MenuManPointerOffset, 0), 0x808, 2);
-        alignas(16) static std::array<u32, 4> args{}; // args+8: MenuMan+0x17C0, the stage flow's 0
-        using Open = bool PS4_SYSV_ABI (*)(const void* args);
-        return reinterpret_cast<Open>(image_base + NowLoadingOpenOffset)(args.data());
-    }
-    const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
-    const s32 state = ReadValue<s32>(menu, 0x804);
-    if (state == 0) return true;
-    if (state == 3 || state == 4) return false;
-    // Native close clears the fade object's interpolation fields. Repeating it
-    // while the menu script is closing resets that animation every game tick.
-    using Close = bool PS4_SYSV_ABI (*)();
-    return reinterpret_cast<Close>(image_base + NowLoadingCloseOffset)();
-}
-
-void BbscCurtainStepTo(BbscCurtainStep step, s64 now) {
-    bbsc_curtain.step = step;
-    bbsc_curtain.step_ms = now;
-}
-
-// 2026-10-19 (host log, Gascoigne kill while dead): MenuMan+0x804 is a handshake with the
-// NowLoading menu script (0 idle, 1 asked, 2 shown, 3 close asked, 4 closing; the script reads and
-// writes it through the menu values 0x3EF / 0x3F1, 0x01762DB0 / 0x01762730). The close call
-// 0x0176D3C0 clears the "loading wanted" byte [0x0556286B] and asks for 3; only the script takes a
-// shown screen back to 0. That run's curtain was the only one whose screen showed: the game's main
-// thread then stalled 18 s (the far lamp warp streamed its area in), the time limit fired first and
-// wrote 0 straight away - no close call, wanted byte left 1 - and the loading screen stayed up
-// until the host closed the game (CONFIRMED: "fading in after 20730 ms (time limit)", game running
-// a minute longer; STRONGLY INDICATED that 0 while shown is what kept it).
-// So a screen BBSC opened is closed with 0x0176D3C0 until it reports 0, every tick, also after the
-// curtain is over; 0 is only written when the screen never showed (state 1, as before).
-s64 bbsc_loading_close_ms = 0; // BBSC still closing its loading screen since then (0 = no)
-std::string bbsc_loading_close_why;
-
-s32 BbscLoadingScreenState() {
-    const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
-    return ReadablePointer(menu, 0x810) ? ReadValue<s32>(menu, 0x804) : 0;
-}
-
-void KeepClosingBbscLoadingScreen(std::string_view why) {
-    if (BbscLoadingScreen(false)) {
-        return; // already down
-    }
-    if (bbsc_loading_close_ms == 0) {
-        bbsc_loading_close_ms = SteadyNowMs();
-        bbsc_loading_close_why = std::string{why};
-        LOG_INFO(Debug, "BBSC loading screen: still up (state {}) - closing it with the game's own "
-                        "close call until it is down ({})",
-                 BbscLoadingScreenState(), why);
-    }
-}
-
-void TickBbscLoadingScreenClose() {
-    if (bbsc_loading_close_ms == 0) {
-        return;
-    }
-    const s64 now = SteadyNowMs();
-    if (const u64 g = GetGlobalState(); ReadablePointer(g, 0x10) && ReadValue<u8>(g, 0x08) != 0) {
-        LOG_INFO(Debug, "BBSC loading screen: a load started - its own loading screen takes over ({})",
-                 bbsc_loading_close_why);
-        bbsc_loading_close_ms = 0;
-        return;
-    }
-    if (BbscLoadingScreen(false)) {
-        LOG_INFO(Debug, "BBSC loading screen: closed {} ms after the curtain ({})",
-                 now - bbsc_loading_close_ms, bbsc_loading_close_why);
-        BBSC_TIMELINE("LOAD", "loading screen closed {} ms late ({})", now - bbsc_loading_close_ms,
-                      bbsc_loading_close_why);
-        bbsc_loading_close_ms = 0;
-        return;
-    }
-    if (now - bbsc_loading_close_ms > 30'000) {
-        LOG_WARNING(Debug, "BBSC loading screen: still up 30 s after the close call (state {}, {})",
-                    BbscLoadingScreenState(), bbsc_loading_close_why);
-        BBSC_TIMELINE("LOAD", "loading screen still up 30 s after the close call (state {}, {})",
-                      BbscLoadingScreenState(), bbsc_loading_close_why);
-        bbsc_loading_close_ms = 0;
-    }
-}
-
-// ---- Load cover (2026-09-26) ------------------------------------------------------------------
-// The guest's own loads - the summon load, the second reload after a cross-map join, every follow
-// load - showed a bare black screen with the new map flashing up before the guest was placed
-// beside the host. The user asked for the death curtain's look there too. The cover fades to black
-// (the same SprjFade plate), holds it black through the load(s) and the placement - the stage flow
-// fades back in by itself after a load, so the plate is set back to black every frame - and fades
-// in once the guest stands beside the host. One cover spans the summon load and the cross-map
-// second reload. It never holds the fade timer (+0x38 stays 0): the stage flow waits for that before
-// it arms a map change. The game's loading screen (0x0176D380) is left to the stage flow: the
-// death curtain's calls never got it to show, and a real load runs its own.
-constexpr s64 BbscLoadCoverLimitMs = 75'000;   // whatever happens, the screen comes back
-constexpr s64 BbscLoadCoverNoSessionMs = 3'000; // summon failed or the session ended
-constexpr float BbscLoadCoverFadeOutS = 0.5f;
-
-struct BbscLoadCoverState {
-    bool active = false;
-    bool game_screen_seen = false; // the game's own loading screen has shown during this cover
-    bool own_screen = false;       // BBSC opened the loading screen (between / after the loads)
-    s64 started_ms = 0;
-    s64 load_over_ms = 0;          // the game's loading screen closed and no load is running
-    s64 no_session_since_ms = 0;
-    std::string why;
-};
-BbscLoadCoverState bbsc_load_cover;
-
-bool BbscLoadCoverEnabled() {
-    static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_LOAD_COVER");
-    return enabled;
-}
-
-bool BbscGuestLoadItemsReady();
-std::string bbsc_load_cover_pending_end;
-
-void StartBbscLoadCover(std::string_view why) {
-    if (!BbscLoadCoverEnabled() || image_base == 0 || bbsc_load_cover.active) {
-        return; // one cover spans a summon and its second reload
-    }
-    bbsc_load_cover = {};
-    bbsc_load_cover_pending_end.clear();
-    bbsc_load_cover.active = true;
-    bbsc_load_cover.started_ms = SteadyNowMs();
-    bbsc_load_cover.why = std::string{why};
-    BbscFadeTo(1.0f, BbscLoadCoverFadeOutS); // StageFlow owns the actual loading UI.
-    LOG_INFO(Debug, "BBSC load cover: started ({}, native screen {})", why, bbsc_load_cover.own_screen);
-    BBSC_TIMELINE("LOAD", "load cover: fading out ({})", why);
-}
+bool BbscRespawnInPlace(std::string_view why);
+void BbscRestockFromStorage(std::string_view why);
+s64 bbsc_inplace_respawn_ms = 0;
 
 bool BbscGuestWorldReady() {
     const u64 global = GetGlobalState();
@@ -8330,246 +8123,6 @@ bool BbscGuestWorldReady() {
     const auto& host = bbsc_follow_latest;
     return host.received_ms != 0 && IsUsablePackedMap(host.packed_map) && (host.packed_map == map ||
         (BbscMapArea(host.packed_map) == BbscMapArea(map) && BbscMapResident(host.packed_map)));
-}
-
-void EndBbscLoadCover(std::string_view how) {
-    if (!bbsc_load_cover.active) {
-        return;
-    }
-    // Placement completion does not imply inventory reconciliation. Keep the
-    // cover across the final native inventory reset and the existing ledger check.
-    if (GetSessionState() == 6 && !BbscQuitInProgress() &&
-        (!BbscGuestLoadItemsReady() || !BbscGuestWorldReady())) {
-        bbsc_load_cover_pending_end = std::string{how};
-        return;
-    }
-    bbsc_load_cover_pending_end.clear();
-    bbsc_load_cover.active = false;
-    if (bbsc_load_cover.own_screen) {
-        bbsc_load_cover.own_screen = false;
-        // own_screen = the screen showed: never 0 while shown (see KeepClosingBbscLoadingScreen).
-        KeepClosingBbscLoadingScreen("load cover");
-    }
-    if (!BbscCurtainActive()) { // a death curtain brings the screen back itself
-        BbscFadeTo(0.0f, BbscCurtainFadeInS);
-    }
-    LOG_INFO(Debug, "BBSC load cover: fading in after {} ms ({}; {})",
-             SteadyNowMs() - bbsc_load_cover.started_ms, bbsc_load_cover.why, how);
-    BBSC_TIMELINE("LOAD", "load cover: fading in after {} ms ({}; {})",
-             SteadyNowMs() - bbsc_load_cover.started_ms, bbsc_load_cover.why, how);
-}
-
-void TickBbscLoadCover() {
-    if (!bbsc_load_cover.active) {
-        return;
-    }
-    if (!bbsc_load_cover_pending_end.empty() && BbscGuestLoadItemsReady() &&
-        (GetSessionState() != 6 || BbscGuestWorldReady())) {
-        const std::string reason = bbsc_load_cover_pending_end;
-        EndBbscLoadCover(reason);
-        return;
-    }
-    const s64 now = SteadyNowMs();
-    if (now - bbsc_load_cover.started_ms > BbscLoadCoverLimitMs) {
-        if (GetSessionState() == 6 && !BbscQuitInProgress() &&
-            (!BbscGuestWorldReady() || !BbscGuestLoadItemsReady())) {
-            OnBbscPeerLeft(GetBbscRelayHost(), true);
-            bbsc_load_cover.started_ms = now;
-            LOG_ERROR(Debug, "BBSC load cover: world/inventory readiness timed out; returning home");
-        } else {
-            EndBbscLoadCover("time limit");
-        }
-        return;
-    }
-    const s32 session_state = GetSessionState();
-    if (session_state == 4 || session_state == 5 || session_state == 6) {
-        bbsc_load_cover.no_session_since_ms = 0;
-    } else if (bbsc_load_cover.no_session_since_ms == 0) {
-        bbsc_load_cover.no_session_since_ms = now;
-    } else if (now - bbsc_load_cover.no_session_since_ms > BbscLoadCoverNoSessionMs) {
-        EndBbscLoadCover("no session");
-        return;
-    }
-    // Test 2026-10-09 (mod 39, both guests): after a wipe the reload put the guests in the host's
-    // map, so no follow load ran - and only the follow's arrival ended the cover. The loading screen
-    // stayed up 75 s ("infinite loading screen unless you teleport"). A wipe cover ends once its
-    // load is over and the respawn after it is done (curtain closed, alive), or 20 s after the load.
-    if (bbsc_load_cover.why == "wipe" && bbsc_load_cover.game_screen_seen) {
-        const u64 global = GetGlobalState();
-        const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
-        const bool loading = (ReadablePointer(global, 0x10) && ReadValue<u8>(global, 0x08) != 0) ||
-                             (ReadablePointer(menu, 0x810) && ReadValue<s32>(menu, 0x804) != 0 &&
-                              !bbsc_load_cover.own_screen);
-        if (loading) {
-            bbsc_load_cover.load_over_ms = 0;
-        } else if (bbsc_load_cover.load_over_ms == 0) {
-            bbsc_load_cover.load_over_ms = now;
-        } else {
-            const s64 since = now - bbsc_load_cover.load_over_ms;
-            const bool respawned =
-                !BbscCurtainActive() && GetCharacterHp(GetLocalPlayerCharacter()) > 0;
-            if (respawned || since >= 20'000) { // T3: no extra 2 s of black after the respawn
-                EndBbscLoadCover(respawned ? "wipe reload done, guest respawned"
-                                           : "wipe reload done, time limit after the load");
-                return;
-            }
-        }
-    }
-    // 2026-09-28: the user found the BBSC overlay loading screen weird and wants the game's own -
-    // the one a death reload shows (MENU_NowLoading: the "Bloodborne" logo on black). While a real
-    // load runs, the game's loading screen is up (MenuMan+0x804 != 0) and the cover lets it be seen;
-    // until it comes up we ask for the death kind (MenuMan+0x808 = 2, what the stage flow sets for a
-    // death reload). Black only before and after the load (the flash of the new map before the
-    // guest is placed).
-    if (const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
-        ReadablePointer(menu, 0x810)) {
-        if (ReadValue<s32>(menu, 0x804) != 0) {
-            if (!bbsc_load_cover.game_screen_seen) {
-                bbsc_load_cover.game_screen_seen = true;
-                LOG_INFO(Debug, "BBSC load cover: the game's loading screen is up (kind {})",
-                         ReadValue<s32>(menu, 0x808));
-            }
-            return;
-        }
-        if (bbsc_load_cover.own_screen) {
-            // The summon and placement reload may be separate stage transitions.
-            // Keep the native loading UI across that gap; EndBbscLoadCover owns its close.
-            BbscLoadingScreen(true);
-            return;
-        }
-        // 2026-10-29 (PT-4): between the loads (and after them, until the guest is placed) the
-        // cover no longer opens the game's loading screen itself - the black plate below covers
-        // it (a missed close left the logo over the loaded game, see the death curtain).
-    }
-    if (now - bbsc_load_cover.started_ms < static_cast<s64>(BbscLoadCoverFadeOutS * 1000.0f)) {
-        return; // our own fade-out is still running
-    }
-    const u64 plate = BbscFadePlate();
-    if (plate == 0) {
-        return;
-    }
-    static constexpr std::array<float, 4> Black{0.0f, 0.0f, 0.0f, 1.0f};
-    WriteValue(plate, 0x0C, Black);
-    WriteValue(plate, 0x1C, Black);
-    WriteValue<float>(plate, 0x38, 0.0f);
-}
-
-// Starts the curtain for a kept death; the respawn itself happens in TickBbscDeathCurtain once the
-// screen is black. False when the fade is not there (then the caller respawns in view as before).
-bool StartBbscDeathCurtain(std::string_view why) {
-    if (BbscCurtainActive()) {
-        return true;
-    }
-    if (!BbscFadeTo(1.0f, BbscCurtainFadeOutS)) {
-        LOG_WARNING(Debug, "BBSC death curtain: no screen fade, respawning in view ({})", why);
-        return false;
-    }
-    const s64 now = SteadyNowMs();
-    bbsc_loading_close_ms = 0; // this curtain owns the loading screen now
-    bbsc_curtain = {};
-    bbsc_curtain.why = std::string{why};
-    bbsc_curtain.started_ms = now;
-    BbscCurtainStepTo(BbscCurtainStep::FadingOut, now);
-    LOG_INFO(Debug, "BBSC death curtain: fading out ({})", why);
-    return true;
-}
-
-void EndBbscDeathCurtain(s64 now, std::string_view how) {
-    BbscFadeTo(0.0f, BbscCurtainFadeInS);
-    BbscCurtainStepTo(BbscCurtainStep::FadingIn, now);
-    LOG_INFO(Debug, "BBSC death curtain: fading in after {} ms ({})", now - bbsc_curtain.started_ms,
-             how);
-    BBSC_TIMELINE("RESPAWN", "death curtain: fading in after {} ms ({})",
-                  now - bbsc_curtain.started_ms, how);
-}
-
-void TickBbscDeathCurtain() {
-    if (!BbscCurtainActive()) {
-        return;
-    }
-    const s64 now = SteadyNowMs();
-    const s64 in_step = now - bbsc_curtain.step_ms;
-    if (now - bbsc_curtain.started_ms > BbscCurtainLimitMs &&
-        bbsc_curtain.step != BbscCurtainStep::FadingIn &&
-        bbsc_curtain.step != BbscCurtainStep::Closing) {
-        if (bbsc_curtain.step == BbscCurtainStep::Loading) {
-            // The screen may be up: close it the game's way (2026-10-19, see
-            // KeepClosingBbscLoadingScreen) - the Closing step has its own limits.
-            LOG_INFO(Debug, "BBSC death curtain: time limit after {} ms - closing the loading "
-                            "screen (state {}, shown {})",
-                     now - bbsc_curtain.started_ms, BbscLoadingScreenState(), bbsc_curtain.shown);
-            BbscCurtainStepTo(BbscCurtainStep::Closing, now);
-            return;
-        }
-        EndBbscDeathCurtain(now, "time limit"); // still fading out: no loading screen opened
-        return;
-    }
-    switch (bbsc_curtain.step) {
-    case BbscCurtainStep::FadingOut:
-        if (in_step < static_cast<s64>(BbscCurtainFadeOutS * 1000.0f) + 100) {
-            return;
-        }
-        if (!BbscRespawnInPlace(bbsc_curtain.why)) {
-            // Same as before the curtain: a failed respawn falls back to the game's own reload.
-            BbscFadeTo(0.0f, 0.2f);
-            bbsc_curtain.step = BbscCurtainStep::Idle;
-            // Not on top of a load that is already running (two loads at once crash the game).
-            if (const u64 g = GetGlobalState(); ReadablePointer(g, 0x10) && ReadValue<u8>(g, 0x08) == 0) {
-                RequestBbscDeathReload("death curtain: respawn in place failed");
-            }
-            return;
-        }
-        // 2026-10-29 (user, PT-4: "the logo screen stays over the loaded game after a death"):
-        // BBSC no longer opens the game's loading screen for a load that is not one - closing it
-        // depends on the NowLoading menu script's handshake, and a missed close left the logo up.
-        // The curtain is the black plate only; real loads show the game's own screen as always.
-        bbsc_curtain.shown = false;
-        BbscCurtainStepTo(BbscCurtainStep::Loading, now);
-        return;
-    case BbscCurtainStep::Loading:
-        if (in_step < BbscCurtainHoldMs) {
-            return;
-        }
-        if (const u64 g = GetGlobalState(); BbscLoadingScreenState() != 0 &&
-                                            ReadablePointer(g, 0x10) && ReadValue<u8>(g, 0x08) == 0) {
-            // Someone else's screen left up after its load (T3): never waited for - closed in the
-            // background. During a load it is the load's own and stays.
-            KeepClosingBbscLoadingScreen("death curtain");
-        }
-        EndBbscDeathCurtain(now, "black hold over");
-        return;
-    case BbscCurtainStep::Closing:
-        if (BbscLoadingScreen(false)) {
-            EndBbscDeathCurtain(now, "loading screen closed");
-        } else if (in_step > BbscCurtainCloseWaitMs) {
-            if (bbsc_curtain.shown || BbscLoadingScreenState() == 4) {
-                // Shown (4 = the script is taking it down): only the menu script closes it - keep
-                // asking after the fade-in.
-                KeepClosingBbscLoadingScreen("death curtain");
-                EndBbscDeathCurtain(now, "loading screen still closing");
-            } else {
-                // Never shown (state 1, the usual case): nothing of the menu to undo.
-                // 0x0176D320 writes [MenuMan]+0x804 with no null check (review 2026-10-08).
-                if (ReadValue<u64>(image_base + MenuManPointerOffset, 0) != 0) {
-                    reinterpret_cast<void PS4_SYSV_ABI (*)(u32)>(image_base +
-                                                                 NowLoadingSetStateOffset)(0);
-                }
-                EndBbscDeathCurtain(now, "loading screen forced closed");
-            }
-        }
-        return;
-    case BbscCurtainStep::FadingIn:
-        if (in_step < static_cast<s64>(BbscCurtainFadeInS * 1000.0f)) {
-            return;
-        }
-        bbsc_curtain.step = BbscCurtainStep::Idle;
-        if (bbsc_curtain.notice != nullptr) {
-            BbscAnnounce(bbsc_curtain.notice, bbsc_curtain.notice_what);
-        }
-        return;
-    case BbscCurtainStep::Idle:
-        return;
-    }
 }
 
 // Revive the local player and teleport it, without any load.
@@ -8622,8 +8175,7 @@ bool BbscRespawnInPlace(std::string_view why) {
     //   [[[chr+0x3B0]+0x58]+0x28]+0xC = 1; [chr+0x58]+0x114 &= 0xFFFE.
     // The earlier attempt used 0x01900710, which restores HP but leaves the death flags set
     // (player stayed invisible and could not move, run 2026-09-16).
-    // Review 2026-10-08: the curtain fades for ~0.7 s first; a load, a host reload or a quit to the
-    // title may have started meanwhile, and the calls below must not run on a world being torn down.
+    // Never revive while a load or a return to the title is tearing down the world.
     if (const u64 g = GetGlobalState();
         !ReadablePointer(g, 0x1598) || ReadValue<u8>(g, 0x08) != 0 || !IsSprjLuaEventManReady()) {
         LOG_WARNING(Debug, "BBSC respawn in place ({}): a load or the title is under way - skipped",
@@ -8826,16 +8378,16 @@ bool BbscRespawnInPlace(std::string_view why) {
     bbsc_inplace_respawn_ms = SteadyNowMs();
     BbscRestockFromStorage(why);
     if (where == "host's last lamp") {
-        BbscAnnounceAfterCurtain(BbscL(u"You respawned at the host's lamp.", u"Вы возродились у лампы хоста."),
+        BbscAnnounce(BbscL(u"You respawned at the host's lamp.", u"Вы возродились у лампы хоста."),
                                  "respawn at the host's lamp");
     } else if (where == "partner") {
-        BbscAnnounceAfterCurtain(BbscL(u"You respawned next to the host.", u"Вы возродились рядом с хостом."),
+        BbscAnnounce(BbscL(u"You respawned next to the host.", u"Вы возродились рядом с хостом."),
                                  "respawn beside the host");
     } else if (where == "last lamp") {
-        BbscAnnounceAfterCurtain(BbscL(u"You respawned at the lamp.", u"Вы возродились у лампы."),
+        BbscAnnounce(BbscL(u"You respawned at the lamp.", u"Вы возродились у лампы."),
                                  "respawn at the lamp");
     } else {
-        BbscAnnounceAfterCurtain(BbscL(u"You respawned.", u"Вы возродились."), "respawn");
+        BbscAnnounce(BbscL(u"You respawned.", u"Вы возродились."), "respawn");
     }
     return true;
 }
@@ -9598,7 +9150,7 @@ bool BbscApplyDeathPenalty(std::string_view why) {
 
 // Late death steps (2026-10-13, onesadeye host log 22:14:05-15): the watchdog revived the host in
 // place, then the game's own death script still ran 7 s later (SoloPlayDeath, then
-// SoloPlayDeath_2) for that same death - a second curtain, a second respawn, a second stain, and a
+// SoloPlayDeath_2) for that same death - a second respawn, a second stain, and a
 // grey void on the host's screen. A step that starts while the player is alive in a session within
 // 15 s of a BBSC revive belongs to the death BBSC already handled: skip it and clear what its
 // entry may already have set. A real new death has hp 0 and runs normally.
@@ -9762,7 +9314,6 @@ void TickBbscSpectate() {
         bbsc_spectate_host_back_ms = 0;
         Bbsc::CinematicForceOff();
         Bbsc::CinematicSetWatching(false);
-        StartBbscLoadCover("wipe");
         LOG_INFO(Debug, "BBSC spectate: host started death reload - camera released, waiting for host placement");
         BBSC_TIMELINE("DEATH", "host death reload: spectator camera released before host respawn");
     }
@@ -9836,15 +9387,7 @@ void TickBbscSpectate() {
         }
         if (!respawn_why.empty()) {
             BbscApplyDeathPenalty(respawn_why);
-            // T3 (2026-10-29, guest after a wipe): the load cover was still black when the curtain
-            // started on top of it - the guest stood at the lamp 6-8 s in the dark. With a cover
-            // up the screen is black already: respawn now and take the cover down with it.
-            if (bbsc_load_cover.active && BbscRespawnInPlace(respawn_why)) {
-                EndBbscLoadCover("respawned under the cover");
-                bbsc_spectate_active = false;
-                return;
-            }
-            if (StartBbscDeathCurtain(respawn_why) || BbscRespawnInPlace(respawn_why)) {
+            if (BbscRespawnInPlace(respawn_why)) {
                 bbsc_spectate_active = false;
                 return;
             }
@@ -11715,7 +11258,6 @@ void TickBbscPostLoadRecovery() {
         Bbsc::CinematicForceOff();
         ClearBbscBossContext("completed co-op death load");
         ReleaseBbscDeathLocks("completed co-op death load");
-        EndBbscLoadCover("completed co-op death load");
         LOG_INFO(Debug, "BBSC post-load: living local character, death camera and locks released");
     } else if (now - stable_ms >= 15'000) {
         // No usable local character: never leave a camera-only client in a kept session.
@@ -16560,10 +16102,12 @@ void LocalizeBbscQuestEvent(u64 instance) {
     BBSC_PERF_NESTED("NPC event lookup");
     if (!ReadablePointer(instance, 0xC0) ||
         !HasMemoryAccess(instance + 0x78, 1, MemoryProt::CpuWrite)) return;
-    const u64 ref = ReadValue<u64>(instance, 0xA8);
-    const u64 instruction = ReadValue<u64>(instance, 0xB0);
+    std::array<u64, 2> event_context{};
+    std::memcpy(event_context.data(), reinterpret_cast<const void*>(instance + 0xA8), sizeof(event_context));
+    const u64 ref = event_context[0], instruction = event_context[1];
     if (!ReadablePointer(ref, 0x10)) return;
-    const u64 file = ReadValue<u64>(ref, 8);
+    u64 file;
+    std::memcpy(&file, reinterpret_cast<const void*>(ref + 8), sizeof(file));
     if (auto cached = bbsc_quest_instances.find(instance); cached != bbsc_quest_instances.end()) {
         const auto& c = cached->second;
         const auto& r = c.range;
@@ -16580,9 +16124,13 @@ void LocalizeBbscQuestEvent(u64 instance) {
         bbsc_quest_instances.erase(cached);
     }
     if (!ReadablePointer(file, 0x90)) return;
-    const s64 count = ReadValue<s64>(file, 0x10);
-    const u64 events = file + ReadValue<u64>(file, 0x18);
-    const u64 instructions = file + ReadValue<u64>(file, 0x28);
+    std::array<u64, 4> directory{};
+    std::memcpy(directory.data(), reinterpret_cast<const void*>(file + 0x10), sizeof(directory));
+    const s64 count = static_cast<s64>(directory[0]);
+    if (directory[1] > std::numeric_limits<u64>::max() - file ||
+        directory[3] > std::numeric_limits<u64>::max() - file) return;
+    const u64 events = file + directory[1];
+    const u64 instructions = file + directory[3];
     if (count <= 0 || count > 100'000) return;
     auto found = bbsc_quest_indexes.find(file);
     if (found == bbsc_quest_indexes.end() || found->second.events != events ||
@@ -16626,9 +16174,12 @@ void LocalizeBbscQuestEvent(u64 instance) {
     }
     if (instruction >= range->end) return; // negative lookup is logarithmic too
     // A reused directory/row must not inherit another event's permission.
-    if (!ReadablePointer(range->row, 0x18) || ReadValue<s64>(range->row, 0) != range->event ||
-        instructions + ReadValue<u64>(range->row, 0x10) != range->first ||
-        ReadValue<u64>(range->row, 8) != (range->end - range->first) / 0x20) {
+    std::array<u64, 3> row_header{};
+    const bool row_readable = ReadablePointer(range->row, sizeof(row_header));
+    if (row_readable) std::memcpy(row_header.data(), reinterpret_cast<const void*>(range->row), sizeof(row_header));
+    if (!row_readable || row_header[0] != static_cast<u64>(range->event) ||
+        row_header[2] != range->first - instructions ||
+        row_header[1] != (range->end - range->first) / 0x20) {
         bbsc_quest_indexes.erase(found);
         return;
     }
@@ -18398,11 +17949,11 @@ void TickBbscDeadWatchdog() {
     const s32 hp = ReadablePointer(player, 0x3B8) ? GetCharacterHp(player) : -1;
     // A held death during a boss fight is meant to stay dead until the boss is over.
     const bool spectating = bbsc_spectate_active && bbsc_death_mode == BbscDeathMode::Spectate;
-    if (hp > 0 && !bbsc_spectate_active && !BbscCurtainActive()) {
+    if (hp > 0 && !bbsc_spectate_active) {
         bbsc_boss_at_own_death = false;
     }
     const bool loading = ReadablePointer(global, 0x10) && ReadValue<u8>(global, 0x08) != 0;
-    if (!session_alive || loading || hp > 0 || hp < 0 || spectating || BbscCurtainActive()) {
+    if (!session_alive || loading || hp > 0 || hp < 0 || spectating) {
         bbsc_dead_since_ms = 0;
         return;
     }
@@ -18682,15 +18233,23 @@ u64 BbscParamViewRow(const BbscParamView& view, u32 i, size_t size) {
 // pointer slot of the repository is tried and the type name must match.
 u64 BbscGameParamTable(std::string_view type) {
     const u64 repo = ReadValue<u64>(image_base + 0x05540340, 0);
-    if (!ReadablePointer(repo, 0x158) || ReadValue<s32>(repo, 0x148) == 0) {
+    if (!ReadablePointer(repo, 0x158)) return 0;
+    s32 loaded;
+    std::memcpy(&loaded, reinterpret_cast<const void*>(repo + 0x148), sizeof(loaded));
+    if (loaded == 0) {
         return 0; // params not loaded yet
     }
     thread_local std::map<std::string, u64, std::less<>> slots;
     const auto table_at = [repo, type](u64 off) -> u64 {
-        if (!ReadablePointer(repo + off, 8)) return 0;
-        const u64 holder = ReadValue<u64>(repo, off);
-        const u64 res = ReadablePointer(holder, 0x78) ? ReadValue<u64>(holder, 0x70) : 0;
-        const u64 table = ReadablePointer(res, 0x78) ? ReadValue<u64>(res, 0x70) : 0;
+        // The repository prefix was checked above. Later slots need their own
+        // check; every pointed-to object is still validated on every lookup.
+        if (off > 0x150 && !ReadablePointer(repo + off, 8)) return 0;
+        u64 holder, res, table;
+        std::memcpy(&holder, reinterpret_cast<const void*>(repo + off), 8);
+        if (!ReadablePointer(holder, 0x78)) return 0;
+        std::memcpy(&res, reinterpret_cast<const void*>(holder + 0x70), 8);
+        if (!ReadablePointer(res, 0x78)) return 0;
+        std::memcpy(&table, reinterpret_cast<const void*>(res + 0x70), 8);
         if (!ReadablePointer(table, std::max<size_t>(0x58, 0x0D + type.size()))) return 0;
         const auto* name = reinterpret_cast<const char*>(table + 0x0C);
         return std::memcmp(name, type.data(), type.size()) == 0 && name[type.size()] == '\0'
@@ -20944,19 +20503,22 @@ constexpr u64 ItemUsableResultOffset = 0x015800D1;
 void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     if (!registers) return;
     const u64 used_row = registers->r13;
-    const s32 used_effect = ReadablePointer(used_row, 0x48) ? ReadValue<s32>(used_row, 0) : -1;
+    if (!ReadablePointer(used_row, 0x48)) return;
+    s32 used_effect;
+    std::memcpy(&used_effect, reinterpret_cast<const void*>(used_row), sizeof(used_effect));
     // A guest cannot start another host/search while joining or visiting a host.
     // This is the native goods-use result shared by menus and quick slots. Apply
     // before both the native-yes and bells-anywhere paths, independently of that
     // option. Keep Silencing Blank and the PvP toggle available.
     if (used_effect != 9000 && used_effect != 9005 && used_effect != 7511 && used_effect != 7) return;
-    const s32 session = GetSessionState();
-    if ((used_effect == 9000 || used_effect == 9005) &&
-        (session == 4 || session == 6) && registers->r14 != 0 &&
-        registers->r14 == GetLocalPlayerCharacter()) {
-        auto* changed = const_cast<GuestRegisterSnapshot*>(registers);
-        changed->rcx &= ~u64{0xFF};
-        return;
+    if (used_effect == 9000 || used_effect == 9005) {
+        const s32 session = GetSessionState();
+        if ((session == 4 || session == 6) && registers->r14 != 0 &&
+            registers->r14 == GetLocalPlayerCharacter()) {
+            auto* changed = const_cast<GuestRegisterSnapshot*>(registers);
+            changed->rcx &= ~u64{0xFF};
+            return;
+        }
     }
     if (used_effect == 9000 || used_effect == 9005 || used_effect == 7511 || used_effect == 7) {
         const u64 carried = BbscCarriedInventory();
@@ -20968,10 +20530,6 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_BELLS_ANYWHERE");
     if (!enabled || (registers->rcx & 0xFF) != 0) {
         return; // off, or the game already says yes
-    }
-    const u64 row = registers->r13;
-    if (!ReadablePointer(row, 0x48)) {
-        return;
     }
     const s32 effect = used_effect;
     std::string_view bell;
@@ -20990,12 +20548,12 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     const auto low = [frame](u64 off) { return *reinterpret_cast<const u8*>(frame - off); };
     u64 character_state = 0;
     std::memcpy(&character_state, reinterpret_cast<const void*>(frame - 0x1D0), sizeof(character_state));
-    std::string kept;
-    const auto keep = [&kept](bool blocked, std::string_view why) {
-        if (blocked) {
-            kept += kept.empty() ? "" : ", ";
-            kept += why;
-        }
+    std::array<std::pair<bool, std::string_view>, 11> kept_reasons{};
+    size_t kept_count = 0;
+    bool has_kept = false;
+    const auto keep = [&](bool blocked, std::string_view why) {
+        kept_reasons[kept_count++] = {blocked, why};
+        has_kept |= blocked;
     };
     keep((registers->r12 & 0xFF) == 0, "not for this player type");
     keep((character_state & 0xFFFFFFFFFFull) != 0, "character state");
@@ -21010,12 +20568,12 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     keep((registers->r15 & 0xFF) == 0 || low(0x1B4) == 0 ||
              (registers->rsi & registers->r8 & 0xFF) == 0,
          "weapon or effect state");
-    std::string lifted;
-    const auto lift = [&lifted](bool blocked, std::string_view why) {
-        if (blocked) {
-            lifted += lifted.empty() ? "" : ", ";
-            lifted += why;
-        }
+    std::array<std::pair<bool, std::string_view>, 6> lifted_reasons{};
+    size_t lifted_count = 0;
+    bool has_lifted = false;
+    const auto lift = [&](bool blocked, std::string_view why) {
+        lifted_reasons[lifted_count++] = {blocked, why};
+        has_lifted |= blocked;
     };
     lift((low(0x1E0) & 1) != 0, "item rule of the character's effects");
     lift(low(0x1E1) == 0, "candidate state");
@@ -21023,11 +20581,24 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     lift((low(0x1F4) & 1) != 0, "goods 120 rule");
     lift((low(0x1F0) & 1) != 0, "area");
     lift(low(0x1BA) == 0, "session branch");
-    const bool allow = kept.empty() && !lifted.empty();
+    const bool allow = !has_kept && has_lifted;
     if (allow) {
         auto* changed = const_cast<GuestRegisterSnapshot*>(registers);
         changed->rcx = (changed->rcx & ~u64{0xFF}) | 1;
     }
+    // Detailed reasons are diagnostics, not part of goods availability. Keep
+    // allocations, map queries, mutex and timeline I/O out of normal item checks.
+    if (!BbscResearchEnabled()) return;
+    const auto reasons_text = [](const auto& reasons) {
+        std::string out;
+        for (const auto& [blocked, why] : reasons) if (blocked) {
+            if (!out.empty()) out += ", ";
+            out += why;
+        }
+        return out;
+    };
+    const std::string kept = reasons_text(kept_reasons);
+    const std::string lifted = reasons_text(lifted_reasons);
     static std::mutex last_mutex;
     static std::string last;
     const u32 map = GetCurrentPackedMap();
@@ -21187,7 +20758,6 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscWorldFlagsBroadcast"); TickBbscWorldFlagsBroadcast(); }
         { BBSC_PERF_NESTED("tick TickBbscChaliceBorrow"); TickBbscChaliceBorrow(); }
         { BBSC_PERF_NESTED("tick TickBbscFollowHost"); TickBbscFollowHost(); }
-        { BBSC_PERF_NESTED("tick TickBbscLoadCover"); TickBbscLoadCover(); }
         { BBSC_PERF_NESTED("tick TickBbscHpPenalty"); TickBbscHpPenalty(); }
         { BBSC_PERF_NESTED("tick TickBbscLampRole"); TickBbscLampRole(); }
         { BBSC_PERF_NESTED("tick TickBbscMessages"); TickBbscMessages(); }
@@ -21201,8 +20771,6 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscStrayForcedWarp"); TickBbscStrayForcedWarp(); }
         { BBSC_PERF_NESTED("tick TickBbscGuestBlank"); TickBbscGuestBlank(); }
         { BBSC_PERF_NESTED("tick TickBbscDeadWatchdog"); TickBbscDeadWatchdog(); }
-        { BBSC_PERF_NESTED("tick TickBbscDeathCurtain"); TickBbscDeathCurtain(); }
-        { BBSC_PERF_NESTED("tick TickBbscLoadingScreenClose"); TickBbscLoadingScreenClose(); }
         { BBSC_PERF_NESTED("tick TickBbscStageWatch"); TickBbscStageWatch(); }
         { BBSC_PERF_NESTED("tick TickBbscHostDeathNotice"); TickBbscHostDeathNotice(); }
         { BBSC_PERF_NESTED("tick TickBbscBossUnlock"); TickBbscBossUnlock(); }

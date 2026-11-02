@@ -18,7 +18,6 @@ inline constexpr std::array<std::string_view, 33> DefaultOnSwitches{
     "SHADPS4_BBSC_SHARED_PROGRESS",     // merge the host's progress into the guest's world (adds only)
     "SHADPS4_BBSC_WARP_TOGETHER",        // the guest follows the host through a lamp warp
     "SHADPS4_BBSC_WORLD_SYNC",           // ...and loads the host's map with the host's world flags
-    "SHADPS4_BBSC_LOAD_COVER",           // the guest's summon/follow loads behind a smooth black fade
     "SHADPS4_BBSC_FULL_ECHOES",          // a summoned guest is paid the host's rate, not half
     "SHADPS4_BBSC_GUEST_ITEMS",          // a guest picks up and keeps items in the host's world
     "SHADPS4_BBSC_SOLID_NPCS",           // a guest sees NPCs solid, not as grey wandering ghosts
