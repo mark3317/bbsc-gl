@@ -14690,7 +14690,7 @@ bool BbscSharedMapProgressAllowed(u32 flag) {
 u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming) {
     for (u32 bit = 0; bit < 8; ++bit) {
         const u32 flag = key * 1000 + static_cast<u32>(byte) * 8 + bit;
-        if (!BbscSharedMapProgressAllowed(flag)) {
+        if ((incoming & (0x80u >> bit)) != 0 && !BbscSharedMapProgressAllowed(flag)) {
             incoming &= static_cast<u8>(~(0x80u >> bit));
         }
     }
@@ -14724,8 +14724,28 @@ std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when) {
         bbsc_progress_groups.clear();
         return {-1, 0};
     }
+    // Preflight only additions: an already-applied journal must not copy the save again.
+    // Keep the backup synchronous and before the first mutation when changes exist.
+    bool changes = std::ranges::any_of(flags, [](u32 flag) { return !BbscEventFlag(flag); });
+    if (!changes) {
+        for (const auto& [key, bytes] : groups) {
+            const u64 storage = BbscFlagGroupStorage(key);
+            if (!storage) continue;
+            const auto* live = reinterpret_cast<const u8*>(storage);
+            for (size_t b = 0; b < BbscWorldGroupBytes; ++b) {
+                if (BbscSharedProgressByte(key, b, static_cast<u8>(bytes[b] & ~live[b]))) {
+                    changes = true;
+                    break;
+                }
+            }
+            if (changes) break;
+        }
+    }
+    if (!changes) return {0, 0};
     if (!bbsc_progress_backed_up) {
+        BBSC_PERF_NESTED("progress backup");
         bbsc_progress_backed_up = BackupBbscSaves();
+        if (!bbsc_progress_backed_up) return {-2, 0}; // retry without retiring the journal
     }
     using SetEventFlag = u64 PS4_SYSV_ABI (*)(u64 unused, u32 flag, u8 value);
     const auto set = reinterpret_cast<SetEventFlag>(image_base + 0x0132E5A0);
@@ -14747,7 +14767,7 @@ std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when) {
         for (size_t b = 0; b < BbscWorldGroupBytes; ++b) {
             // Filter at consumption so old pending journals obey the same policy.
             // Never remove an existing own-world bit; session sync is unchanged.
-            const u8 incoming = BbscSharedProgressByte(key, b, bytes[b]);
+            const u8 incoming = BbscSharedProgressByte(key, b, static_cast<u8>(bytes[b] & ~live[b]));
             const u8 added = static_cast<u8>(incoming & ~live[b]);
             bits += std::popcount(added);
             for (u32 bit = 0; bit < 8; ++bit) {
@@ -15111,6 +15131,7 @@ void TickBbscSharedProgress() {
     RestoreBbscOwnWorld("before the shared progress merge");
     const auto [bosses, bits] =
         share ? MergeBbscSharedProgress("after the home load") : std::pair<s64, size_t>{-1, 0};
+    if (bosses == -2) return; // backup failed; retain pending progress and retry
     if (!ApplyBbscTalkJournal("after the home load", true)) return;
     bbsc_progress_was_guest = false;
     bbsc_progress_merged_at_load = false;
@@ -15183,6 +15204,7 @@ void ApplyBbscSharedProgressAtLoad() {
     const auto [bosses, bits] = BbscSharedProgressEnabled()
                                     ? MergeBbscSharedProgress("during the home load")
                                     : std::pair<s64, size_t>{-1, 0};
+    if (bosses == -2) return;
     ApplyBbscTalkJournal("during the home load", false);
     bbsc_progress_merged_at_load = bosses >= 0;
 }
@@ -16573,40 +16595,96 @@ bool IsBbscTalkDrivenEvent(s64 event) {
 // CUSA03173 1.09: bank 2000[2] at 0x017C81E2 writes bool(argument) to event+0x78.
 // Setting 0 is the game's SetNetworkSyncState(false). Do this before the event update,
 // including the initial reset and condition wait. No packet / player notification is emitted.
+struct BbscQuestRange { u64 first, end, row; s64 event; bool local; };
+struct BbscQuestIndex {
+    u64 events = 0, instructions = 0;
+    s64 count = 0;
+    std::vector<BbscQuestRange> ranges;
+    bool overlaps = false;
+};
+std::map<u64, BbscQuestIndex> bbsc_quest_indexes; // game thread, cleared before load events
+struct BbscQuestInstance { u64 ref, file, instructions; BbscQuestRange range; };
+std::map<u64, BbscQuestInstance> bbsc_quest_instances;
+
 void LocalizeBbscQuestEvent(u64 instance) {
+    BBSC_PERF_NESTED("NPC event lookup");
     if (!ReadablePointer(instance, 0xC0) ||
         !HasMemoryAccess(instance + 0x78, 1, MemoryProt::CpuWrite)) return;
-    // Cache the instruction range, not just the pointer: the game reuses event instances.
-    struct Cached { u64 ref; u64 first; u64 end; u64 row; s64 event; bool local; };
-    static std::map<u64, Cached> cache;
     const u64 ref = ReadValue<u64>(instance, 0xA8);
     const u64 instruction = ReadValue<u64>(instance, 0xB0);
-    auto it = cache.find(instance);
-    if (it == cache.end() || it->second.ref != ref || instruction < it->second.first ||
-        instruction >= it->second.end || !ReadablePointer(it->second.row, 8) ||
-        ReadValue<s64>(it->second.row, 0) != it->second.event) {
-        if (!ReadablePointer(ref, 0x10)) return;
-        const u64 file = ReadValue<u64>(ref, 8);
-        if (!ReadablePointer(file, 0x90)) return;
-        const s64 count = ReadValue<s64>(file, 0x10);
-        const u64 events = file + ReadValue<u64>(file, 0x18);
-        const u64 instructions = file + ReadValue<u64>(file, 0x28);
-        if (count <= 0 || count > 100'000 ||
-            !HasMemoryAccess(events, count * 0x30, MemoryProt::CpuRead)) return;
-        it = cache.end();
+    if (!ReadablePointer(ref, 0x10)) return;
+    const u64 file = ReadValue<u64>(ref, 8);
+    if (auto cached = bbsc_quest_instances.find(instance); cached != bbsc_quest_instances.end()) {
+        const auto& c = cached->second;
+        const auto& r = c.range;
+        if (c.ref == ref && c.file == file && instruction >= r.first && instruction < r.end &&
+            ReadablePointer(r.row, 0x18)) {
+            std::array<u64, 3> row{};
+            std::memcpy(row.data(), reinterpret_cast<const void*>(r.row), sizeof(row));
+            if (row[0] == static_cast<u64>(r.event) && row[1] == (r.end - r.first) / 0x20 &&
+                row[2] == r.first - c.instructions) {
+                if (r.local) WriteValue<u8>(instance, 0x78, 0);
+                return;
+            }
+        }
+        bbsc_quest_instances.erase(cached);
+    }
+    if (!ReadablePointer(file, 0x90)) return;
+    const s64 count = ReadValue<s64>(file, 0x10);
+    const u64 events = file + ReadValue<u64>(file, 0x18);
+    const u64 instructions = file + ReadValue<u64>(file, 0x28);
+    if (count <= 0 || count > 100'000) return;
+    auto found = bbsc_quest_indexes.find(file);
+    if (found == bbsc_quest_indexes.end() || found->second.events != events ||
+        found->second.instructions != instructions || found->second.count != count) {
+        if (!HasMemoryAccess(events, count * 0x30, MemoryProt::CpuRead)) return;
+        if (bbsc_quest_indexes.size() >= 128) bbsc_quest_indexes.clear();
+        BbscQuestIndex index{events, instructions, count, {}};
+        index.ranges.reserve(static_cast<size_t>(count));
+        // Validate once, then read this immutable event directory without per-field queries.
         for (s64 n = 0; n < count; ++n) {
             const u64 row = events + n * 0x30;
-            const u64 first = instructions + ReadValue<u64>(row, 0x10);
-            const u64 end = first + ReadValue<u64>(row, 8) * 0x20;
-            if (instruction < first || instruction >= end) continue;
-            const s64 event = ReadValue<s64>(row, 0);
-            if (cache.size() >= 4096) cache.clear();
-            it = cache.insert_or_assign(instance, Cached{ref, first, end, row, event,
-                IsBbscPersonalMapEvent(event)}).first;
-            break;
+            s64 event; u64 length, offset;
+            std::memcpy(&event, reinterpret_cast<const void*>(row), 8);
+            std::memcpy(&length, reinterpret_cast<const void*>(row + 8), 8);
+            std::memcpy(&offset, reinterpret_cast<const void*>(row + 0x10), 8);
+            if (length == 0 || offset > std::numeric_limits<u64>::max() - instructions) continue;
+            const u64 first = instructions + offset;
+            if (length > (std::numeric_limits<u64>::max() - first) / 0x20) continue;
+            index.ranges.push_back({first, first + length * 0x20, row, event, IsBbscPersonalMapEvent(event)});
         }
+        std::ranges::sort(index.ranges, {}, &BbscQuestRange::first);
+        u64 previous_end = 0;
+        for (const auto& r : index.ranges) {
+            index.overlaps |= r.first < previous_end;
+            previous_end = std::max(previous_end, r.end);
+        }
+        found = bbsc_quest_indexes.insert_or_assign(file, std::move(index)).first;
     }
-    if (it != cache.end() && it->second.local) WriteValue<u8>(instance, 0x78, 0);
+    const auto& ranges = found->second.ranges;
+    auto range = std::ranges::upper_bound(ranges, instruction, {}, &BbscQuestRange::first);
+    if (range == ranges.begin()) return;
+    --range;
+    if (found->second.overlaps) {
+        // Preserve the original directory-order winner for shared/overlapping code.
+        range = ranges.end();
+        for (auto it = ranges.begin(); it != ranges.end(); ++it) {
+            if (instruction >= it->first && instruction < it->end &&
+                (range == ranges.end() || it->row < range->row)) range = it;
+        }
+        if (range == ranges.end()) return;
+    }
+    if (instruction >= range->end) return; // negative lookup is logarithmic too
+    // A reused directory/row must not inherit another event's permission.
+    if (!ReadablePointer(range->row, 0x18) || ReadValue<s64>(range->row, 0) != range->event ||
+        instructions + ReadValue<u64>(range->row, 0x10) != range->first ||
+        ReadValue<u64>(range->row, 8) != (range->end - range->first) / 0x20) {
+        bbsc_quest_indexes.erase(found);
+        return;
+    }
+    if (bbsc_quest_instances.size() >= 4096) bbsc_quest_instances.clear();
+    bbsc_quest_instances.insert_or_assign(instance, BbscQuestInstance{ref, file, instructions, *range});
+    if (range->local) WriteValue<u8>(instance, 0x78, 0);
 }
 
 bool BbscTalkEventIsOurs(s64 event) {
@@ -18753,8 +18831,14 @@ void TickBbscScaling() {
     const int boss_stagger = numbers.percent[4];
     const int extra = GetBbscScalingGuests();
     const BbscAppliedScale key{numbers, extra};
-    if (bbsc_scale_written && key == *bbsc_scale_written) {
-        return;
+    static std::optional<BbscAppliedScale> pending;
+    static size_t armor_next = 0;
+    if (!pending && bbsc_scale_written && key == *bbsc_scale_written) return;
+    if (!pending || key != *pending) {
+        pending = key;
+        armor_next = 0;
+        // The previous complete key no longer describes partially updated tables.
+        bbsc_scale_written.reset();
     }
     const auto rate = [extra](int percent) {
         return 1.0F + static_cast<float>(percent) * static_cast<float>(extra) / 100.0F;
@@ -18765,16 +18849,22 @@ void TickBbscScaling() {
             WriteValue(row, at, rate(damage));
         }
     };
-    for (const u64 row : bbsc_scale_rows_enemy) {
-        write_row(row, rate(enemy_hp));
+    if (armor_next == 0) {
+        for (const u64 row : bbsc_scale_rows_enemy) write_row(row, rate(enemy_hp));
+        for (const u64 row : bbsc_scale_rows_boss) write_row(row, rate(boss_hp));
     }
-    for (const u64 row : bbsc_scale_rows_boss) {
-        write_row(row, rate(boss_hp));
-    }
-    for (const BbscScaledNpc& npc : bbsc_scaled_npcs) {
+    // HP/damage effect rows are few; armor rows number in the thousands. Bound
+    // work and restart from row zero on a new key (including solo/leave/rejoin).
+    const s64 batch_start = SteadyNowMs();
+    const size_t end = std::min(armor_next + size_t{128}, bbsc_scaled_npcs.size());
+    while (armor_next < end) {
+        const BbscScaledNpc& npc = bbsc_scaled_npcs[armor_next++];
         const float armor = static_cast<float>(npc.armor) * rate(npc.boss ? boss_stagger : enemy_stagger);
         WriteValue(npc.row, 280, static_cast<s16>(std::min(armor, 32767.0F)));
+        if ((armor_next % 8) == 0 && SteadyNowMs() - batch_start >= 2) break;
     }
+    if (armor_next < bbsc_scaled_npcs.size()) return;
+    pending.reset();
     bbsc_scale_written = key;
     const s32 guests = GetBbscGuestCount(); // only needed for the change log
     LOG_INFO(Debug,
@@ -20899,6 +20989,7 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     // This is the native goods-use result shared by menus and quick slots. Apply
     // before both the native-yes and bells-anywhere paths, independently of that
     // option. Keep Silencing Blank and the PvP toggle available.
+    if (used_effect != 9000 && used_effect != 9005 && used_effect != 7511 && used_effect != 7) return;
     const s32 session = GetSessionState();
     if ((used_effect == 9000 || used_effect == 9005) &&
         (session == 4 || session == 6) && registers->r14 != 0 &&
@@ -20922,7 +21013,7 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     if (!ReadablePointer(row, 0x48)) {
         return;
     }
-    const s32 effect = ReadValue<s32>(row, 0);
+    const s32 effect = used_effect;
     std::string_view bell;
     switch (effect) {
     case 9000: bell = "Beckoning Bell"; break;
@@ -20935,7 +21026,10 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
         GetCharacterHp(registers->r14) <= 0 || !ReadablePointer(frame - 0x200, 0x200)) {
         return;
     }
-    const auto low = [frame](u64 off) { return ReadValue<u8>(frame - off, 0); };
+    // The stack belongs to this hook's thread and was validated as a whole above.
+    const auto low = [frame](u64 off) { return *reinterpret_cast<const u8*>(frame - off); };
+    u64 character_state = 0;
+    std::memcpy(&character_state, reinterpret_cast<const void*>(frame - 0x1D0), sizeof(character_state));
     std::string kept;
     const auto keep = [&kept](bool blocked, std::string_view why) {
         if (blocked) {
@@ -20944,7 +21038,7 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
         }
     };
     keep((registers->r12 & 0xFF) == 0, "not for this player type");
-    keep((ReadValue<u64>(frame - 0x1D0, 0) & 0xFFFFFFFFFFull) != 0, "character state");
+    keep((character_state & 0xFFFFFFFFFFull) != 0, "character state");
     keep((low(0x1C8) & 1) != 0, "offline");
     keep(low(0x1DA) != 0, "in a co-op session");
     keep(low(0x1F8) != 0 || low(0x1FC) != 0, "menu just closed");
@@ -21060,6 +21154,8 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     }
     if (site.offset == 0x0178D9C0) {
         bbsc_reload_finish_pending.store(true);
+        bbsc_quest_indexes.clear();
+        bbsc_quest_instances.clear();
         bbsc_dream_type_conditions.fill(0);
         bbsc_dream_type_next = 0;
         bbsc_dream_type_logged.clear();

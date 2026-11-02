@@ -6,6 +6,7 @@ s=(root/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 a=s.index('void ApplyBbscBellsAnywhere(');b=s.index('\nvoid OnBbscCutsceneRequestHook',a)
 code=r'''
 #include <cassert>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -13,13 +14,13 @@ code=r'''
 #include <string_view>
 using u64=uint64_t;using u32=uint32_t;using u8=uint8_t;using s32=int32_t;
 struct GuestRegisterSnapshot {u64 r13=0x1000,r14=0x3000,rcx=1,rbp=0x2000,r12=1,r15=1,rsi=1,r8=1;};
-std::map<u64,u64> memory;int session=0;bool anywhere=false;
-s32 GetSessionState(){return session;}
+std::map<u64,u64> memory;int session=0;bool anywhere=false; int session_reads=0; bool has_control=true;
+s32 GetSessionState(){++session_reads;return session;}
 u64 GetLocalPlayerCharacter(){return 0x3000;}
 bool ReadablePointer(u64 p,size_t){return p>=0x1000;}
 template<class T>T ReadValue(u64 p,size_t o){return static_cast<T>(memory[p+o]);}
 u64 BbscCarriedInventory(){return 0x4000;}
-bool BbscInventoryHas(u64,u32){return true;}
+bool BbscInventoryHas(u64,u32){return has_control;}
 bool EnvFlagEnabled(const char*){return anywhere;}
 int GetCharacterHp(u64){return 100;}
 u32 GetCurrentPackedMap(){return 0x19000000;}
@@ -33,10 +34,14 @@ int main(int argc,char**){
  for(session=0;session<=7;++session)for(int effect:{9000,9005,7511,7,1234})
  for(int native:{0,1})for(bool local:{false,true}){
   memory.clear();GuestRegisterSnapshot r;r.rcx=0xAB00|native;
+  std::array<u8,512> stack{}; r.rbp=reinterpret_cast<u64>(stack.data()+512);
+  stack[512-0x1D8]=stack[512-0x1D4]=stack[512-0x1B4]=1;
   if(!local)r.r14=0x5000;
   memory[r.r13]=effect;
   memory[r.rbp-0x1D8]=memory[r.rbp-0x1D4]=memory[r.rbp-0x1B4]=1;
+  const int before=session_reads;
   ApplyBbscBellsAnywhere(&r);
+  if(effect==1234) assert(session_reads==before);
   bool blocked=local && (session==4||session==6) && (effect==9000||effect==9005);
   if(blocked)assert((r.rcx&255)==0 && (r.rcx&~u64{255})==0xAB00);
   else if(native)assert((r.rcx&255)==1); // host, solo, Blank, PvP and other actors unaffected
