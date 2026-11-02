@@ -10217,9 +10217,9 @@ struct BbscPendingQuit {
     u8 load_wait = 0;
     bool menus_closed = false;
     bool disconnect_warned = false;
-    u64 player_slots = 0;
-    u8 death_pending = 0;
-    bool leave_flag = false;
+    u64 character = 0;
+    u64 character_control = 0;
+    u8 disable_move = 0;
 };
 BbscPendingQuit bbsc_pending_quit;
 BbscPendingQuit bbsc_title_quit; // retained until native character creation on Continue
@@ -10371,21 +10371,21 @@ void PrepareBbscQuitToTitle() {
 // writes. No stack frame exists here; skipping with RET is safe. The copied MOV
 // and CMP are position independent. The old final-store hook let +1547/+1548
 // start a competing stage flow while BBSC was still waiting for save/Stop.
-// Use the native death/leave restriction state, not a neutral controller:
-// MenuBrake + player death/warp pending + flag 4047. Camera input stays native.
-void SetBbscQuitLeaveFlag(bool on) {
-    if (!ReadValue<u64>(image_base + 0x0553B0D8, 0) ||
-        !ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0)) return;
-    using SetFlag = u64 PS4_SYSV_ABI (*)(u64, u32, u8);
-    reinterpret_cast<SetFlag>(image_base + 0x0132E5A0)(0, 4047, on ? 1 : 0);
+// Native Lua DisableMove (registration 0133DC5C, body 0132F770): resolve
+// player entity 10000 through 013C97A0, then set ChrControl+111. Unlike the
+// pending-death marker, this directly disables movement without consuming camera input.
+constexpr u64 BbscNativeDisableMoveOffset = 0x0132F770;
+void SetBbscQuitDisableMove(u8 disabled) {
+    using DisableMove = u8 PS4_SYSV_ABI (*)(u64, s32, u8);
+    reinterpret_cast<DisableMove>(image_base + BbscNativeDisableMoveOffset)(0, 10000, disabled);
 }
 
 void HoldBbscQuitCharacter(const BbscPendingQuit& q) {
     if (GetGlobalState() != q.global || ReadValue<u8>(q.global, 8) != 0) return;
-    const u64 slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
-    if (slots == q.player_slots && HasMemoryAccess(slots + 0x70, 1, MemoryProt::CpuWrite))
-        WriteValue<u8>(slots, 0x70, 1);
-    if (!BbscEventFlag(4047)) SetBbscQuitLeaveFlag(true);
+    const u64 player = GetLocalPlayerCharacter();
+    if (player == q.character && ReadValue<u64>(player, 0x58) == q.character_control &&
+        HasMemoryAccess(q.character_control + 0x111, 1, MemoryProt::CpuWrite) &&
+        ReadValue<u8>(q.character_control, 0x111) != 1) SetBbscQuitDisableMove(1);
 }
 
 void RestoreBbscQuitControls(const BbscPendingQuit& pending) {
@@ -10396,10 +10396,10 @@ void RestoreBbscQuitControls(const BbscPendingQuit& pending) {
         ReadValue<s32>(pending.menu, 0x2DC) == 1) {
         WriteValue<s32>(pending.menu, 0x2DC, pending.menu_brake);
     }
-    const u64 slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
-    if (slots == pending.player_slots && HasMemoryAccess(slots + 0x70, 1, MemoryProt::CpuWrite))
-        WriteValue<u8>(slots, 0x70, pending.death_pending);
-    SetBbscQuitLeaveFlag(pending.leave_flag);
+    const u64 player = GetLocalPlayerCharacter();
+    if (player == pending.character && ReadValue<u64>(player, 0x58) == pending.character_control &&
+        HasMemoryAccess(pending.character_control + 0x111, 1, MemoryProt::CpuWrite))
+        SetBbscQuitDisableMove(pending.disable_move);
     const u64 man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
     if (ReadablePointer(man, 0x10) && ReadValue<u64>(man, 8) == pending.lua &&
         HasMemoryAccess(pending.lua + 0x8D, 1, MemoryProt::CpuWrite) &&
@@ -10442,9 +10442,9 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
     bbsc_pending_quit.lua = lua;
     bbsc_pending_quit.menu_brake = ReadValue<s32>(menu, 0x2DC);
     bbsc_pending_quit.load_wait = ReadValue<u8>(lua, 0x8D);
-    bbsc_pending_quit.player_slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
-    bbsc_pending_quit.death_pending = ReadValue<u8>(bbsc_pending_quit.player_slots, 0x70);
-    bbsc_pending_quit.leave_flag = BbscEventFlag(4047);
+    bbsc_pending_quit.character = GetLocalPlayerCharacter();
+    bbsc_pending_quit.character_control = ReadValue<u64>(bbsc_pending_quit.character, 0x58);
+    bbsc_pending_quit.disable_move = ReadValue<u8>(bbsc_pending_quit.character_control, 0x111);
     HoldBbscQuitCharacter(bbsc_pending_quit);
     // The same menu close/brake and load-wait used by native EventMenuBrake/leave.
     WriteValue<s32>(menu, 0x2DC, 1);
@@ -10519,9 +10519,7 @@ void TickBbscPendingQuit() {
             // Select title directly instead of starting another world-stage transition.
             WriteValue<s32>(completed.menu, 0x250, 0);
             WriteValue<s32>(completed.menu, 0x25C, 0);
-            // Session closure is the loading boundary. Open once, then native title
-            // flow owns the screen; no world reload or artificial wait in between.
-            BbscLoadingScreen(true);
+            // Native title flow owns its presentation; do not open a world loading screen.
             using ReturnTitle = void PS4_SYSV_ABI (*)();
             reinterpret_cast<ReturnTitle>(image_base + OnReturnTitleOffset)();
             LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; requested title directly (no world reload)");
