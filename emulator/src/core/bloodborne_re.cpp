@@ -3527,7 +3527,7 @@ void HandleBbscLuaSessionEvent(const GuestRegisterSnapshot& registers) {
         CaptureBbscGuestRespawnPoint();
         DeliverBbscLedgerAtJoin(name); // the join check: still our own world, before the load
         CaptureBbscOwnWorldBeforeJoin(); // first: the load resets the map's item flags
-        StartBbscLoadCover("summon");
+        // Keep the game visible until the native summon load begins.
     }
     if (name == "OnLeaveMagic" || name == "OnLeaveMenu_Yes") {
         BbscLeaveItemUsed(name);
