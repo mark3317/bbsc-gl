@@ -1,3 +1,11 @@
+> Update 01.11.2026: bundled d6fb46a, standalone 2aa8c80, BBGL pin bc56094.
+> Full package build exit=0; release verification PASS. Installed on stopped PC
+> and laptop, 5223 staged files checked on each, client/server manifests PASS.
+> DLL SHA256 F22A29CA354C2C5358F6C4EB38A9FE6051D341EBEDAC42DC5C0940DB2935B8F5;
+> launcher SHA256 F90E6765A10CB83EFE1613980F16CE2F62EE4F4F89C8BDD0B147741ED0E33C0F.
+> Backups: PC menu-exit-20261101-221301; laptop menu-exit-20261101-221339.
+> The source-only status below is historical. Gameplay remains unverified.
+
 # System menu exit: direct title request — 01.11.2026
 
 Status: source fixed in standalone and bundled BBSC; targeted production-function

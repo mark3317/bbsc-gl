@@ -52,7 +52,8 @@ int main(){
   WriteValue<float>(backoff,8,900);
  }
  assert(ConfigureBbscSummonPolling());
- for(auto off:{0x89c,0x8a0,0x8a4})assert(ReadValue<u32>((u64)info.data(),off)==2);
+ for(auto off:{0x89c,0x8a4})assert(ReadValue<u32>((u64)info.data(),off)==2);
+ assert(ReadValue<u32>((u64)info.data(),0x8a0)==1);
  assert(ReadValue<float>((u64)broker.data(),0x190)==2);
  assert(ReadValue<u32>((u64)info.data(),0x8c8)==2);
  for(u32 role=0;role<34;++role){

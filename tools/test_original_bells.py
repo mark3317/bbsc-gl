@@ -16,11 +16,14 @@ template<class T>void WriteValue(u64 p,size_t o,T v){memcpy((void*)(p+o),&v,size
 int main(){
  for(auto &r:rows)r.fill(0x5a);
  PrepareBbscKitRows(1);
- assert(std::size(BbscKit)==5);
- for(int i=0;i<5;i++)for(int j=0;j<108;j++){
+ assert(std::size(BbscKit)==4);
+ const u32 expected_ids[]={200,205,225,111};
+ for(int i=0;i<4;i++)assert(BbscKit[i].id==expected_ids[i]);
+ for(int i=0;i<4;i++)for(int j=0;j<108;j++){
   const u8 expected=j==56?0: j>=100?0xff:0x5a;
   assert(rows[i][j]==expected);
  }
+ for(auto v:rows[4])assert(v==0x5a); // Vileblood Register is not modified
  for(auto v:rows[5])assert(v==0x5a);
  PrepareBbscKitRows(1); // repeated preparation preserves names/icons/type/availability
 }
@@ -28,4 +31,4 @@ int main(){
 build=root/'build';build.mkdir(exist_ok=True);cpp=build/'test_original_bells.cpp';exe=cpp.with_suffix('.exe');cpp.write_text(fixture,encoding='utf8')
 subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20',str(cpp),'-o',str(exe)],check=True)
 env=dict(os.environ);env['PATH']='C:/msys64/clang64/bin;'+env.get('PATH','');subprocess.run([str(exe)],env=env,check=True)
-print('PASS: real parameter preparation preserves original identity, icons, availability and unrelated goods; idempotent, five original IDs only')
+print('PASS: real parameter preparation preserves original identity, icons, availability and unrelated goods; idempotent, four co-op IDs only; Vileblood Register excluded and untouched')
