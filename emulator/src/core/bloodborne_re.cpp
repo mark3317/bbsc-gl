@@ -19103,6 +19103,8 @@ std::atomic<int> bbsc_pvp_host_state{-1}; // guest side: the host's last state (
 std::atomic<s64> bbsc_pvp_host_state_ms{0};
 std::map<u64, u32> bbsc_pvp_original_team; // character -> its team before PvP
 
+// Only co-op bells and the Silencing Blank belong in the automatic kit.
+// Progression items such as the Vileblood Register (130) stay at their vanilla locations.
 // Original goods retain their names, icons and inventory identity. Only their use changes.
 struct BbscKitItem {
     u32 id;
@@ -19110,7 +19112,6 @@ struct BbscKitItem {
     const char16_t* name_ru;
 };
 constexpr BbscKitItem BbscKit[] = {
-    {130, u"Vileblood Register", u"Книга Нечистокровных"},
     {200, u"Beckoning Bell", u"Зовущий колокол"},
     {205, u"Small Resonant Bell", u"Малый звонкий колокол"},
     {225, u"Sinister Resonant Bell", u"Зловещий звонкий колокол"},
@@ -20823,105 +20824,45 @@ void TickBbscFreeBell() {
              ReadValue<u8>(result.row, 0x38));
 }
 
-// ---- Free bell, no free Insight (2026-10-18) -----------------------------------------------------
-// Report (kukar3x, host, alone): ring the Hunt Bell, quit to the menu and continue - "+1 Insight,
-// with a message that no-one was found"; the same after a Silencing Blank; 5 Insight that way.
-// When a Beckoning Bell runs out unanswered the game gives its Insight back ("Could not discover
-// the chime of a Small Resonant Bell. No insight was consumed.", text 100300) - but the free bell
-// (and the kit's Hunt Bell, consumeHeroPoint 0) never took any. The refund itself is native and
-// was not found (HYPOTHESIS: a fixed 1); so BBSC takes back exactly +1 Insight that turns up right
-// after an unanswered bell ends: within 10 s of a hosting session that nobody joined, or within
-// 45 s of the next run's first character load when the game was left while still ringing (a marker
-// file per shadPS4 user, <mod>\bell-pending\<user>.txt - the save slot is not known that early).
-// Insight = [[0x0553B130]+8]+0x84 (CONFIRMED statically: GetHeroPoint 0x01338670 reads it).
+// Insight = [[0x0553B130]+8]+0x84 (GetHeroPoint 0x01338670).
 constexpr size_t PlayerInsightOffset = 0x84;
-constexpr s64 BbscBellRefundWindowMs = 10'000;
-constexpr s64 BbscBellRefundLoadWindowMs = 45'000;
 
-void TickBbscFreeBellRefund() {
-    static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_FREE_BELL");
-    static s64 last_ms = 0;
-    static s32 last_insight = -1;
-    static bool alone_hosting = false;   // hosting, nobody has joined yet
-    static s64 ended_unanswered_ms = 0;  // an unanswered bell just ended
-    static s64 loaded_with_marker_ms = 0; // first character of this run, the last run left a bell
-    static bool marker_checked = false;
-    if (!enabled || image_base == 0) {
-        return;
+// common.emevd 9183[6] adds SpEffect 4680 (+1 Insight) when an unanswered
+// Beckoning Bell ends. Free bells never paid it. Suppress only this command;
+// boss rewards and the chalice altar refund (9422) still use 4680 normally.
+u8 bbsc_bell_refund_skip = 0;
+void PS4_SYSV_ABI BbscBellRefundHook(u64, const GuestRegisterSnapshot* registers) {
+    if (!registers || !EnvFlagEnabled("SHADPS4_BBSC_FREE_BELL")) return;
+    const u64 instance = registers->rsi;
+    if (!ReadablePointer(instance, 0xC0)) return;
+    const u64 instruction = ReadValue<u64>(instance, 0xB0);
+    if (!ReadablePointer(instruction, 0x18) ||
+        ReadValue<s32>(instruction, 0) != 2004 ||
+        ReadValue<s32>(instruction, 4) != 8) return;
+    u64 args = ReadValue<u64>(instance, 0xB8);
+    if (!args) {
+        const u64 ref = ReadValue<u64>(instance, 0xA8);
+        if (!ReadablePointer(ref, 0x10)) return;
+        const u64 file = ReadValue<u64>(ref, 8);
+        if (!ReadablePointer(file, 0x80)) return;
+        args = file + ReadValue<u64>(file, 0x78) + ReadValue<u64>(instruction, 0x10);
     }
-    const s64 now = SteadyNowMs();
-    if (now - last_ms < 500) {
-        return;
-    }
-    last_ms = now;
-    namespace fs = std::filesystem;
-    static const fs::path marker =
-        Common::FS::GetUserPath(Common::FS::PathType::CapturesDir).parent_path() / "bell-pending" /
-        fmt::format("{}.txt", BbscProcessUserId().empty() ? std::string("default")
-                                                          : BbscProcessUserId());
-    const u64 local = GetPlayerSlotData();
-    const u64 global = GetGlobalState();
-    const bool loading = !ReadablePointer(global, 0x10) || ReadValue<u8>(global, 0x08) != 0;
-    if (local == 0 || loading) {
-        last_insight = -1;
-        return;
-    }
-    const s32 insight = ReadValue<s32>(local, PlayerInsightOffset);
-    const s32 state = GetSessionState();
-    const s32 members = GetBbscSessionMemberCount(global);
-    if (!marker_checked) {
-        marker_checked = true;
-        std::error_code ec;
-        if (fs::exists(marker, ec)) {
-            loaded_with_marker_ms = now;
-            fs::remove(marker, ec);
-            LOG_INFO(Debug, "BBSC free bell: the last run ended while our bell still rang - "
-                            "watching for the game's Insight refund");
-            BBSC_TIMELINE("INSIGHT", "free bell: the last run ended while our bell still rang - "
-                            "watching for the game's Insight refund");
-        }
-    }
-    // Hosting alone = a bell that nobody has answered yet; a marker while it lasts.
-    if (state == 3 && members <= 1) {
-        if (!alone_hosting) {
-            alone_hosting = true;
-            std::error_code ec;
-            fs::create_directories(marker.parent_path(), ec);
-            std::ofstream(marker) << "bell rang, nobody joined yet\n";
-        }
-    } else if (alone_hosting) {
-        const bool answered = state == 3 && members > 1;
-        alone_hosting = false;
-        if (!answered) {
-            ended_unanswered_ms = now;
-        }
-        std::error_code ec;
-        fs::remove(marker, ec);
-    }
-    const bool in_window =
-        (ended_unanswered_ms != 0 && now - ended_unanswered_ms < BbscBellRefundWindowMs) ||
-        (loaded_with_marker_ms != 0 && now - loaded_with_marker_ms < BbscBellRefundLoadWindowMs);
-    if (last_insight >= 0 && insight == last_insight + 1 && in_window) {
-        WriteValue<s32>(local, PlayerInsightOffset, last_insight);
-        LOG_INFO(Debug, "BBSC free bell: +1 Insight right after an unanswered bell ({}) - the game's "
-                        "refund for a bell that cost nothing, taken back ({} -> {})",
-                 ended_unanswered_ms != 0 ? "session ended" : "after the reload", insight,
-                 last_insight);
-        BBSC_TIMELINE("INSIGHT", "free bell: +1 Insight right after an unanswered bell ({}) - the game's "
-                        "refund for a bell that cost nothing, taken back ({} -> {})",
-                 ended_unanswered_ms != 0 ? "session ended" : "after the reload", insight,
-                 last_insight);
-        ended_unanswered_ms = 0;
-        loaded_with_marker_ms = 0;
-        return; // last_insight stays
-    }
-    if (ended_unanswered_ms != 0 && now - ended_unanswered_ms >= BbscBellRefundWindowMs) {
-        ended_unanswered_ms = 0;
-    }
-    if (loaded_with_marker_ms != 0 && now - loaded_with_marker_ms >= BbscBellRefundLoadWindowMs) {
-        loaded_with_marker_ms = 0;
-    }
-    last_insight = insight;
+    if (!ReadablePointer(args, 12) || ReadValue<s32>(args, 0) != 10000 ||
+        ReadValue<s32>(args, 4) != 4680 || BbscRunningEventId(instance) != 9183) return;
+    // Bank handlers return true when the instruction completed. The trampoline
+    // restores this snapshot before returning directly to the event interpreter.
+    const_cast<GuestRegisterSnapshot*>(registers)->rax = 1;
+    bbsc_bell_refund_skip = 1;
+}
+
+void InstallBbscBellRefundHook() {
+    static bool installed = false;
+    if (installed || !image_base || !EnvFlagEnabled("SHADPS4_BBSC_FREE_BELL")) return;
+    static constexpr std::array<u8, 8> prologue{0x55, 0x48, 0x89, 0xE5,
+                                               0x41, 0x57, 0x41, 0x56};
+    installed = InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x017BA6A0),
+                                    std::span<const u8>{prologue}, 0,
+                                    BbscBellRefundHook, &bbsc_bell_refund_skip);
 }
 
 // Timeline (see "Timeline" at the top): the role and area every line is stamped with, plus the
@@ -21262,7 +21203,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscGuestLootReset"); TickBbscGuestLootReset(); }
         { BBSC_PERF_NESTED("tick TickBbscDreamStateRestore"); TickBbscDreamStateRestore(); }
         { BBSC_PERF_NESTED("tick TickBbscFreeBell"); TickBbscFreeBell(); }
-        { BBSC_PERF_NESTED("tick TickBbscFreeBellRefund"); TickBbscFreeBellRefund(); }
+        { BBSC_PERF_NESTED("tick InstallBbscBellRefundHook"); InstallBbscBellRefundHook(); }
         { BBSC_PERF_NESTED("tick TickBbscEchoTrace"); TickBbscEchoTrace(); }
         { BBSC_PERF_NESTED("tick TickBbscMapTrace"); TickBbscMapTrace(); }
         { BBSC_PERF_NESTED("tick TickBbscPresence"); TickBbscPresence(); }
