@@ -93,6 +93,7 @@ struct BbscPerfSlot {
     std::atomic<u64> ns{0};
     std::atomic<u64> calls{0};
     std::atomic<u64> max_ns{0};
+    std::atomic<u64> over8{0}, over16{0}, over50{0};
     u64 last_ns = 0;
     u64 last_calls = 0;
 };
@@ -132,6 +133,9 @@ struct BbscPerfScope {
             return;
         }
         const u64 took = BbscPerfNowNs() - start;
+        if (took > 8'000'000) slot->over8.fetch_add(1, std::memory_order_relaxed);
+        if (took > 16'000'000) slot->over16.fetch_add(1, std::memory_order_relaxed);
+        if (took > 50'000'000) slot->over50.fetch_add(1, std::memory_order_relaxed);
         slot->ns.fetch_add(took, std::memory_order_relaxed);
         slot->calls.fetch_add(1, std::memory_order_relaxed);
         u64 seen = slot->max_ns.load(std::memory_order_relaxed);
@@ -198,6 +202,14 @@ void TickBbscPerfReport() {
             slot.last_ns = ns;
             slot.last_calls = calls;
             const u64 max_ns = slot.max_ns.exchange(0, std::memory_order_relaxed);
+            const u64 over8 = slot.over8.exchange(0, std::memory_order_relaxed);
+            const u64 over16 = slot.over16.exchange(0, std::memory_order_relaxed);
+            const u64 over50 = slot.over50.exchange(0, std::memory_order_relaxed);
+            // Rare holds must be visible even outside the top ten by total cost.
+            if (over8) {
+                LOG_INFO(Debug, "BBSC perf holds: scope={} nested={} max_us={} over8={} over16={} over50={}",
+                         slot.name, slot.nested, max_ns / 1000, over8, over16, over50);
+            }
             if (dcalls == 0) {
                 continue;
             }
