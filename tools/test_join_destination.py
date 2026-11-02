@@ -41,6 +41,11 @@ int main(){
 tick=function('void TickBbscJoinTeleport()')
 assert tick.index('if (!BbscJoinDestinationKnown())') < tick.index('ReadCharacterTransform(host)')
 assert tick.index('if (!BbscJoinWorldMatchesHost()') < tick.index('ReadCharacterTransform(host)')
+# A successful arrival must only place the character, even with the old WARP_JOIN env enabled.
+assert 'RequestBbscSessionWarp(' not in tick
+assert 'BbscWarpJoinEnabled' not in src
+assert 'bbsc_cross_map_join' not in src
+assert tick.index('if (!BbscJoinWorldMatchesHost()') < tick.index('const u64 vtable')
 with tempfile.TemporaryDirectory() as tmp:
  cpp=Path(tmp)/'test.cpp';exe=Path(tmp)/'test.exe';cpp.write_text(code)
  subprocess.run([os.environ.get('CXX','g++'),'-std=c++20',str(cpp),'-o',str(exe)],check=True)
