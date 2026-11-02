@@ -20498,7 +20498,7 @@ void TickBbscTimelineContext() {
 //   [rbp-0x1F4] goods 120; [rbp-0x1F0] the Beckoning Bell's area result.
 // Only the local, living player's kit bells (rows with BBSC's sortId 240010-240013: Hunt, Kin,
 // Bloodlust, Duel Bell), only when the game said no and nothing in the kept list did. Switch
-// SHADPS4_BBSC_BELLS_ANYWHERE. Logs 'BBSC bells anywhere:' on every change of bell / reasons / map.
+// SHADPS4_BBSC_BELLS_ANYWHERE. Research mode logs changes of bell / reasons / map.
 constexpr u64 ItemUsableResultOffset = 0x015800D1;
 void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     if (!registers) return;
