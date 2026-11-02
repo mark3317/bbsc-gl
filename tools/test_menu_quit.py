@@ -31,13 +31,17 @@ using s32=int32_t; using s64=int64_t;
 #define PS4_SYSV_ABI
 #define LOG_INFO(...)
 #define LOG_ERROR(...)
-namespace Bbsc { std::atomic<bool> quit_input_blocked{false}; }
+
 struct GuestRegisterSnapshot { u64 rax=0, rbx=0; };
 namespace MemoryProt { constexpr int CpuWrite=1; }
 u64 image_base=0x100000, world=0x200000, menu=0x300000, manager=0x400000;
 constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88, SprjLuaEventManPointerOffset=0x90;
 std::map<u64,u64> memory;
 std::vector<int> events; // journal=1, save=2, notify=3, suspend=4, stop=5
+constexpr u64 PlayerSlotManagerPointerOffset=0x98;
+bool leave_flag=false;
+bool BbscEventFlag(u32 flag){assert(flag==4047);return leave_flag;}
+void SetBbscQuitLeaveFlag(bool on){leave_flag=on;}
 constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
@@ -77,7 +81,7 @@ u8 stop_stub(u64 value) { assert(value==manager); events.push_back(5); session=7
 void title_stub() {
     assert((session==0 || session==2 || session==5) && memory[world+0x1554]==0);
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
-    assert(loading_opens>0 && Bbsc::quit_input_blocked);
+    assert(loading_opens>0);
     events.push_back(6); memory[request_address]=2;
 }
 u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
@@ -95,6 +99,7 @@ state=state.replace('constexpr u64 BbscQuitCloseMenusOffset = 0x0176A900;', 'u64
 functions = '\n'.join(function(signature) for signature in (
     'void CleanupBbscDepartingRemotes()',
     'void PrepareBbscQuitToTitle()',
+    'void HoldBbscQuitCharacter(const BbscPendingQuit& q)',
     'void RestoreBbscQuitControls(const BbscPendingQuit& pending)',
     'void CancelBbscPendingQuit(std::string_view why)',
     'void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers)',
@@ -107,9 +112,10 @@ functions = '\n'.join(function(signature) for signature in (
 fixture = r'''
 void reset(s32 role=6) {
     memory.clear(); events.clear(); closed=0; session=role; now=1000; accept_save=true;
-    Bbsc::quit_input_blocked=false; loading_opens=0;
+    loading_opens=0;
     bbsc_pending_quit={}; bbsc_title_quit={}; bbsc_quit_prepared=false; bbsc_quit_defer_store=0;
     bbsc_quit_save_hooks_ready=true; bbsc_quit_save_watch=false; bbsc_quit_save_result=-1;
+    memory[image_base+PlayerSlotManagerPointerOffset]=0xa00000; leave_flag=false;
     memory[image_base+MenuManPointerOffset]=menu;
     memory[image_base+SprjLuaEventManPointerOffset]=0x600100; memory[0x600100+8]=0x600000;
     memory[image_base+MatchingStatePointerOffset]=manager;
@@ -120,7 +126,8 @@ void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
     memory[menu+0x25C]=0; // hook runs before native side effects
     BbscNativeQuitConfirmHook(0,&r);
-    if (BbscQuitInProgress()) assert(Bbsc::quit_input_blocked);
+    if (BbscQuitInProgress()) assert(memory[0xa00070]==1 && leave_flag);
+
 }
 void result(s32 value, bool correct_manager=true) {
     GuestRegisterSnapshot r; r.rax=static_cast<u64>(value);
@@ -130,7 +137,8 @@ void result(s32 value, bool correct_manager=true) {
 bool stopped() { return std::find(events.begin(),events.end(),5)!=events.end(); }
 void assert_cancelled() {
     assert(!BbscQuitInProgress() && !stopped());
-    assert(!Bbsc::quit_input_blocked);
+    assert(memory[0xa00070]==0 && !leave_flag);
+
     assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
 }
@@ -167,9 +175,10 @@ int main() {
         assert(events==std::vector<int>({1,2,1,3,4,5,7}));
         assert(session==7 && memory[menu+0x250]==0 && BbscQuitInProgress());
         TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // Stop request is not completion
-        assert(Bbsc::quit_input_blocked);
+    
         session=0; TickBbscPendingQuit();
-        assert(!Bbsc::quit_input_blocked && loading_opens==1);
+        assert(memory[0xa00070]==1 && leave_flag);
+        assert(loading_opens==1);
         assert(memory[menu+0x250]==0 && memory[request_address]==2 && BbscQuitInProgress());
         memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
         TickBbscPendingQuit(); assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
@@ -189,7 +198,8 @@ int main() {
     TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); memory[world+0x08]=1; TickBbscPendingQuit();
     assert(!BbscQuitInProgress() && !stopped());
-    assert(!Bbsc::quit_input_blocked);
+    assert(memory[0xa00070]==1 && leave_flag); // real load owns native resets
+
     assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1); // native load owns cleanup
     reset(3); confirm(); session=6; TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); memory[world+0x1490]=3; TickBbscPendingQuit(); assert_cancelled();
