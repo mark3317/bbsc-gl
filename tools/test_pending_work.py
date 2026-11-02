@@ -166,6 +166,14 @@ int main() {
     const u16 changed[5]{90,210,35,31,41};
     OnBbscScalePacket(changed); TickBbscScaling();
     assert(bbsc_scale_written->numbers.percent[0]==90);
+    bbsc_scaled_npcs.assign(1000, {3,100,false});
+    extra=3; const auto batch_before=writes;
+    TickBbscScaling(); assert(!bbsc_scale_written && writes-batch_before==138);
+    extra=0; session=0; // interrupted update must restart even if returning to older key
+    TickBbscScaling(); assert(!bbsc_scale_written);
+    for(int i=0;i<10;++i) TickBbscScaling();
+    assert(bbsc_scale_written && bbsc_scale_written->guests==0);
+    auto complete=writes; TickBbscScaling(); assert(writes==complete);
     std::cout << "scaling: idle cache, packets, heartbeat, expiry, guests, solo/rejoin PASS\n";
 }
 """
