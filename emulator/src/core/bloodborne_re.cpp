@@ -18443,8 +18443,8 @@ void TickBbscDeadWatchdog() {
 //     (enemy) or isSoulGetByBoss (byte 329 bit 4 = boss), so every enemy carries it from spawn;
 //   - rewrites the two rows (maxHpRate +16, attack power rates +72..+84) and every scaled row's
 //     superArmorDurability (+280, stagger) for the number of guests, once a second.
-// The param tables are found in memory by their header (type name at +0x0C, row count u16 at +0x0A,
-// rows from +0x40: u32 id, pad, u64 data offset from the table start), on a thread of their own.
+// Active param tables come from the game's repository, not a process-wide scan.
+// Directory +0x40: u32 id, pad, u64 row offset. Preparation runs on its own thread.
 // Settings: SHADPS4_BBSC_SCALING (on), BBSC_SCALE_ENEMY_HP 40, BBSC_SCALE_BOSS_HP 100,
 // BBSC_SCALE_DAMAGE 15, BBSC_SCALE_ENEMY_STAGGER 15, BBSC_SCALE_BOSS_STAGGER 20 (% per guest).
 constexpr u64 LuaMultiDopingOffset = 0x0138BC70;
@@ -18465,6 +18465,10 @@ std::atomic<BbscScaleState> bbsc_scale_state{BbscScaleState::Idle};
 std::vector<u64> bbsc_scale_rows_enemy; // SpEffect 7502 rows (every table copy found)
 std::vector<u64> bbsc_scale_rows_boss;  // SpEffect 7503 rows
 std::vector<BbscScaledNpc> bbsc_scaled_npcs;
+u64 bbsc_scale_npc_table = 0, bbsc_scale_effect_table = 0;
+u16 bbsc_scale_npc_count = 0;
+u64 bbsc_scale_armor_begin = 0, bbsc_scale_armor_end = 0;
+void StartBbscScaling();
 
 bool BbscScalingEnabled() {
     static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_SCALING");
@@ -18592,45 +18596,73 @@ u64 BbscCheckedParamRow(u64 table, u16 count, u64 offset, size_t size) {
 // Data of row `id` in a param table, or 0 (`size`: bytes of it the caller will touch).
 u64 BbscParamRow(u64 table, u32 id, size_t size = 8) {
     const u16 count = ReadValue<u16>(table, 0x0A);
+    const bool direct = count && HasMemoryAccess(table + 0x40,
+        static_cast<size_t>(count) * 0x18, MemoryProt::CpuRead);
     for (u32 i = 0; i < count; ++i) {
         const u64 entry = table + 0x40 + static_cast<u64>(i) * 0x18;
-        if (ReadValue<u32>(entry, 0) == id) {
-            return BbscCheckedParamRow(table, count, ReadValue<u64>(entry, 8), size);
+        u32 row_id;
+        if (direct) std::memcpy(&row_id, reinterpret_cast<const void*>(entry), 4);
+        else row_id = ReadValue<u32>(entry, 0);
+        if (row_id == id) {
+            u64 offset;
+            if (direct) std::memcpy(&offset, reinterpret_cast<const void*>(entry + 8), 8);
+            else offset = ReadValue<u64>(entry, 8);
+            return BbscCheckedParamRow(table, count, offset, size);
         }
     }
     return 0;
 }
 
-// min_rows / first_id: the table's row count must be above min_rows and its first row id first_id.
+u64 BbscGameParamTable(std::string_view type);
+
+// Only the repository-owned live table is used by the game. Never enumerate
+// unrelated allocations / old copies: that competed with rendering for minutes.
 std::vector<u64> FindBbscParamTables(std::string_view type, u16 min_rows = 1000,
                                      u32 first_id = 0) {
-    // Several BBSC features need the same very large guest-memory scan.  Running those searches in
-    // parallel made each one take about 75-95 seconds on BBport, delaying the kit until after users
-    // had already opened the shop.  Serialize scans and retain the two stable tables shared by the
-    // kit and scaling.  NPC tables are deliberately not cached because more copies can load later.
-    static std::mutex scan_mutex;
-    static std::map<std::string, std::vector<u64>> stable_cache;
-    const std::string key(type);
-    const bool stable = type == "EQUIP_PARAM_GOODS_ST" || type == "SP_EFFECT_PARAM_ST";
-    std::scoped_lock lock(scan_mutex);
-    if (stable) {
-        if (const auto found = stable_cache.find(key); found != stable_cache.end()) {
-            return found->second;
-        }
+    const u64 table = BbscGameParamTable(type);
+    if (table && ReadValue<u16>(table, 0x0A) > min_rows &&
+        ReadValue<u32>(table, 0x40) == first_id) return {table};
+    return {};
+}
+
+// Validate the directory once; optionally validate its entire writable data span.
+// A fragmented mapping uses the original checked-row fallback instead.
+struct BbscParamView {
+    u64 table = 0, begin = 0, end = 0;
+    u16 count = 0;
+    bool directory = false, writable = false;
+};
+BbscParamView BbscParamViewFor(u64 table, size_t row_size) {
+    BbscParamView view;
+    view.table = table;
+    view.count = ReadValue<u16>(table, 0x0A);
+    view.directory = view.count != 0 && HasMemoryAccess(table + 0x40,
+        static_cast<size_t>(view.count) * 0x18, MemoryProt::CpuRead);
+    if (!view.directory) return view;
+    const u64 index_end = table + 0x40 + static_cast<u64>(view.count) * 0x18;
+    view.begin = std::numeric_limits<u64>::max();
+    for (u32 i = 0; i < view.count; ++i) {
+        u64 offset;
+        std::memcpy(&offset, reinterpret_cast<const void*>(table + 0x48 + i * 0x18ull), 8);
+        const u64 row = offset < 0x10000000 ? table + offset : offset;
+        if (row < index_end || row - table > 0x4000000 || row_size > std::numeric_limits<u64>::max() - row) continue;
+        view.begin = std::min(view.begin, row);
+        view.end = std::max(view.end, row + row_size);
     }
-    std::vector<u8> needle(type.begin(), type.end());
-    needle.push_back(0);
-    std::vector<u64> tables;
-    for (const u64 hit : Core::Bbsc::FindInMemory(needle, BbscScanLow(), 0x10000000000ULL, 16)) {
-        const u64 table = hit - 0x0C;
-        if (ReadValue<u16>(table, 0x0A) > min_rows && ReadValue<u32>(table, 0x40) == first_id) {
-            tables.push_back(table);
-        }
-    }
-    if (stable && !tables.empty()) {
-        stable_cache.emplace(key, tables);
-    }
-    return tables;
+    view.writable = view.end > view.begin &&
+        HasMemoryAccess(view.begin, view.end - view.begin, MemoryProt::CpuWrite);
+    return view;
+}
+u64 BbscParamViewRow(const BbscParamView& view, u32 i, size_t size) {
+    if (i >= view.count) return 0;
+    u64 offset;
+    if (view.directory) std::memcpy(&offset, reinterpret_cast<const void*>(view.table + 0x48 + i * 0x18ull), 8);
+    else offset = ReadValue<u64>(view.table + 0x40 + i * 0x18ull, 8);
+    const u64 row = offset < 0x10000000 ? view.table + offset : offset;
+    const u64 index_end = view.table + 0x40 + static_cast<u64>(view.count) * 0x18;
+    if (row < index_end || row - view.table > 0x4000000 || size > std::numeric_limits<u64>::max() - row) return 0;
+    if (view.writable && row >= view.begin && row + size <= view.end) return row;
+    return HasMemoryAccess(row, size, MemoryProt::CpuWrite) ? row : 0;
 }
 
 // The table the game itself reads, from its param repository, or 0 - no memory scan (2026-10-19).
@@ -18674,9 +18706,15 @@ void PrepareBbscScaling() {
     const s64 started = SteadyNowMs();
     bbsc_scale_rows_enemy.clear();
     bbsc_scale_rows_boss.clear();
+    const auto prior_npcs = std::move(bbsc_scaled_npcs);
     bbsc_scaled_npcs.clear();
     const auto speffect_tables = FindBbscParamTables("SP_EFFECT_PARAM_ST");
     const auto npc_tables = FindBbscParamTables("NPC_PARAM_ST");
+    std::map<u64, s16> prior_armor;
+    if (!npc_tables.empty() && npc_tables.front() == bbsc_scale_npc_table &&
+        ReadValue<u16>(npc_tables.front(), 0x0A) == bbsc_scale_npc_count) {
+        for (const auto& npc : prior_npcs) prior_armor.emplace(npc.row, npc.armor);
+    }
     size_t enemies = 0;
     size_t bosses = 0;
     size_t full = 0;
@@ -18697,11 +18735,12 @@ void PrepareBbscScaling() {
         bbsc_scale_rows_enemy.push_back(enemy);
         bbsc_scale_rows_boss.push_back(boss);
     }
+    bbsc_scale_armor_begin = bbsc_scale_armor_end = 0;
     for (const u64 table : npc_tables) {
-        const u16 count = ReadValue<u16>(table, 0x0A);
+        const BbscParamView view = BbscParamViewFor(table, 336);
+        const u16 count = view.count;
         for (u32 i = 0; i < count; ++i) {
-            const u64 offset = ReadValue<u64>(table + 0x40 + static_cast<u64>(i) * 0x18, 8);
-            const u64 row = BbscCheckedParamRow(table, count, offset, 336); // reads up to +329
+            const u64 row = BbscParamViewRow(view, i, 336); // reads up to +329
             if (row == 0) {
                 continue;
             }
@@ -18709,8 +18748,9 @@ void PrepareBbscScaling() {
             // 29, game data 2026-10-08); boss HP made Henryk "invincible" for a host (Eryk's report),
             // so only teamType 23 rows count as bosses. The hunters stay unscaled like in vanilla
             // (2026-10-13: still "really high HP" with enemy scaling) unless BBSC_SCALE_NPC_HUNTERS=1.
-            const u8 team = ReadValue<u8>(row, 303);
-            const bool flagged = ((ReadValue<u8>(row, 329) >> 4) & 1) != 0;
+            // The whole row was checked above, no kernel query for every field.
+            const u8 team = *reinterpret_cast<const u8*>(row + 303);
+            const bool flagged = ((*reinterpret_cast<const u8*>(row + 329) >> 4) & 1) != 0;
             const bool boss = flagged && team == 23;
             if (!flagged && team != 23) {
                 continue;
@@ -18722,28 +18762,44 @@ void PrepareBbscScaling() {
             const s32 effect = boss ? BbscBossScaleEffect : BbscEnemyScaleEffect;
             bool placed = false;
             for (size_t slot = 0; slot < 8 && !placed; ++slot) {
-                placed = ReadValue<s32>(row, 72 + slot * 4) == effect;
+                s32 value;
+                std::memcpy(&value, reinterpret_cast<const void*>(row + 72 + slot * 4), 4);
+                placed = value == effect;
             }
             for (size_t slot = 0; slot < 8 && !placed; ++slot) {
-                if (ReadValue<s32>(row, 72 + slot * 4) == -1) {
-                    placed = WriteValue(row, 72 + slot * 4, effect);
+                s32 value;
+                std::memcpy(&value, reinterpret_cast<const void*>(row + 72 + slot * 4), 4);
+                if (value == -1) {
+                    std::memcpy(reinterpret_cast<void*>(row + 72 + slot * 4), &effect, 4);
+                    placed = true;
                 }
             }
             if (!placed) {
                 ++full;
                 continue;
             }
-            bbsc_scaled_npcs.push_back({row, ReadValue<s16>(row, 280), boss});
+            s16 armor;
+            std::memcpy(&armor, reinterpret_cast<const void*>(row + 280), 2);
+            if (const auto old = prior_armor.find(row); old != prior_armor.end()) armor = old->second;
+            bbsc_scaled_npcs.push_back({row, armor, boss});
+            if (!bbsc_scale_armor_begin || row + 280 < bbsc_scale_armor_begin) bbsc_scale_armor_begin = row + 280;
+            bbsc_scale_armor_end = std::max(bbsc_scale_armor_end, row + 282);
             ++(boss ? bosses : enemies);
         }
     }
     const bool ok = !bbsc_scale_rows_enemy.empty() && !bbsc_scaled_npcs.empty();
+    if (ok) {
+        bbsc_scale_npc_table = npc_tables.front();
+        bbsc_scale_effect_table = speffect_tables.front();
+        bbsc_scale_npc_count = ReadValue<u16>(bbsc_scale_npc_table, 0x0A);
+    }
     if (!ok) {
+        bbsc_scaled_npcs = prior_npcs; // retain original armor across a transient failed retry
         bbsc_scale_state = BbscScaleState::Failed;
         return;
     }
     LOG_INFO(Debug,
-             "BBSC scaling: {} SpEffect / {} NpcParam table(s) found in {} ms; {} enemy and {} boss "
+             "BBSC scaling: {} SpEffect / {} NpcParam active repository table(s) ready in {} ms; {} enemy and {} boss "
              "rows carry the scaling effect ({} with no free slot, {} NPC hunter rows left unscaled){}",
              speffect_tables.size(), npc_tables.size(), SteadyNowMs() - started, enemies, bosses,
              full, hunters, ok ? "" : " - NOT READY, no scaling this session");
@@ -18757,8 +18813,27 @@ void TickBbscScaling() {
     if (bbsc_scale_state != BbscScaleState::Ready) {
         return;
     }
-    BbscScaleNumbers numbers = BbscOwnScaleNumbers();
+    static std::optional<BbscAppliedScale> pending;
+    static size_t armor_next = 0;
+    {
+        BBSC_PERF_NESTED("scaling table owners");
+        const u64 npc = BbscGameParamTable("NPC_PARAM_ST");
+        const u64 effects = BbscGameParamTable("SP_EFFECT_PARAM_ST");
+        if (!npc || !effects) return; // params temporarily unloaded, never touch cached rows
+        if (npc != bbsc_scale_npc_table || effects != bbsc_scale_effect_table ||
+            ReadValue<u16>(npc, 0x0A) != bbsc_scale_npc_count) {
+            pending.reset(); armor_next = 0; bbsc_scale_written.reset();
+            bbsc_scale_state = BbscScaleState::Idle;
+            StartBbscScaling();
+            return;
+        }
+    }
+    BbscScaleNumbers numbers;
     bool from_host = false;
+    int extra = 0;
+    {
+    BBSC_PERF_NESTED("scaling selection");
+    numbers = BbscOwnScaleNumbers();
     if (GetSessionState() == 6) {
         s64 received_ms = 0;
         const BbscScaleNumbers& host = BbscCachedHostScale(received_ms);
@@ -18767,15 +18842,14 @@ void TickBbscScaling() {
             from_host = true;
         }
     }
+    extra = GetBbscScalingGuests();
+    }
     const int enemy_hp = numbers.percent[0];
     const int boss_hp = numbers.percent[1];
     const int damage = numbers.percent[2];
     const int enemy_stagger = numbers.percent[3];
     const int boss_stagger = numbers.percent[4];
-    const int extra = GetBbscScalingGuests();
     const BbscAppliedScale key{numbers, extra};
-    static std::optional<BbscAppliedScale> pending;
-    static size_t armor_next = 0;
     if (!pending && bbsc_scale_written && key == *bbsc_scale_written) return;
     if (!pending || key != *pending) {
         pending = key;
@@ -18786,29 +18860,43 @@ void TickBbscScaling() {
     const auto rate = [extra](int percent) {
         return 1.0F + static_cast<float>(percent) * static_cast<float>(extra) / 100.0F;
     };
-    const auto write_row = [&](u64 row, float hp) {
-        WriteValue(row, 16, hp);
-        for (size_t at = 72; at <= 84; at += 4) {
-            WriteValue(row, at, rate(damage));
-        }
+    const auto write_row = [&](u64 row, float hp) -> bool {
+        if (!HasMemoryAccess(row + 16, 72, MemoryProt::CpuWrite)) return false;
+        std::memcpy(reinterpret_cast<void*>(row + 16), &hp, 4);
+        const float attack = rate(damage);
+        for (size_t at = 72; at <= 84; at += 4)
+            std::memcpy(reinterpret_cast<void*>(row + at), &attack, 4);
+        return true;
     };
     if (armor_next == 0) {
-        for (const u64 row : bbsc_scale_rows_enemy) write_row(row, rate(enemy_hp));
-        for (const u64 row : bbsc_scale_rows_boss) write_row(row, rate(boss_hp));
+        BBSC_PERF_NESTED("scaling effect writes");
+        for (const u64 row : bbsc_scale_rows_enemy) if (!write_row(row, rate(enemy_hp))) return;
+        for (const u64 row : bbsc_scale_rows_boss) if (!write_row(row, rate(boss_hp))) return;
     }
     // HP/damage effect rows are few; armor rows number in the thousands. Bound
     // work and restart from row zero on a new key (including solo/leave/rejoin).
     const s64 batch_start = SteadyNowMs();
-    const size_t end = std::min(armor_next + size_t{128}, bbsc_scaled_npcs.size());
+    {
+    BBSC_PERF_NESTED("scaling armor writes");
+    // One current-span check replaces thousands of per-field VirtualQuery calls.
+    // Do not retain this protection result across ticks / table lifetimes.
+    const bool direct = bbsc_scale_armor_end > bbsc_scale_armor_begin &&
+        HasMemoryAccess(bbsc_scale_armor_begin, bbsc_scale_armor_end - bbsc_scale_armor_begin, MemoryProt::CpuWrite);
+    const size_t end = std::min(armor_next + (direct ? size_t{128} : size_t{8}), bbsc_scaled_npcs.size());
     while (armor_next < end) {
-        const BbscScaledNpc& npc = bbsc_scaled_npcs[armor_next++];
+        const BbscScaledNpc& npc = bbsc_scaled_npcs[armor_next];
         const float armor = static_cast<float>(npc.armor) * rate(npc.boss ? boss_stagger : enemy_stagger);
-        WriteValue(npc.row, 280, static_cast<s16>(std::min(armor, 32767.0F)));
-        if ((armor_next % 8) == 0 && SteadyNowMs() - batch_start >= 2) break;
+        const s16 value = static_cast<s16>(std::min(armor, 32767.0F));
+        if (direct) std::memcpy(reinterpret_cast<void*>(npc.row + 280), &value, 2);
+        else if (!WriteValue(npc.row, 280, value)) return; // retain the failed row for retry
+        ++armor_next;
+        if (SteadyNowMs() - batch_start >= 1) break;
+    }
     }
     if (armor_next < bbsc_scaled_npcs.size()) return;
     pending.reset();
     bbsc_scale_written = key;
+    BBSC_PERF_NESTED("scaling completion report");
     const s32 guests = GetBbscGuestCount(); // only needed for the change log
     LOG_INFO(Debug,
              "BBSC scaling: {} guest(s) (game count {}, members {}) -> enemies HP x{:.2f}, bosses HP "
@@ -18897,7 +18985,7 @@ void TickBbscScaledMaxHp() {
 // SolidNpcs.NoWanderGhost (0x018E4FBF) did not keep them solid, while clearing the row's
 // isChangeWanderGhost bit (+0x145 bit 7) does - that is what the Doll and Gehrman get
 // (MakeBbscDreamNpcsSolid) and they were the solid ones; the red-hooded man's row never had the bit.
-// Same edit on every NpcParam row, once the param tables are loaded (5 s steps, up to 3 minutes).
+// Edit the active repository table; retry by load generation every 5 seconds.
 // Only how a host world's NPC looks to a guest changes; host and solo never read the bit.
 void StartBbscSolidNpcs() {
     if (!EnvFlagEnabled("SHADPS4_BBSC_SOLID_NPCS")) {
@@ -18913,20 +19001,16 @@ void StartBbscSolidNpcs() {
             size_t rows = 0;
             size_t cleared = 0;
             for (const u64 table : tables) {
-                const u16 count = ReadValue<u16>(table, 0x0A);
-                for (u32 i = 0; i < count; ++i) {
-                    const u64 offset =
-                        ReadValue<u64>(table + 0x40 + static_cast<u64>(i) * 0x18, 8);
-                    const u64 row = BbscCheckedParamRow(table, count, offset, 336);
-                    if (row == 0 ||
-                        !HasMemoryAccess(row + NpcParamFlagsOffset, 1, MemoryProt::CpuWrite)) {
+                const BbscParamView view = BbscParamViewFor(table, 336);
+                for (u32 i = 0; i < view.count; ++i) {
+                    const u64 row = BbscParamViewRow(view, i, 336);
+                    if (row == 0) {
                         continue;
                     }
                     ++rows;
-                    const u8 flags = ReadValue<u8>(row, NpcParamFlagsOffset);
+                    const u8 flags = *reinterpret_cast<const u8*>(row + NpcParamFlagsOffset);
                     if ((flags & NpcParamWanderGhostBit) != 0) {
-                        WriteValue<u8>(row, NpcParamFlagsOffset,
-                                       static_cast<u8>(flags & ~NpcParamWanderGhostBit));
+                        *reinterpret_cast<u8*>(row + NpcParamFlagsOffset) = static_cast<u8>(flags & ~NpcParamWanderGhostBit);
                         ++cleared;
                     }
                 }
@@ -18942,17 +19026,14 @@ void StartBbscSolidNpcs() {
     }}.detach();
 }
 
-// The params are loaded at boot, before the title screen (and before BBSC's game tick runs): look
-// for them from start-up, every 5 s for up to 3 minutes, so the first map's enemies already spawn
-// with the effect.
+// Poll the live repository from startup; no address-space scan and no initial 5s sleep.
 void StartBbscScaling() {
-    if (!BbscScalingEnabled() || bbsc_scale_state != BbscScaleState::Idle) {
-        return;
-    }
-    bbsc_scale_state = BbscScaleState::Scanning;
+    if (!BbscScalingEnabled()) return;
+    auto expected = BbscScaleState::Idle;
+    if (!bbsc_scale_state.compare_exchange_strong(expected, BbscScaleState::Scanning)) return;
     std::thread{[] {
-        for (int attempt = 0; attempt < 36; ++attempt) {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+        for (int attempt = 0; attempt < 720; ++attempt) {
+            if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(250));
             PrepareBbscScaling();
             if (bbsc_scale_state == BbscScaleState::Ready) {
                 return;
@@ -19105,15 +19186,8 @@ bool PrepareBbscDuelBellIn(const std::vector<u64>& goods_tables,
     return ok;
 }
 
-bool PrepareBbscDuelBell() {
-    return PrepareBbscDuelBellIn(FindBbscParamTables("EQUIP_PARAM_GOODS_ST", 100, 1),
-                                 FindBbscParamTables("SP_EFFECT_PARAM_ST"), "every copy", true);
-}
-
-// Two threads: the game's own goods / SpEffect tables (BbscGameParamTable: ready seconds after the
-// params load), so the kit and the Bath Messenger's bells do not wait for the memory scan; and, as
-// before, every copy the scan finds (BBport keeps two), which also publishes the effect rows.
-// PrepareBbscDuelBellIn holds bbsc_kit_prepare_mutex, so the two never write the rows at once.
+// Prepare only the active repository-owned goods and SpEffect tables.
+// No second process-wide scanner / retained-copy worker.
 void StartBbscDuelBell() {
     static std::atomic<bool> started{false};
     if (started.exchange(true)) {
@@ -19130,13 +19204,12 @@ void StartBbscDuelBell() {
             if (goods == 0 || effects == 0 || BbscKitParamsReady()) {
                 continue;
             }
-            // 2026-10-27 (BBport): the copy scan takes ~3 minutes in BBport, and the Duel Bell did
-            // nothing until it finished (the ready flag came only from there) - the game's own
-            // tables publish the effect rows now; the scan still writes every copy.
+            // These are the tables used by native goods/effect lookups; old copies
+            // in unrelated allocations need no patches or second readiness owner.
             if (PrepareBbscDuelBellIn({goods}, {effects}, "game's own tables", true)) {
                 bbsc_kit_rows_ready.store(true, std::memory_order_release);
                 LOG_INFO(Debug, "BBSC kit: bells ready from the game's own tables after {} ms "
-                                "(goods {:#x}, SpEffect {:#x}) - every copy follows from the scan",
+                                "(goods {:#x}, SpEffect {:#x}) - active repository tables",
                          SteadyNowMs() - started_ms, goods, effects);
                 BBSC_TIMELINE("KIT", "kit rows ready from the game's own tables after {} ms",
                               SteadyNowMs() - started_ms);
@@ -19144,23 +19217,10 @@ void StartBbscDuelBell() {
         }
         if (!BbscKitParamsReady()) {
             LOG_INFO(Debug, "BBSC kit: the game's own tables were not found in 3 minutes - the "
-                            "memory scan decides");
+                            "kit remains unavailable until restart");
         }
     }}.detach();
-    std::thread{[started_ms] {
-        for (int attempt = 0; attempt < 36; ++attempt) {
-            if (attempt != 0) {
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-            }
-            if (PrepareBbscDuelBell()) {
-                break; // every copy written (the game's own tables may have published first)
-            }
-        }
-        if (bbsc_duel_bell_ready) {
-            BBSC_TIMELINE("KIT", "every bell table copy ready after {} ms",
-                          SteadyNowMs() - started_ms);
-        }
-    }}.detach();
+
 }
 
 // The items the local player carries, or 0: [[0x0553B130]+8] + 0x328 (embedded), the list the
@@ -20103,8 +20163,7 @@ void InstallBbscDeathTraceHooks() {
         LOG_ERROR(Debug, "BBSC boss fight: failed to hook Failed_BossAreaMission {:#x}",
                   FailedBossAreaMissionOffset);
     }
-    // The kit owns unused goods rows and must prepare them before the Bath Messenger can expose
-    // them.  Give that scan priority over the optional scaling / solid-NPC scans.
+    // Prepare active repository tables. No whole-process scans for kit/scaling/solid NPCs.
     StartBbscDuelBell();
     StartBbscScaling();
     StartBbscSolidNpcs();
