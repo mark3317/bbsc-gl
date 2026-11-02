@@ -1034,9 +1034,6 @@ std::optional<SummonPlacementDescriptor> seamless_received_host_placement;
 bool seamless_received_host_placement_consumed{};
 // BBSC connect-first: host placement from the prepare reply, kept until the join load uses it.
 std::optional<SummonPlacementDescriptor> bbsc_connect_first_placement;
-// Set when a connect-first join has loaded the guest into the host's map; TickBbscJoinTeleport then
-// adds the join warp's second, real reload (see BbscWarpJoinEnabled).
-std::atomic<bool> bbsc_cross_map_join{false};
 bool BbscConnectFirstEnabled();
 bool BbscConnectFirstPlacementFresh(); // prepare reply received within the timeout
 std::atomic<u32> pending_summon_reload_map{};
@@ -1594,7 +1591,6 @@ void BbscConnectFirstReloadFinished() {
     }
     std::scoped_lock lock{seamless_placement_mutex};
     bbsc_connect_first_placement.reset();
-    bbsc_cross_map_join.store(true, std::memory_order_release);
     LOG_INFO(Debug, "BBSC connect-first: summoned reload finished in host map {:#x}",
              host->packed_region);
 }
@@ -4787,28 +4783,6 @@ constexpr s64 BbscJoinTeleportSettleMs = 2'000;
 // so the two never move the same character at the same time.
 bool bbsc_join_teleport_done = false;
 
-// Ask the game to warp us properly instead of sliding the guest across the floor.
-//
-// The plain teleport is the game's own in-map event warp (0x013CB3D0 does exactly the same two
-// operations), which is meant for short hops inside an already streamed area. Used to arrive in
-// the host's world it moves the player without the engine ever running a real transition, which
-// is the suspected cause of the cross-map texture mess.
-//
-// The reload destination selector (0x01332BC0) has a forced-warp branch built for this:
-//   global+0x1520 = 1        ignore the last lamp, use my destination
-//   global+0x14f0            the map to load
-//   global+0x10              the point in it (kept, then corrected by the teleport afterwards)
-// and 0x013CDE30 performs the reload - loading screen, teardown, streaming, all of it. That is
-// the same call the death respawn already uses, so this is machinery we exercise every session.
-//
-// Sequence: request the reload once, wait for it to finish, then teleport to the host's exact
-// position as before. The teleport is a few metres inside a freshly loaded map, which is what the
-// in-map warp is actually for.
-bool BbscWarpJoinEnabled() {
-    static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_WARP_JOIN");
-    return enabled;
-}
-
 // A real reload for a guest in a session, to `to` (map + spot).
 //
 // Uses the game's own forced summon placement, in exactly the order the fork's cross-map join
@@ -4898,8 +4872,6 @@ bool BbscJoinWorldMatchesHost();
 void TickBbscJoinTeleport() {
     if (BbscQuitInProgress()) return;
     static bool done = false;
-    static bool warp_requested = false;
-    static s64 warp_requested_ms = 0;
     static s64 stable_since_ms = 0;
     static std::array<float, 3> last_host{};
     static s64 last_check_ms = 0;
@@ -4914,9 +4886,6 @@ void TickBbscJoinTeleport() {
     if (session_state != 6) {
         done = false;
         bbsc_join_teleport_done = false;
-        bbsc_cross_map_join.store(false, std::memory_order_release);
-        warp_requested = false;
-        warp_requested_ms = 0;
         stable_since_ms = 0;
         return;
     }
@@ -4943,7 +4912,6 @@ void TickBbscJoinTeleport() {
         // Never put dungeon coordinates into that map. The scoped follow owns the recovery load.
         done = true;
         bbsc_join_teleport_done = true;
-        bbsc_cross_map_join.store(false, std::memory_order_release);
         {
             std::scoped_lock lock{seamless_placement_mutex};
             bbsc_connect_first_placement.reset();
@@ -4981,34 +4949,9 @@ void TickBbscJoinTeleport() {
         return;
     }
 
-    // Let the engine do the transition first, once, then position inside the loaded map.
-    // Only after a cross-map join: the one summon load into the host's map left the lighting
-    // flickering (lights switching on and off, 2026-09-24) and this second reload fixed it. A
-    // same-map join does not need it, and the reload after every summon was what turned the guest
-    // into "Beckoner" (Eryk, 2026-09-23).
-    if (BbscWarpJoinEnabled() && bbsc_cross_map_join.load(std::memory_order_acquire) &&
-        !warp_requested && !Chalice::IsMap(GetCurrentPackedMap())) {
-        SummonPlacementDescriptor to{};
-        to.packed_region = GetCurrentPackedMap();
-        to.x = host_transform->position[0] + 1.0f;
-        to.y = host_transform->position[1];
-        to.z = host_transform->position[2];
-        to.heading = host_transform->rotation[1];
-        if (RequestBbscSessionWarp(global, to, "join")) {
-            warp_requested = true;
-            warp_requested_ms = now;
-            stable_since_ms = 0; // the host's synced position has to settle again after the load
-            return;
-        }
-        // Could not ask for it - fall through and use the plain teleport rather than strand the
-        // guest wherever the load happened to drop them.
-        LOG_WARNING(Debug, "BBSC join warp: could not request the reload, teleporting instead");
-        warp_requested = true;
-    }
-    // Give the load a moment to finish before moving the character it just placed.
-    if (warp_requested && now - warp_requested_ms < BbscJoinTeleportSettleMs) {
-        return;
-    }
+    // The native summon already loaded the destination via the placement handoff.
+    // Correct the final position in that resident world; do not reload it a second time.
+    // A wrong/missing destination is handled by scoped follow above, never by teleport.
     done = true;
     bbsc_join_teleport_done = true; // from here on TickBbscFollowHost may move the guest
     LogBbscHostWorldFlagsDiff(GetCurrentPackedMap(), "after joining");
