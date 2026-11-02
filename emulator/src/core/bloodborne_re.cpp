@@ -9874,11 +9874,22 @@ void SetBbscQuitDisableMove(u8 disabled) {
 }
 
 void HoldBbscQuitCharacter(const BbscPendingQuit& q) {
-    if (GetGlobalState() != q.global || ReadValue<u8>(q.global, 8) != 0) return;
+    // A title transition sets global+8 before the living character disappears.
+    // Keep the restriction on this exact character through that interval.
+    if (!q.global || GetGlobalState() != q.global || !q.character || !q.character_control) return;
     const u64 player = GetLocalPlayerCharacter();
     if (player == q.character && ReadValue<u64>(player, 0x58) == q.character_control &&
         HasMemoryAccess(q.character_control + 0x111, 1, MemoryProt::CpuWrite) &&
         ReadValue<u8>(q.character_control, 0x111) != 1) SetBbscQuitDisableMove(1);
+}
+
+// Reassert immediately before the native movement gate consumes DisableMove.
+// Closing menus / native events may clear it after our ordinary game tick.
+// CMP [r12+111],0 is replayed by the trampoline, preserving the game's branch.
+void PS4_SYSV_ABI BbscQuitMovementHook(u64, const GuestRegisterSnapshot* registers) {
+    if (!registers) return;
+    const auto& q = bbsc_pending_quit.global ? bbsc_pending_quit : bbsc_title_quit;
+    if (q.global && registers->r12 == q.character_control) HoldBbscQuitCharacter(q);
 }
 
 void RestoreBbscQuitControls(const BbscPendingQuit& pending) {
@@ -11080,7 +11091,12 @@ void InstallBbscQuitHook() {
         0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x48};
     static constexpr std::array<u8, 5> SaveResult{0x48, 0x83, 0xC4, 0x58, 0x5B};
     static constexpr std::array<u8, 8> ConfirmQuit{0x48, 0x8B, 0x00, 0x48, 0x83, 0x78, 0x08, 0x00};
-    bbsc_quit_save_hooks_ready =
+    static constexpr std::array<u8, 9> MovementGate{0x41, 0x80, 0xBC, 0x24,
+        0x11, 0x01, 0x00, 0x00, 0x00}; // CMP byte [r12+111],0
+    const bool quit_movement_ready = InstallGuestCodeHook(
+        reinterpret_cast<void*>(image_base + 0x01513EB5), MovementGate, 0, BbscQuitMovementHook);
+    if (!quit_movement_ready) LOG_ERROR(Debug, "BBSC quit: native movement gate hook unavailable");
+    bbsc_quit_save_hooks_ready = quit_movement_ready &&
         std::memcmp(reinterpret_cast<const void*>(image_base + BbscNativeSaveRequestOffset),
                     SavePrologue.data(), SavePrologue.size()) == 0 &&
         InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscNativeSaveResultOffset),
