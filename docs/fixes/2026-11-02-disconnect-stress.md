@@ -1,3 +1,10 @@
+> Deployed 02.11.2026: bundled 6d8b109 / standalone 81524e4 / BBGL 7e8594f.
+> Full build exit=0 and release verification PASS. Both stopped machines updated:
+> 10 replacements / 5223 files each; client/server manifests PASS. Staged DLL,
+> launcher and native exe hashes match on both machines. Backups:
+> PC disconnect-stress-20261102-002324; laptop disconnect-stress-20261102-002341.
+> Source-only status below is historical. Gameplay validation still pending.
+
 # Disconnect/reconnect stress run — 02.11.2026
 
 Status: source changes only. No production build/deploy/game run in this task.

@@ -110,18 +110,17 @@ for i in (101001, 101003, 101004, 101005):
     replace(i, r'^Discovered the chime of a Small Resonant Bell\.$', 'A player answered your bell.\nJoining...')
 replace(101100, r'^Discovered the chime of a Beckoning Bell\.$', 'Found a host.\nJoining their game...')
 
-# The BBSC hunter's kit replaces the vanilla bells (bloodborne_re.cpp "The BBSC hunter's kit"): the
-# bell prompts name the kit, and nothing costs Insight any more.
-replace(14000, r'^Expend Insight', 'Ring the Hunt Bell\nto call other players?')
-replace(14003, r'^Silence the Beckoning Bell$', 'Stop the Hunt Bell')
-replace(14004, r'^Silence the Small Resonant Bell$', 'Stop the Kin Bell')
-replace(14005, r'^Silence the Sinister Resonant Bell$', 'Stop the Bloodlust Bell')
+# Original bell names are retained; BBSC use costs no Insight.
+replace(14000, r'^Expend Insight', 'Ring the Beckoning Bell\nto call other players?')
+replace(14003, r'^Silence the Beckoning Bell$', 'Stop the Beckoning Bell')
+replace(14004, r'^Silence the Small Resonant Bell$', 'Stop the Small Resonant Bell')
+replace(14005, r'^Silence the Sinister Resonant Bell$', 'Stop the Sinister Resonant Bell')
 replace(100001, r'^Searching for the chime of a Small Resonant Bell\.\.\.$',
-        'Hunt Bell rung.\nWaiting for players to join...')
+        'Beckoning Bell rung.\nWaiting for players to join...')
 replace(100100, r'^Searching for the chime of a Beckoning Bell\.\.\.$',
-        'Kin Bell rung.\nLooking for a host to join...')
+        'Small Resonant Bell rung.\nLooking for a host to join...')
 replace(100200, r'^Searching for the chime of a Sinister Bell\.\.\.$',
-        'Bloodlust Bell rung.\nLooking for a world to invade...')
+        'Sinister Resonant Bell rung.\nLooking for a world to invade...')
 replace(100300, r'^Could not discover the chime', 'Nobody found.\nRing the bell again to keep looking.')
 # Test 2026-10-08: the host saw the invader's line and the other way round - 101002 is shown to
 # the host whose world is entered, 101200 to the invader.
@@ -129,22 +128,22 @@ replace(101002, r'^Sinister Bell resonates', 'Someone is about to invade your wo
 replace(101200, r'^Discovered the chime of a Sinister Bell\.$',
         'Found a world to invade.\nEntering...')
 replace(100011, r'Small Resonant Bell with matching password',
-        'Hunt Bell rung (password).\nWaiting for players to join...')
+        'Beckoning Bell rung (password).\nWaiting for players to join...')
 replace(100110, r'Beckoning Bell with matching password',
-        'Kin Bell rung (password).\nLooking for a host to join...')
+        'Small Resonant Bell rung (password).\nLooking for a host to join...')
 for i in (101300, 101400, 101500):
     replace(i, r'^Discovered the chime of a Beckoning Bell,', 'Found a host,' +
             re.sub(r'^Discovered the chime of a Beckoning Bell,', '', by_category[EVENT_TEXT][i]))
-replace(10011270, r'Beckoning Bell', 'Ring the Hunt Bell to call\nother players into your game.')
-replace(10011280, r'Silencing Blank', 'Use the Parting Blank to end co-op.')
+replace(10011270, r'Beckoning Bell', 'Ring the Beckoning Bell to call\nother players into your game.')
+replace(10011280, r'Silencing Blank', 'Use the Silencing Blank to end co-op.')
 # The bell / blank menu (category 200 labels, 201 their help lines, 204 the quick-search prompts).
 for i in (266302, 280140, 280240):
-    replace(i, r'^Sinister Bell$', 'Bloodlust Bell', category=200)
+    replace(i, r'^Sinister Bell$', 'Sinister Resonant Bell', category=200)
 for i in (302000, 302100):
-    replace(i, r'^Silencing Blank$', 'Parting Blank', category=200)
-replace(302110, r'^Silence Beckoning Bell$', 'Stop the Hunt Bell', category=200)
-replace(302111, r'^Silence Small Resonant Bell$', 'Stop the Kin Bell', category=200)
-replace(302112, r'^Silence Sinister Resonant Bell$', 'Stop the Bloodlust Bell', category=200)
+    replace(i, r'^Silencing Blank$', 'Silencing Blank', category=200)
+replace(302110, r'^Silence Beckoning Bell$', 'Stop the Beckoning Bell', category=200)
+replace(302111, r'^Silence Small Resonant Bell$', 'Stop the Small Resonant Bell', category=200)
+replace(302112, r'^Silence Sinister Resonant Bell$', 'Stop the Sinister Resonant Bell', category=200)
 replace(302120, r'^Disrupt Resonance$', 'End co-op', category=200)
 replace(302123, r'^Disrupt Resonance$', 'End co-op', category=200)
 replace(302124, r'^Disrupt Resonance and Return Home$', 'End co-op and go home', category=200)
@@ -155,12 +154,32 @@ replace(302111, r'stop helping', 'Stop looking for a host.', category=201)
 replace(302112, r'cease threat', 'Stop looking for a world to invade.', category=201)
 replace(269001, r'Beckoning Bell', 'Find a host and join their game?', category=204)
 replace(269002, r'Sinister Bell', 'Find a world to invade?', category=204)
-replace(302200, r'Beckoning Bell', 'Kin Bell rung.\nLooking for a host to join...', category=204)
-replace(302201, r'Sinister Bell', 'Bloodlust Bell rung.\nLooking for a world to invade...', category=204)
-replace(302210, r'matching password', 'Kin Bell rung (password).\nLooking for a host to join...', category=204)
-replace(2000, r'^Ring the Beckoning Bell', 'Need help? Ring the Hunt Bell.', category=2)
-replace(1121, r'Beckoning Bell', 'Call other players into your game\nwith the Hunt Bell.', category=2)
-replace(1122, r'Small Resonant Bell', "Join another player's game\nwith the Kin Bell.", category=2)
+replace(302200, r'Beckoning Bell', 'Small Resonant Bell rung.\nLooking for a host to join...', category=204)
+replace(302201, r'Sinister Bell', 'Sinister Resonant Bell rung.\nLooking for a world to invade...', category=204)
+replace(302210, r'matching password', 'Small Resonant Bell rung (password).\nLooking for a host to join...', category=204)
+replace(2000, r'^Ring the Beckoning Bell', 'Need help? Ring the Beckoning Bell.', category=2)
+replace(1121, r'Beckoning Bell', 'Call other players into your game\nwith the Beckoning Bell.', category=2)
+replace(1122, r'Small Resonant Bell', "Join another player's game\nwith the Small Resonant Bell.", category=2)
+
+# Original goods keep category 10 names. Replace only use summaries and descriptions.
+item_files = bbfiles.read_bnd4(bbfiles.read_dcx(bbfiles.GAME + r'\msg\engus\item.msgbnd.dcx'))
+item_categories = {fid: bbfiles.read_fmg(data) for _, (fid, data) in item_files.items()}
+ITEM_TEXT = {
+    200: ("Call other players into your game. No Insight cost.",
+          "Ring the Beckoning Bell to call other players\ninto your game. Costs no Insight.\n\nGuests stay after deaths and boss battles.\nUse the Silencing Blank to end co-op."),
+    205: ("Join another player's game. No Insight cost.",
+          "Ring the Small Resonant Bell to find a host\nand join their game. Costs no Insight.\n\nYou stay after deaths and boss battles.\nUse the Silencing Blank to return to your world."),
+    225: ("Invade another player's world. No Insight cost.",
+          "Ring the Sinister Resonant Bell to search\nfor a world to invade. Costs no Insight.\n\nYou enter the other world as an enemy."),
+    111: ("End co-op or stop searching for players.",
+          "Use the Silencing Blank to stop a bell's search\nor end co-op.\n\nAs a guest, you return to your own world.\nAs the host, you send all guests home."),
+}
+for goods_id, texts in ITEM_TEXT.items():
+    for category, text in zip((20, 24), texts):
+        original = item_categories[category].get(goods_id)
+        if not original:
+            raise SystemExit('missing item text %d/%d' % (category, goods_id))
+        entries.append((category, goods_id, text, original))
 
 # Warping together re-runs the summon lines for the same two players. BBSC points the role table
 # at these "caught up" lines while a warp is on (bloodborne_re.cpp, TickBbscRejoinLines). They use

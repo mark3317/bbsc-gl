@@ -49,9 +49,8 @@
 
 using namespace Core::Bbsc::PatchTables;
 
-// Public version (2026-10-11): 0.MINOR.PATCH while testing - PATCH for bug fixes, MINOR for new
-// features, 1.0.0 the finished release. Keep it equal to "version" in mod.json.
-#define BBSC_VERSION "0.0.2"
+// Public release version. Keep it equal to "version" in mod.json.
+#define BBSC_VERSION "1.1.0"
 
 namespace BbscMod {
 void LogPlain(const char* text);

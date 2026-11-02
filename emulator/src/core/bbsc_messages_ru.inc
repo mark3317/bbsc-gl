@@ -124,7 +124,7 @@
 {30, 142380, u"Побеждён: <?npcNameId@899000?>."}, // <?npcNameId@899000?> defeated.
 {30, 106199, u"Босс побеждён."}, // Boss defeated.
 {30, 102002, u"Захватчик <?joinName?> вторгся в ваш мир!"}, // Invader <?joinName?> entered your world!
-{30, 109000, u"Появилась женщина-звонарь.\nМожет прийти захватчик."}, // A bell-ringing woman appeared.\nAn invader may come.
+{30, 109000, u"Появилась женщина-звонарь.\nВозможно вторжение."}, // A bell-ringing woman appeared.\nAn invader may come.
 {30, 103002, u"Захватчик <?deadName?> убит."}, // Invader <?deadName?> was killed.
 {30, 103003, u"Захватчик <?deadName?> убит."}, // Invader <?deadName?> was killed.
 {30, 103004, u"Захватчик <?deadName?> убит."}, // Invader <?deadName?> was killed.
@@ -148,31 +148,31 @@
 {30, 101004, u"Игрок откликнулся на ваш колокол.\nПодключение..."}, // A player answered your bell.\nJoining...
 {30, 101005, u"Игрок откликнулся на ваш колокол.\nПодключение..."}, // A player answered your bell.\nJoining...
 {30, 101100, u"Хост найден.\nПодключение к его игре..."}, // Found a host.\nJoining their game...
-{30, 14000, u"Позвонить в Колокол охоты,\nчтобы позвать других игроков?"}, // Ring the Hunt Bell\nto call other players?
-{30, 14003, u"Заглушить Колокол охоты"}, // Stop the Hunt Bell
-{30, 14004, u"Заглушить Колокол родства"}, // Stop the Kin Bell
-{30, 14005, u"Заглушить Колокол кровожадности"}, // Stop the Bloodlust Bell
-{30, 100001, u"Колокол охоты звонит.\nОжидание игроков..."}, // Hunt Bell rung.\nWaiting for players to join...
-{30, 100100, u"Колокол родства звонит.\nПоиск хоста..."}, // Kin Bell rung.\nLooking for a host to join...
-{30, 100200, u"Колокол кровожадности звонит.\nПоиск мира для вторжения..."}, // Bloodlust Bell rung.\nLooking for a world to invade...
+{30, 14000, u"Позвонить в Зовущий Колокол,\nчтобы позвать других игроков?"}, // Ring the Beckoning Bell\nto call other players?
+{30, 14003, u"Заглушить Зовущий Колокол"}, // Stop the Beckoning Bell
+{30, 14004, u"Заглушить Малый звонкий колокол"}, // Stop the Small Resonant Bell
+{30, 14005, u"Заглушить Зловещий звонкий колокол"}, // Stop the Sinister Resonant Bell
+{30, 100001, u"Зовущий Колокол звонит.\nОжидание игроков..."}, // Beckoning Bell rung.\nWaiting for players to join...
+{30, 100100, u"Малый звонкий колокол звонит.\nПоиск хоста..."}, // Small Resonant Bell rung.\nLooking for a host to join...
+{30, 100200, u"Зловещий звонкий колокол звонит.\nПоиск мира для вторжения..."}, // Sinister Resonant Bell rung.\nLooking for a world to invade...
 {30, 100300, u"Никого не найдено.\nПозвоните ещё раз, чтобы продолжить поиск."}, // Nobody found.\nRing the bell again to keep looking.
 {30, 101002, u"Кто-то готовится вторгнуться в ваш мир."}, // Someone is about to invade your world.
 {30, 101200, u"Найден мир для вторжения.\nВход..."}, // Found a world to invade.\nEntering...
-{30, 100011, u"Колокол охоты звонит (пароль).\nОжидание игроков..."}, // Hunt Bell rung (password).\nWaiting for players to join...
-{30, 100110, u"Колокол родства звонит (пароль).\nПоиск хоста..."}, // Kin Bell rung (password).\nLooking for a host to join...
+{30, 100011, u"Зовущий Колокол звонит (пароль).\nОжидание игроков..."}, // Beckoning Bell rung (password).\nWaiting for players to join...
+{30, 100110, u"Малый звонкий колокол звонит (пароль).\nПоиск хоста..."}, // Small Resonant Bell rung (password).\nLooking for a host to join...
 {30, 101300, u"Хост найден, но он Палач,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is an Executioner, and thus an adversary.
 {30, 101400, u"Хост найден, но он Нечистокровный,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is a Vileblood, and thus an adversary.
-{30, 101500, u"Хост найден, но он охотник смешанной крови,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is a blood-addled hunter, and thus an adversary.
-{30, 10011270, u"Позвоните в Колокол охоты, чтобы позвать\nдругих игроков в свою игру."}, // Ring the Hunt Bell to call\nother players into your game.
-{30, 10011280, u"Прощальный бланк завершает совместную игру."}, // Use the Parting Blank to end co-op.
-{200, 266302, u"Колокол кровожадности"}, // Bloodlust Bell
-{200, 280140, u"Колокол кровожадности"}, // Bloodlust Bell
-{200, 280240, u"Колокол кровожадности"}, // Bloodlust Bell
-{200, 302000, u"Прощальный бланк"}, // Parting Blank
-{200, 302100, u"Прощальный бланк"}, // Parting Blank
-{200, 302110, u"Заглушить Колокол охоты"}, // Stop the Hunt Bell
-{200, 302111, u"Заглушить Колокол родства"}, // Stop the Kin Bell
-{200, 302112, u"Заглушить Колокол кровожадности"}, // Stop the Bloodlust Bell
+{30, 101500, u"Хост найден, но он опьянённый кровью охотник,\nа значит, ваш соперник."}, // Found a host,\nbut the beckoner is a blood-addled hunter, and thus an adversary.
+{30, 10011270, u"Позвоните в Зовущий Колокол, чтобы позвать\nдругих игроков в свою игру."}, // Ring the Beckoning Bell to call\nother players into your game.
+{30, 10011280, u"Бланк молчания завершает совместную игру."}, // Use the Silencing Blank to end co-op.
+{200, 266302, u"Зловещий звонкий колокол"}, // Sinister Resonant Bell
+{200, 280140, u"Зловещий звонкий колокол"}, // Sinister Resonant Bell
+{200, 280240, u"Зловещий звонкий колокол"}, // Sinister Resonant Bell
+{200, 302000, u"Бланк молчания"}, // Silencing Blank
+{200, 302100, u"Бланк молчания"}, // Silencing Blank
+{200, 302110, u"Заглушить Зовущий Колокол"}, // Stop the Beckoning Bell
+{200, 302111, u"Заглушить Малый звонкий колокол"}, // Stop the Small Resonant Bell
+{200, 302112, u"Заглушить Зловещий звонкий колокол"}, // Stop the Sinister Resonant Bell
 {200, 302120, u"Завершить совместную игру"}, // End co-op
 {200, 302123, u"Завершить совместную игру"}, // End co-op
 {200, 302124, u"Завершить совместную игру и вернуться домой"}, // End co-op and go home
@@ -183,12 +183,20 @@
 {201, 302112, u"Перестать искать мир для вторжения."}, // Stop looking for a world to invade.
 {204, 269001, u"Найти хоста и присоединиться к его игре?"}, // Find a host and join their game?
 {204, 269002, u"Найти мир для вторжения?"}, // Find a world to invade?
-{204, 302200, u"Колокол родства звонит.\nПоиск хоста..."}, // Kin Bell rung.\nLooking for a host to join...
-{204, 302201, u"Колокол кровожадности звонит.\nПоиск мира для вторжения..."}, // Bloodlust Bell rung.\nLooking for a world to invade...
-{204, 302210, u"Колокол родства звонит (пароль).\nПоиск хоста..."}, // Kin Bell rung (password).\nLooking for a host to join...
-{2, 2000, u"Нужна помощь? Позвоните в Колокол охоты."}, // Need help? Ring the Hunt Bell.
-{2, 1121, u"Зовите других игроков в свою игру\nКолоколом охоты."}, // Call other players into your game\nwith the Hunt Bell.
-{2, 1122, u"Присоединяйтесь к игре другого игрока\nс Колоколом родства."}, // Join another player's game\nwith the Kin Bell.
+{204, 302200, u"Малый звонкий колокол звонит.\nПоиск хоста..."}, // Small Resonant Bell rung.\nLooking for a host to join...
+{204, 302201, u"Зловещий звонкий колокол звонит.\nПоиск мира для вторжения..."}, // Sinister Resonant Bell rung.\nLooking for a world to invade...
+{204, 302210, u"Малый звонкий колокол звонит (пароль).\nПоиск хоста..."}, // Small Resonant Bell rung (password).\nLooking for a host to join...
+{2, 2000, u"Нужна помощь? Позвоните в Зовущий Колокол."}, // Need help? Ring the Beckoning Bell.
+{2, 1121, u"Зовите других игроков в свою игру\nЗовущим Колоколом."}, // Call other players into your game\nwith the Beckoning Bell.
+{2, 1122, u"Присоединяйтесь к игре другого игрока\nс Малым звонким колоколом."}, // Join another player's game\nwith the Small Resonant Bell.
+{20, 200, u"Позовите игроков в свою игру. Не тратит Озарение."}, // Call other players into your game. No Insight cost.
+{24, 200, u"Позвоните в Зовущий Колокол, чтобы позвать\nдругих игроков в свою игру. Не тратит Озарение.\n\nГости остаются после смертей и битв с боссами.\nБланк молчания завершает совместную игру."}, // Ring the Beckoning Bell to call other players\ninto your game. Costs no Insight.\n\nGuests
+{20, 205, u"Присоединитесь к чужой игре. Не тратит Озарение."}, // Join another player's game. No Insight cost.
+{24, 205, u"Позвоните в Малый звонкий колокол, чтобы найти\nхоста и присоединиться к его игре.\nНе тратит Озарение.\n\nВы остаётесь после смертей и битв с боссами.\nБланк молчания возвращает вас в свой мир."}, // Ring the Small Resonant Bell to find a host\nand join their game. Costs no Insight.\n\nYou
+{20, 225, u"Вторгнитесь в чужой мир. Не тратит Озарение."}, // Invade another player's world. No Insight cost.
+{24, 225, u"Позвоните в Зловещий звонкий колокол,\nчтобы найти мир для вторжения.\nНе тратит Озарение.\n\nВы входите в чужой мир как враг."}, // Ring the Sinister Resonant Bell to search\nfor a world to invade. Costs no Insight.\n\nYou
+{20, 111, u"Завершите совместную игру или остановите поиск."}, // End co-op or stop searching for players.
+{24, 111, u"Используйте Бланк молчания, чтобы остановить\nпоиск колокола или завершить совместную игру.\n\nГость возвращается в свой мир.\nХост отправляет всех гостей домой."}, // Use the Silencing Blank to stop a bell's search\nor end co-op.\n\nAs a guest, you return t
 {30, 15000011, u"Вы догнали <?hostName?>."}, // You caught up with <?hostName?>.
 {30, 15000012, u"<?joinName?> догоняет вас."}, // <?joinName?> caught up with you.
 {30, 15000035, u"Вы во Сне Охотника хоста."}, // You are in the host's Hunter's Dream.

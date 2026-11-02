@@ -16,6 +16,7 @@ if elf.exists():
     actual = data[0x1B33190+0x4000:0x1B331D7+0x4000]
     assert len(actual) == 71
     assert actual[:11].hex() == '488b4708488d88f80d0000'
+    assert data[0x1B333F4+0x4000:0x1B333FE+0x4000].hex() == 'c7875828000000000000'
     instructions = list(capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_64).disasm(actual,0x1B33190))
     assert instructions[-1].mnemonic == 'ret'
     assert not any('rip' in i.op_str or i.mnemonic=='call' for i in instructions)
@@ -62,6 +63,8 @@ int main(){
  const std::array<u8,11> expected{0x48,0x8B,0x47,0x08,0x48,0x8D,0x88,0xF8,0x0D,0,0};
  assert(Core::InstallGuestCodeHook(code,expected,0,RegisterWaitHook,&register_wait_skip));
  auto result=[&](bool done,u32 n,u32 generation=1){book_page_result=((u64)generation<<32)|(done?0x80000000ULL:0)|n;};
+ result(true,1);rows(0);assert((poll((u64)functor)&255)==0);
+ rows(1);assert((poll((u64)functor)&255)==1);
  result(false,2);assert((poll((u64)functor)&255)==0);
  result(true,2);rows(1);assert((poll((u64)functor)&255)==0);
  rows(2);assert((poll((u64)functor)&255)==1&&register_wait_skip==0);
@@ -87,4 +90,4 @@ subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20','-O0','-DNOMINM
 env=dict(os.environ)
 env['PATH']='C:/msys64/clang64/bin;'+env.get('PATH','')
 subprocess.run([str(exe)],env=env,check=True,timeout=15)
-print('PASS: actual native predicate + production trampoline: pending/ready, 2/5 real rows and empty tail, empty result, stale opening, other boards, disabled provider, entry skip')
+print('PASS: actual native predicate + production trampoline: pending/ready, 2/5 real rows and empty tail, empty result, stale opening, other pages, disabled provider, entry skip')
