@@ -49,6 +49,7 @@
 #include <thread>
 #include <mutex>
 #include <sstream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -105,6 +106,7 @@ DeleteFn original_delete = nullptr;
 ReadDataFn original_read_data = nullptr;
 
 std::mutex state_mutex;
+std::set<int> native_sign_requests; // pending native create replies, protected by state_mutex
 std::map<int, std::string> request_urls;            // reqId -> URL the request really goes to
 std::vector<std::pair<std::string, std::string>> overrides; // URL prefix -> replacement
 std::atomic<bool> stale_cleared{false};
@@ -426,6 +428,7 @@ void WatchSessionForStaleClaims() {
     }
     if (state == 3 || state == 4 || state == 6) {
         was_in_session = true;
+        Core::Bloodborne::SetBbscNativeSignClaimPending(false);
         if (claim_delivered_ms.exchange(0) != 0) {
             LOG_INFO(Mod, "HTTP: the delivered claim became a join (session state {})", state);
             BBSC_TIMELINE("JOIN", "HTTP: the delivered claim became a join (session state {})", state);
@@ -440,6 +443,7 @@ void WatchSessionForStaleClaims() {
         stale_cleared = false;
         cleanup_retry_ms = 0;
         claim_delivered_ms = 0;
+        Core::Bloodborne::SetBbscNativeSignClaimPending(false);
         placement_received_ms = 0;
         placement_aimed = false;
         placement_sender = 0;
@@ -449,6 +453,7 @@ void WatchSessionForStaleClaims() {
     }
     const s64 delivered = claim_delivered_ms.load();
     if (delivered != 0 && NowMs() - delivered > ClaimJoinWaitMs) {
+        Core::Bloodborne::SetBbscNativeSignClaimPending(false);
         claim_delivered_ms = 0;
         stale_cleared = false;
         cleanup_retry_ms = 0;
@@ -627,15 +632,30 @@ int PS4_SYSV_ABI SendRequest(int request, const void* data, u64 size) {
         own_sign_created_ms = NowMs();
     }
     if (IsSummonCreate(url) && data != nullptr && size != 0) {
+        {
+            std::scoped_lock lock{state_mutex};
+            if (native_sign_requests.insert(request).second) {
+                Core::Bloodborne::BeginBbscNativeSignRequest();
+            }
+        }
         return SendCleanSummonCreate(request, url, data, size);
     }
     return original_send(request, data, size);
+}
+
+// Finish once, on EOF or native request destruction (also covers transport errors).
+void FinishNativeSignRequest(int request) {
+    std::scoped_lock lock{state_mutex};
+    if (native_sign_requests.erase(request) != 0) {
+        Core::Bloodborne::EndBbscNativeSignRequest();
+    }
 }
 
 // A sign's reply is a bare {"ResKind":0,"MessageId":"SummonDataCreateResponse"} unless the broker
 // delivers a host's claim with it, which adds the claim's members (the host's UserId among them).
 int PS4_SYSV_ABI ReadData(int request, void* data, u64 size) {
     const int read = original_read_data(request, data, size);
+    if (read == 0 && size != 0) FinishNativeSignRequest(request);
     if (read > 0 && data != nullptr) {
         std::string url;
         {
@@ -674,6 +694,7 @@ int PS4_SYSV_ABI ReadData(int request, void* data, u64 size) {
             const std::string_view reply(static_cast<const char*>(data), static_cast<size_t>(read));
             if (reply.find("\"UserId\"") != std::string_view::npos &&
                 claim_delivered_ms.exchange(NowMs()) == 0) {
+                Core::Bloodborne::SetBbscNativeSignClaimPending(true);
                 LOG_INFO(Mod, "HTTP: a host's claim came with our sign ({} bytes) - waiting for the "
                               "join",
                          read);
@@ -687,6 +708,7 @@ int PS4_SYSV_ABI ReadData(int request, void* data, u64 size) {
 }
 
 int PS4_SYSV_ABI DeleteRequest(int request) {
+    FinishNativeSignRequest(request);
     {
         std::scoped_lock lock{state_mutex};
         request_urls.erase(request);

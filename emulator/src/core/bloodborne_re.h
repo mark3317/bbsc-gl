@@ -14,6 +14,10 @@ namespace Core::Bloodborne {
 
 std::optional<std::string> GetSeamlessHostPlacementHeader();
 bool ConfigureBbscSummonPolling();
+// Private-server native sign requests: keep refresh on the game thread and serialize HTTP.
+void BeginBbscNativeSignRequest();
+void EndBbscNativeSignRequest();
+void SetBbscNativeSignClaimPending(bool pending);
 bool SetSeamlessHostPlacementHeader(std::string_view value);
 void ClearSeamlessHostPlacementHeader();
 // BBSC timeline: one line in this run's bbsc-timeline-*.txt ("kind" like NET, RELAY, JOIN). Any

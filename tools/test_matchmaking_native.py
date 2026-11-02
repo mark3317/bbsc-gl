@@ -32,6 +32,7 @@ template<class T>bool WriteValue(u64 p,size_t off,T v){if(!ReadablePointer(p+off
 s32 state=0;bool foreign=false,effect=false,erase_ok=true;s64 now=1000;int notices=0,erases=0;
 s32 GetSessionState(){return state;}bool BbscInAnotherWorld(){return foreign;}u64 BbscLocalEffectNode(int id){assert(id==9000);return effect;}
 s64 SteadyNowMs(){return now;}bool BbscEraseLocalEffect(int id){assert(id==9000);++erases;if(erase_ok)effect=false;return erase_ok;}
+const char16_t* BbscL(const char16_t* text,const char16_t*){return text;}
 void BbscAnnounce(const char16_t*,std::string_view what){assert(what=="host search ended");++notices;}
 '''
 fixture+=function('bool ConfigureBbscSummonPolling()')+'\n'+function('void TickBbscHostSearchLimit()')

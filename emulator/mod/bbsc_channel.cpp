@@ -78,12 +78,47 @@ void PS4_SYSV_ABI TraceNativeDisconnect(u64 site,const Core::GuestRegisterSnapsh
     LOG_INFO(Mod,"Native signaling close: site={:#x} object={:#x} conn={} task={} flags={:#x} result={:#x} no-observer={}",
              site,object,static_cast<u32>(connection),static_cast<u32>(task),static_cast<u32>(flags),result,unobserved);
 }
+// Observe cancellation at entry, before generic teardown replaces the original
+// phase with task 13. Caller/parent are image-relative; no packet or account data.
+void PS4_SYSV_ABI TraceNativeCancel(u64 site, const Core::GuestRegisterSnapshot* r) {
+    static std::atomic<u32> count{0};
+    if (!r) return;
+    u64 caller = 0, parent = 0, object = r->rdi;
+    BbscMod::ReadSlotSafely(r->rsp, &caller);
+    BbscMod::ReadSlotSafely(r->rbp + 8, &parent);
+    const u64 base = BbscMod::EbootAddress();
+    if (site == 0xC8DD60) {
+        u64 vtable = 0, cancel = 0;
+        if (!BbscMod::ReadSlotSafely(r->rdi, &object) ||
+            !BbscMod::ReadSlotSafely(object, &vtable) ||
+            !BbscMod::ReadSlotSafely(vtable + 0x38, &cancel) ||
+            cancel != base + 0xCD89C0) return;
+    }
+    if (count.fetch_add(1) >= 128) return;
+    const auto relative = [base](u64 pc) {
+        return pc >= base && pc < base + EbootSize ? pc - base : pc;
+    };
+    u64 connection = 0, phase = 0;
+    // Only the signaling task has this layout; generic handles do not.
+    if (site == 0xCD89C0) {
+        BbscMod::ReadSlotSafely(object + 0x10, &connection);
+        BbscMod::ReadSlotSafely(object + 0xB4, &phase);
+    }
+    LOG_INFO(Mod, "Native negotiation cancel: site={:#x} caller={:#x} parent={:#x} object={:#x} conn={} phase={} result={:#x}",
+             site, relative(caller), relative(parent), object,
+             static_cast<u32>(connection), static_cast<u32>(phase),
+             site == 0xC8DD60 ? 0x8001000100000000ULL : r->rsi);
+}
 void InstallDisconnectTrace() {
     const std::array<u8,8> orphan{0x41,0x8B,0x7F,0x78,0x41,0x8B,0x76,0x20};
     const std::array<u8,9> task{0x8B,0xBB,0xA8,0,0,0,0x8B,0x73,0x10};
     bool ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0xCC0DC3),orphan,0xCC0DC3,TraceNativeDisconnect);
     for(const u64 site:{0xCD8704ULL,0xCD8F29ULL,0xCDA162ULL})
         ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+site),task,site,TraceNativeDisconnect)&&ok;
+    const std::array<u8,6> cancel{0x55,0x48,0x89,0xE5,0x41,0x57};
+    for (const u64 site : {0xC8DD60ULL, 0xCD89C0ULL})
+        ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+site),
+                                        cancel, site, TraceNativeCancel) && ok;
     LOG_INFO(Mod,"Native signaling close diagnostics installed={}",ok);
 }
 
