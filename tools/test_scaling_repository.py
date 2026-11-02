@@ -26,7 +26,8 @@ using s16=int16_t;using s32=int32_t;using s64=int64_t;
 #define BBSC_PERF_NESTED(...) ((void)0)
 enum class MemoryProt{CpuRead,CpuWrite};
 std::vector<std::pair<u64,size_t>> regions;
-int queries=0,writes=0,restarts=0;bool fragmented=false,deny_writes=false,split_directory=false; s64 now=100,step=0;
+std::atomic<u32> bbsc_load_generation{0};
+int queries=0,writes=0,restarts=0,owner_reads=0;bool fragmented=false,deny_writes=false,split_directory=false; s64 now=100,step=0;
 bool HasMemoryAccess(u64 p,size_t n,MemoryProt access){
  ++queries;if(split_directory && access==MemoryProt::CpuRead && n>336)return false;if(fragmented&&access==MemoryProt::CpuWrite&&n>336)return false;
  for(auto [base,size]:regions)if(p>=base && p-base<=size && n<=size-(p-base))return true;
@@ -37,7 +38,7 @@ template<class T>T ReadValue(u64 p,size_t o){T v{};if(ReadablePointer(p+o,sizeof
 template<class T>bool WriteValue(u64 p,size_t o,T v){++writes;if(deny_writes)return false;if(!HasMemoryAccess(p+o,sizeof(v),MemoryProt::CpuWrite))return false;memcpy((void*)(p+o),&v,sizeof(v));return true;}
 s64 SteadyNowMs(){now+=step;return now;}
 u64 image_base=1,active_npc=0,active_effect=0;
-u64 BbscGameParamTable(std::string_view type){return type=="NPC_PARAM_ST"?active_npc:active_effect;}
+u64 BbscGameParamTable(std::string_view type){++owner_reads;return type=="NPC_PARAM_ST"?active_npc:active_effect;}
 bool BbscScalingEnabled(){return true;}
 struct BbscScaledNpc{u64 row; s16 armor;bool boss;};
 enum class BbscScaleState {Idle,Scanning,Ready,Failed};
@@ -90,6 +91,12 @@ int main(){
  assert(ReadValue<s16>(npc.row(0),280)==115&&ReadValue<s16>(npc.row(1),280)==120);
  assert(ReadValue<s16>(npc.row(128),280)==100);
  for(int i=0;i<10;++i)TickBbscScaling();assert(bbsc_scale_written);
+ auto idle_reads=owner_reads;
+ for(int i=0;i<10000;++i)TickBbscScaling();assert(owner_reads==idle_reads);
+ now+=999;TickBbscScaling();assert(owner_reads==idle_reads);
+ now+=1;TickBbscScaling();assert(owner_reads==idle_reads+2);
+ ++bbsc_load_generation;TickBbscScaling();assert(owner_reads==idle_reads+4);
+
  // Same-table retry must retain original armor rather than scaling an already scaled value.
  PrepareBbscScaling();assert(bbsc_scaled_npcs[0].armor==100);
  active_npc=0;guests=0;TickBbscScaling();assert(ReadValue<s16>(npc.row(0),280)==115);
@@ -109,7 +116,7 @@ int main(){
  put<u64>(npc.p,0x48,8);assert(BbscParamViewRow(view,0,336)==0); // header-targeting corrupt offset
  put<u64>(npc.p,0x48,~u64{0});assert(BbscParamViewRow(view,0,336)==0);
  Table replacement(1002,336);active_npc=replacement.p;
- TickBbscScaling();assert(restarts==1&&!bbsc_scale_written&&bbsc_scale_state==BbscScaleState::Scanning);
+ now+=1000;TickBbscScaling();assert(restarts==1&&!bbsc_scale_written&&bbsc_scale_state==BbscScaleState::Scanning);
 }
 '''
 for name in ['std::vector<u64> FindBbscParamTables','void PrepareBbscScaling','void StartBbscSolidNpcs','void StartBbscDuelBell']:
