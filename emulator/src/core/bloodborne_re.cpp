@@ -18815,19 +18815,6 @@ void TickBbscScaling() {
     }
     static std::optional<BbscAppliedScale> pending;
     static size_t armor_next = 0;
-    {
-        BBSC_PERF_NESTED("scaling table owners");
-        const u64 npc = BbscGameParamTable("NPC_PARAM_ST");
-        const u64 effects = BbscGameParamTable("SP_EFFECT_PARAM_ST");
-        if (!npc || !effects) return; // params temporarily unloaded, never touch cached rows
-        if (npc != bbsc_scale_npc_table || effects != bbsc_scale_effect_table ||
-            ReadValue<u16>(npc, 0x0A) != bbsc_scale_npc_count) {
-            pending.reset(); armor_next = 0; bbsc_scale_written.reset();
-            bbsc_scale_state = BbscScaleState::Idle;
-            StartBbscScaling();
-            return;
-        }
-    }
     BbscScaleNumbers numbers;
     bool from_host = false;
     int extra = 0;
@@ -18850,7 +18837,30 @@ void TickBbscScaling() {
     const int enemy_stagger = numbers.percent[3];
     const int boss_stagger = numbers.percent[4];
     const BbscAppliedScale key{numbers, extra};
-    if (!pending && bbsc_scale_written && key == *bbsc_scale_written) return;
+    const bool unchanged = !pending && bbsc_scale_written && key == *bbsc_scale_written;
+    static s64 owners_checked_ms = 0;
+    static u32 owners_generation = ~u32{0};
+    const s64 owners_now = SteadyNowMs();
+    const u32 generation = bbsc_load_generation.load(std::memory_order_relaxed);
+    // No cached row is touched on an unchanged frame. Validate at 1 Hz while idle,
+    // immediately after a load, and before EVERY batch that can actually write.
+    if (unchanged && generation == owners_generation && owners_now - owners_checked_ms < 1'000) return;
+    {
+        BBSC_PERF_NESTED("scaling table owners");
+        const u64 npc = BbscGameParamTable("NPC_PARAM_ST");
+        const u64 effects = BbscGameParamTable("SP_EFFECT_PARAM_ST");
+        if (!npc || !effects) return; // params temporarily unloaded, never touch cached rows
+        if (npc != bbsc_scale_npc_table || effects != bbsc_scale_effect_table ||
+            ReadValue<u16>(npc, 0x0A) != bbsc_scale_npc_count) {
+            pending.reset(); armor_next = 0; bbsc_scale_written.reset();
+            bbsc_scale_state = BbscScaleState::Idle;
+            StartBbscScaling();
+            return;
+        }
+    }
+    owners_checked_ms = owners_now;
+    owners_generation = generation;
+    if (unchanged) return;
     if (!pending || key != *pending) {
         pending = key;
         armor_next = 0;

@@ -48,6 +48,7 @@ struct CountingMutex {
     void unlock() { mutex.unlock(); }
 };
 u64 image_base=1;
+std::atomic<u32> bbsc_load_generation{1};
 s64 now=100;
 s32 session=6, extra=1;
 size_t writes=0;
@@ -94,7 +95,6 @@ cutscenes += r"""
 std::mutex bbsc_cutscene_mutex;
 std::deque<BbscCutscenePacket> bbsc_cutscene_queue;
 std::unordered_map<s32,u32> bbsc_cutscene_seen;
-std::atomic<u32> bbsc_load_generation{1};
 bool bbsc_cutscene_replaying=false;
 size_t replays=0;
 void Replay(u64,u32,u32,u64,u32,u32,u64,u64,u64) { ++replays; }
