@@ -1,3 +1,16 @@
+## 03.11.2026 — 17:16 second guest review: residual native co-op masks
+
+Individual joins and Blank host release confirmed in the new run, but a waiting
+second guest gets no claim until the resident guest leaves, across all host roles.
+Fixed two missing FIVE_HUNTERS covenant co-op masks at01873086/018793B9; original
+native executable blocks reproduce the residual exclusion and pass with actual
+production patches (both paths,256 slot combinations, other role bits preserved).
+Added change-only slot/ready-mask/queued-count observation; historical logs lack
+these fields, so contribution to the live block is not yet proven. Capacity,
+readiness and cooldown retained. Targeted mask/cooldown/matchmaking tests and
+full BBSC_MOD TU syntax PASS. Source only; no new build/deploy/launch.
+See docs/fixes/2026-11-03-second-guest-slot-masks.md. Three-player entry remains open.
+
 ## 03.11.2026 — serverless-party, эксперимент подготовлен к игре
 
 Отдельный parent worktree `bloodborne_pc-serverless-party`, ветки

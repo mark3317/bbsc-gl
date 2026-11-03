@@ -20671,6 +20671,31 @@ void ApplyBbscHunterCap(u64 summon_manager) {
     }
 }
 
+// Observe the native gates before the delay hook edits R13. This does not
+// change readiness, pending-state ownership or request capacity.
+void TraceBbscSummonSelection(const GuestRegisterSnapshot* registers) {
+    if (!registers || !BbscHuntersEnabled() || registers->rbp < 0x110 ||
+        !ReadablePointer(registers->rbp - 0x110, 0x2C) ||
+        !ReadablePointer(registers->rax, 0x1CC)) return;
+    const u64 head = ReadValue<u64>(registers->rax, 0x1A8);
+    if (!ReadablePointer(head, 8) || ReadValue<u64>(head, 0) == head) return;
+    const std::array<u32, 7> key{
+        static_cast<u32>(registers->r15), static_cast<u32>(registers->r13),
+        ReadValue<u32>(registers->rbp - 0x110, 4),
+        ReadValue<u32>(registers->rbp - 0x110, 0x10),
+        ReadValue<u32>(registers->rbp - 0x110, 0x1C),
+        ReadValue<u32>(registers->rbp - 0x110, 0x28),
+        ReadValue<u32>(registers->rax, 0x1C8)};
+    static thread_local std::array<u32, 7> previous{};
+    static thread_local bool observed = false;
+    if (observed && key == previous) return;
+    observed = true;
+    previous = key;
+    LOG_INFO(Debug, "BBSC matchmaking: native selection slots coop {}/{} pvp {}/{} "
+             "slot mask {:#x} ready mask {:#x} queued {}",
+             key[2], key[3], key[4], key[5], key[0], key[1], key[6]);
+}
+
 // ---- The Beckoning Bell without Insight (2026-09-27) -------------------------------------------
 // EquipParamGoods row 200 (Beckoning Bell) has consumeHeroPoint = 1 (row byte 0x38); no other bell
 // has an Insight cost. The loaded row is found with the game's own lookup 0x01F1E3D0(out, id)
@@ -20989,6 +21014,9 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     BbscPerfScope perf_scope{perf_site};
 
     const auto& site = Sites[tag];
+    if (site.offset == 0x01873269) {
+        TraceBbscSummonSelection(registers);
+    }
 #ifdef BBSC_MOD
     // Native entry, before goods effects, resource consumption and room creation.
     // Menu availability never requests a role.
