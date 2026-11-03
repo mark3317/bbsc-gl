@@ -17,22 +17,26 @@ fixture = r'''
 #include <cassert>
 #include <cstring>
 #include <cstdint>
+#include <string_view>
 #include <cstdio>
 #include "core/cpu_patches.h"
+using s64=int64_t;
+s64 SteadyNowMs(){return 10000;}
 using u8=uint8_t;using u32=uint32_t;using s32=int32_t;using u64=uint64_t;
 #define LOG_INFO(...)
 u64 image_base=0,status,session,global,world,local,player,data,task,entries,head,node,req,allocator,vtable,task2;
-constexpr u64 CandidateLocalStatePointerOffset=0x0553E878,MemberIdEqualsOffset=0x00CA1C70;
-bool enabled=true,quit=false,title=false,valid_member=true;int hp=100,type=1,role=7,slot_type=1,free_calls=0,updates=0;
+constexpr u64 CandidateLocalStatePointerOffset=0x0553E878,MemberIdEqualsOffset=0x00CA1C70,PlayerSlotManagerPointerOffset=0x0553B130;
+bool enabled=true,quit=false,title=false,valid_member=true;int hp=100,type=1,role=7,slot_type=1,remote_hp=100,free_calls=0,updates=0;
 template<class T>T ReadValue(u64 p,size_t n){T v;memcpy(&v,(void*)(p+n),sizeof(v));return v;}
 template<class T>void put(u64 p,size_t n,T v){memcpy((void*)(p+n),&v,sizeof(v));}
 bool ReadablePointer(u64 p,size_t n){return p>=image_base&&n<=0x5600000&&p-image_base<=0x5600000-n;}
 bool BbscHuntersEnabled(){return enabled;}bool BbscQuitInProgress(){return quit;}bool BbscReturningToTitle(){return title;}
 u64 GetMatchingState(){return session;}u64 GetGlobalState(){return global;}u64 GetLocalPlayerCharacter(){return local;}
-int GetCharacterHp(u64){return hp;}int GetCharacterType(u64){return type;}
+int GetCharacterHp(u64 p){return p==local?hp:remote_hp;}int GetCharacterType(u64){return type;}
 bool IsValidMemberId(u64){return valid_member;}
 std::vector<u64> GetMultiPlayerInsTasks(){return {task};}
-struct Slot{int type,role;};Slot GetMemberSlotInfo(u64){return {slot_type,role};}
+int slot_index=0;
+struct Slot{int index,type,role;};Slot GetMemberSlotInfo(u64){return {slot_index,slot_type,role};}
 bool PS4_SYSV_ABI equals(u64 a,u64 b){return ReadValue<u64>(a,0)==ReadValue<u64>(b,0);}
 u64 PS4_SYSV_ABI get_data(u64){return data;}
 u64 PS4_SYSV_ABI get_allocator(u64){return allocator;}
@@ -63,7 +67,7 @@ int main(){
  put(data,0x10,s32{10001});put(data,0x5c0,image_base+0x25000);
  put(data,0x688,u64{123456});put(data,0x690,u64{987654});
  auto reset=[&]{
-  enabled=true;quit=title=false;hp=100;type=slot_type=1;role=7;valid_member=true;free_calls=updates=0;
+  enabled=true;quit=title=false;hp=remote_hp=100;type=slot_type=1;role=7;valid_member=true;free_calls=updates=0;
   put(session,0x124,s32{3});put(global,8,u8{0});put(global,0x1592,u8{1});
   put(task,0xe8,s32{1});put(task,0x50,s32{6});put(task,0x54,s32{6});put(task,0xed,u8{12});
   put(player,0x3d8,u64{42});put(status,0x1c0,head);put(status,0x1c8,u64{1});put(status,0x210,0.0f);
@@ -77,6 +81,21 @@ int main(){
  assert(free_calls==2&&updates==1); // original native destructors/unlink/counter/update, exactly once
  assert(ReadValue<float>(status,0x210)==0.25f&&ready(status)==0); // original post-completion backoff retained
  put(status,0x210,0.0f);assert(ready(status)==1);CompleteBbscResidentSummons(status);assert(free_calls==2&&updates==1);
+ // A fully arrived resident does not become an unfinished admission when
+ // its replicated HP is zero (or the player has already died after arrival).
+ reset();remote_hp=0;CompleteBbscResidentSummons(status);assert(free_calls==2&&updates==1);
+ // Zero HP is never an excuse to complete an insertion which is still loading.
+ reset();remote_hp=0;put(task,0x50,s32{3});CompleteBbscResidentSummons(status);assert(free_calls==0);
+ // The actor accessor may expose a different data object. Native slot identity
+ // remains authoritative for all four remote slots; do not complete a wrong slot.
+ for(int index=0;index<4;++index){
+  reset();slot_index=index;put(slots,0x10,data-index*0x6a0);
+  put(vtable,0x1c8,u64{0}); // completion must not depend on this accessor
+  CompleteBbscResidentSummons(status);assert(free_calls==2&&updates==1);
+ }
+ slot_index=0;put(slots,0x10,data);
+ reset();slot_index=4;CompleteBbscResidentSummons(status);assert(free_calls==0);slot_index=0;
+ reset();put(slots,0x10,u64{0});CompleteBbscResidentSummons(status);assert(free_calls==0);put(slots,0x10,data);
  // Incomplete insertion, departing member, wrong role/member/account/character never complete.
  for(int scenario=0;scenario<20;++scenario){
   reset();switch(scenario){
