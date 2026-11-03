@@ -24,7 +24,7 @@ def recv_exact(sock,size):
 class TcpServer(socketserver.ThreadingTCPServer):
     allow_reuse_address=True; daemon_threads=True
 
-COMMANDS={0:('LoginRequest','LoginReply'),12:(None,'ServerFeaturesReply'),39:(None,'GetTokenReply'),41:('LookupOnlineIdRequest','LookupOnlineIdReply'),
+COMMANDS={110:('KickoutRoomMemberRequest','KickoutRoomMemberReply'),115:('SendRoomMessageRequest','SendRoomMessageReply'),0:('LoginRequest','LoginReply'),12:(None,'ServerFeaturesReply'),39:(None,'GetTokenReply'),41:('LookupOnlineIdRequest','LookupOnlineIdReply'),
 100:('ContextStartRequest',None),101:('CreateRoomRequest','CreateRoomReply'),102:('JoinRoomRequest','JoinRoomReply'),103:('LeaveRoomRequest','LeaveRoomReply'),
 104:('SearchRoomRequest','SearchRoomReply'),105:('RequestSignalingInfosRequest','RequestSignalingInfosReply'),106:('ContextStopRequest',None),107:('SetUserInfoRequest','SetUserInfoReply'),
 108:('SetRoomDataInternalRequest','SetRoomDataInternalReply'),109:('SetRoomDataExternalRequest','SetRoomDataExternalReply'),111:('GetWorldInfoListRequest','GetWorldInfoListReply'),
@@ -218,7 +218,7 @@ class Compatibility:
                     'cur_members':len(s['room']['members']),'details':d}
         if cmd==103:
             if s['room'] and s['room']['id']!=r['room_id']: raise ValueError('Stale room leave')
-            if s['room'] and who in s['room']['members']:
+            if s['room'] and (who in s['room']['members'] or who in s['joined']):
                 if who==s['owner'] and (s['joined'] or s['pending']): self.command('room_close')
                 else: self.command('room_leave')
             return {'room_id':r['room_id']}
@@ -229,6 +229,17 @@ class Compatibility:
         if cmd==114:
             if not s['room'] or s['room']['id']!=r['room_id']: return {'members':[]}
             return {'members':[dict(self.member_data(p,m),role=int(p==s['owner'])) for p,m in s['room']['members'].items()]}
+        if cmd in (110,115):
+            if not s['room'] or s['room']['id']!=r['room_id']: raise ValueError('Stale native room')
+            if cmd==110:
+                target=next((p for p,m in s['room']['members'].items() if m['slot']==r['target_member_id']),None)
+                if not target: raise ValueError('Unknown native member incarnation')
+                self.command('kick',target=target)
+            else:
+                cast=r.get('cast_type',1)
+                if cast not in (1,2,3): raise ValueError('Invalid cast type')
+                self.command('room_message',message={'cast_type':cast,'targets':r.get('dst_member_ids',[]),'data':base64.b64encode(r.get('msg',b'')).decode()})
+            return {'room_id':r['room_id']}
         if cmd==107: return {}
         if cmd in (108,109,116):
             if not s['room'] or s['room']['id']!=r['room_id']: raise ValueError('Stale room update')
@@ -318,10 +329,10 @@ class Compatibility:
                     echo=b'\xff'*4+socket.inet_aton(self.e.member['host'])+struct.pack('!H',self.e.member['p2p'])
                     self.stun.sendto(echo,addr)
             except (OSError,UnicodeError): pass
-    def notify(self,event,member=None,room=None):
+    def notify(self,event,member=None,room=None,cause=1,error=0):
         s=room or self.state(); r=s['room']
         if not r or not self.ctx: return
-        obj={'ctx_id':self.ctx,'room_id':r['id'],'event':event,'event_cause':1}
+        obj={'ctx_id':self.ctx,'room_id':r['id'],'event':event,'event_cause':cause,'error_code':error}
         if member: obj['member']=self.member_data(*member)
         else: obj['bin_attrs']=native_bins(r['bins']); obj['flags']=r['flags']
         raw=packet(2,10,0,blob(encode('NotifyRoomEvent',obj)))
@@ -344,7 +355,23 @@ class Compatibility:
                         for p,m in room['members'].items():
                             if p!=self.e.id and p not in oldroom['members']: self.notify(0x1101,(p,m),s)
                         for p,m in oldroom['members'].items():
-                            if p!=self.e.id and p not in room['members']: self.notify(0x1102,(p,m),old)
+                            if p not in room['members']:
+                                kicked=p in room.get('departing',{})
+                                if p==self.e.id and kicked: self.notify(0x1103,room=old,cause=2,error=0xFF000019)
+                                elif p!=self.e.id: self.notify(0x1102,(p,m),old,cause=2 if kicked else 1)
+                        message=room.get('message')
+                        if message and message!=oldroom.get('message') and self.e.id in room['members']:
+                            me=room['members'][self.e.id]['slot']
+                            if message['cast_type']==1 or me in message['targets']:
+                                source=message['sender']; src=room['members'].get(source)
+                                if src:
+                                    obj={'ctx_id':self.ctx,'room_id':room['id'],'src_member_id':src['slot'],
+                                         'event':0x2102,'cast_type':message['cast_type'],'dst_member_ids':message['targets'],
+                                         'src_npid':source,'src_account_id':account(source),'src_platform':2,'msg':base64.b64decode(message['data'])}
+                                    with self.np_lock:
+                                        if self.np:
+                                            try: self.np[0].sendall(packet(2,11,0,blob(encode('NotifyRoomMessage',obj))))
+                                            except OSError: pass
                         if room['bins']!=oldroom['bins'] or room['flags']!=oldroom['flags']: self.notify(0x1106,room=s)
                     self.previous=copy.deepcopy(s)
                 # Forward all chunks individually. ACK IDs, generation and per-member native IDs
@@ -372,10 +399,10 @@ class Compatibility:
                 recovery=self.native_fresh and self.recovery_pending
                 if recovery and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell'):
                     self.recovery_pending=False; self.release_intent=True; self.observed=True
-                if (self.observed or recovery) and (self.release_intent or (s['room'] and s['room'].get('closing'))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
+                if (self.observed or recovery) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
                     if self.e.id in s['pending']:
                         self.command('admission_cancel')
-                    elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or recovery):
+                    elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{}) or recovery):
                         self.command('room_leave')
                     elif s['owner']==self.e.id and not s['joined'] and not s['pending']:
                         if s['room']: self.command('room_leave')
