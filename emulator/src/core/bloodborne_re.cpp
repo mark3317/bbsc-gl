@@ -9984,6 +9984,9 @@ void PrepareBbscQuitToTitle() {
     if (!ReadablePointer(manager, 0x128)) return; // retry at the next load step / tick
     LogBbscQuitQueue(manager);
     bbsc_quit_prepared = true; // StopRequest can re-enter engine hooks
+#ifdef BBSC_MOD
+    BbscMod::PartyCancel();
+#endif
     FlushBbscSessionJournals();
     SendBbscSessionLeave();
     SuspendBbscPersistence("confirmed return to title");
@@ -19586,6 +19589,9 @@ void TickBbscHostSearchLimit() {
     if (now - started_ms < 300'000) return;
     if (!BbscEraseLocalEffect(9000)) return; // retry until the native erase succeeds
     started_ms = 0;
+#ifdef BBSC_MOD
+    BbscMod::PartyCancel();
+#endif
     BBSC_TIMELINE("JOIN", "host bell: search ended after 300 seconds");
     BbscAnnounce(BbscL(u"Search ended.\nRing the Beckoning Bell again to resume.",
                        u"Поиск окончен.\nПозвоните в Зовущий Колокол, чтобы продолжить."),
@@ -20907,6 +20913,10 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     // Menu availability never requests a role.
     if (BbscMod::PartyEnabled() && (site.offset == 0x018F9720 || site.offset == 0x018C9160)) {
         bbsc_party_item_skip = 0;
+        if (registers && registers->rdi == GetLocalPlayerCharacter()) {
+            const u32 goods = static_cast<u32>(registers->rsi) & 0x0FFFFFFFu;
+            if (goods == 111 || goods == 201) BbscMod::PartyCancel();
+        }
         if (registers && (static_cast<u32>(registers->rsi) & 0x0FFFFFFFu) == 200u &&
             registers->rdi == GetLocalPlayerCharacter() && !BbscMod::PartyAcquire()) {
             const_cast<GuestRegisterSnapshot*>(registers)->rax = 0;

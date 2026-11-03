@@ -73,6 +73,8 @@ class CompatibilityTests(ProcessTests):
         self.http(a,'/party/native',{'state':0,'loading':True,'bell':False},True)
         time.sleep(.2); self.assertEqual(a.state()['state']['owner'],'A')
         self.http(a,'/party/native',{'state':0,'loading':False,'bell':False},True)
+        time.sleep(.25); self.assertEqual(a.state()['state']['owner'],'A') # idle/death alone is not release
+        self.http(a,'/party/native',{'state':0,'loading':False,'bell':False,'cancel_seq':1},True)
         end=time.monotonic()+5
         while time.monotonic()<end and a.state()['state']['owner'] is not None: time.sleep(.05)
         self.assertIsNone(a.state()['state']['owner'])

@@ -12,7 +12,7 @@ namespace BbscMod { void LogLine(char,const char*,const std::string&){} }
 int main(int argc,char** argv){
  if(argc>1 && std::string(argv[1])=="idle"){
   BbscMod::PartyObserve(3,false,true); BbscMod::PartyMaintain(); Sleep(300);
-  BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain(); return 0;
+  BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain(); return 0;
  }
  if(argc>1 && std::string(argv[1])=="hold"){
   BbscMod::PartyMaintain(); std::puts("ready"); std::fflush(stdout); Sleep(10000); return 0;

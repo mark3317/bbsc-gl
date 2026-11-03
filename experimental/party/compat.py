@@ -34,11 +34,12 @@ COMMANDS={0:('LoginRequest','LoginReply'),12:(None,'ServerFeaturesReply'),39:(No
 class Compatibility:
     def __init__(self,engine):
         self.e=engine; self.token=secrets.token_hex(24); self.ctx=0; self.np=None; self.np_generation=0
-        self.np_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
+        self.np_lock=threading.Lock(); self.np_operation_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
         self.native={'state':0,'loading':True,'bell':False}; self.observed=False; self.acquiring=False
         self.gate_lock=threading.Lock(); self.closed=False; self.relay_id=0; self.native_bindings={}
         self.previous=copy.deepcopy(engine.state); self.recovering=copy.deepcopy(engine.state)
-        self.native_fresh=False; self.session_id=uuid.uuid4().hex
+        self.native_fresh=False; self.recovery_pending=bool(engine.state['owner']==engine.id or engine.id in engine.state['joined'] or engine.id in engine.state['pending'])
+        self.release_intent=False; self.latest_cancel=0; self.cancel_floor=0; self.session_id=uuid.uuid4().hex
         self.local_status={'sign':None,'placement':'','relay_id':0,'native':self.native}
         self.logfile=engine.profile/'party-events.jsonl'; self.log_lock=threading.Lock()
         outer=self
@@ -64,11 +65,14 @@ class Compatibility:
                                 if length!=len(raw)-4: raise ValueError('Bad protobuf length')
                                 req=decode(spec[0],raw[4:])
                             if not authenticated and cmd not in (0,12): raise ValueError('Login required')
-                            if cmd==0:
-                                if req.get('npid')!=engine.id or req.get('password')!=outer.token: raise ValueError('Wrong local identity')
-                                authenticated=True
-                                with outer.np_lock: outer.np=(self.request,generation)
-                            reply=outer.np_command(cmd,req)
+                            with outer.np_operation_lock:
+                                with outer.np_lock:
+                                    if authenticated and (not outer.np or outer.np[1]!=generation): return
+                                if cmd==0:
+                                    if req.get('npid')!=engine.id or req.get('password')!=outer.token: raise ValueError('Wrong local identity')
+                                    authenticated=True
+                                    with outer.np_lock: outer.np=(self.request,generation)
+                                reply=outer.np_command(cmd,req)
                             body=b'\0'+(blob(encode(spec[1],reply)) if spec[1] else b'')
                             outer.log('np_reply',command=cmd,revision=engine.state['revision'])
                         except (ValueError,TimeoutError,KeyError) as ex:
@@ -134,11 +138,11 @@ class Compatibility:
                         raw=recv_exact(self.request,size)
                         with outer.relay_lock:
                             if gen!=outer.relay_generation: return
-                        if raw[:5]!=b'SHAD\x40': return
-                        native_id,=struct.unpack('<I',raw[5:9])
-                        outer.relay_id=native_id; outer.local_status['relay_id']=native_id
-                        outer.publish()
-                        if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]})
+                            if raw[:5]!=b'SHAD\x40': return
+                            native_id,=struct.unpack('<I',raw[5:9])
+                            outer.relay_id=native_id; outer.local_status['relay_id']=native_id
+                            outer.publish()
+                            if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]})
                 except (OSError,EOFError,ValueError): pass
                 finally:
                     with outer.relay_lock:
@@ -237,12 +241,15 @@ class Compatibility:
         if path=='/party/acquire':
             with self.gate_lock:
                 s=self.state()
+                if s['owner']==self.e.id and self.release_intent: return 0
                 if s['owner'] is None:
-                    self.command('acquire'); self.observed=False
+                    self.command('acquire'); self.observed=False; self.release_intent=False; self.cancel_floor=self.latest_cancel
                 s=self.state()
                 return int(s['owner']==self.e.id and self.e.disk['final']==s['revision'])
         if path=='/party/native':
             self.native=body; self.native_fresh=True; self.local_status['native']=body; self.publish()
+            self.latest_cancel=max(self.latest_cancel,int(body.get('cancel_seq',0)))
+            if self.latest_cancel>self.cancel_floor: self.release_intent=True
             if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
             return 1
         if path=='/party/can_beckon':
@@ -362,8 +369,10 @@ class Compatibility:
                             except OSError: pass
                 n=self.native
                 # Explicit native termination is required; EOF/loading/death never do this.
-                recovery=self.native_fresh and (self.e.id in self.recovering['pending'] or self.e.id in self.recovering['joined'] or self.recovering['owner']==self.e.id)
-                if (self.observed or recovery) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
+                recovery=self.native_fresh and self.recovery_pending
+                if recovery and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell'):
+                    self.recovery_pending=False; self.release_intent=True; self.observed=True
+                if (self.observed or recovery) and (self.release_intent or (s['room'] and s['room'].get('closing'))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
                     if self.e.id in s['pending']:
                         self.command('admission_cancel')
                     elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or recovery):
@@ -371,7 +380,7 @@ class Compatibility:
                     elif s['owner']==self.e.id and not s['joined'] and not s['pending']:
                         if s['room']: self.command('room_leave')
                         else:
-                            self.command('release'); self.observed=False
+                            self.command('release'); self.observed=False; self.release_intent=False; self.cancel_floor=self.latest_cancel
             except (ValueError,TimeoutError,OSError,KeyError): pass
 
 def start_from_environment(env,port):
@@ -387,6 +396,6 @@ def start_from_environment(env,port):
         BBSC_RELAY=f'127.0.0.1:{compat.relay_port}',BB_SHADNET_SERVER=f'127.0.0.1:{compat.np_port}',
         BB_SHADNET_WEBAPI=f'http://127.0.0.1:{compat.http_port}',BB_SHADNET_NPID=member,BB_SHADNET_PASSWORD=compat.token,
         BB_HOST_OVERRIDES=str(overrides),BB_P2P_PORT=str(engine.member['p2p']),BB_P2P_RELAY='off',
-        BB_ONLINE='1',BB_COOP='1',BB_PROBE=str(native),BBSC_EMULATOR=str(probe),BBSC_DATA_DIR=str(profile/'coop/bbsc'))
+        BB_ONLINE='1',BB_COOP='1',BB_UPNP='0',BB_PROBE=str(native),BBSC_EMULATOR=str(probe),BBSC_DATA_DIR=str(profile/'coop/bbsc'))
     for key in ('BB_NET_BACKEND','BB_THD_TOKEN','BB_THD_SERVER'): env.pop(key,None)
     return compat
