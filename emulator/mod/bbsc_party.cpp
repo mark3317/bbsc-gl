@@ -21,6 +21,7 @@ bool ExclusiveNative() {
 }
 std::atomic<unsigned> native{1u<<8};
 std::atomic<bool> can_beckon{false};
+std::atomic<unsigned> cancel_sequence{0};
 std::atomic<ULONGLONG> refreshed{0};
 std::string Call(const wchar_t* path, const std::string& body, int timeout) {
     const char* port_text=std::getenv("BBSC_PARTY_PORT");
@@ -69,6 +70,7 @@ bool PartyAcquire() {
 bool PartyCanBeckon() {
     return !PartyEnabled() || (ExclusiveNative() && can_beckon.load() && GetTickCount64()-refreshed.load()<1500);
 }
+void PartyCancel() { if(PartyEnabled()) ++cancel_sequence; }
 void PartyObserve(std::int32_t state,bool loading,bool bell) {
     if(PartyEnabled()) native=static_cast<unsigned>(state&255)|(loading?256u:0u)|(bell?512u:0u);
 }
@@ -79,7 +81,8 @@ void PartyMaintain() {
     if(now-last<250) return;
     last=now; const unsigned value=native.load();
     const std::string body="{\"state\":"+std::to_string(value&255)+",\"loading\":"+
-        ((value&256)?"true":"false")+",\"bell\":"+((value&512)?"true":"false")+"}";
+        ((value&256)?"true":"false")+",\"bell\":"+((value&512)?"true":"false")+
+        ",\"cancel_seq\":"+std::to_string(cancel_sequence.load())+"}";
     Call(L"/party/native",body,300);
     const std::string result=Call(L"/party/can_beckon","{}",300);
     can_beckon=result=="1"; refreshed=GetTickCount64();
