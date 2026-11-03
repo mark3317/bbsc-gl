@@ -31,6 +31,13 @@ using s32=int32_t; using s64=int64_t;
 #define PS4_SYSV_ABI
 #define LOG_INFO(...)
 #define LOG_ERROR(...)
+#define BBSC_MOD
+namespace BbscMod {
+bool party_ready=true;
+bool PartyTitleReady(){return party_ready;}
+void PartyCancel(){}
+void PartyEndTitleWait(){}
+}
 
 struct GuestRegisterSnapshot { u64 rax=0, rbx=0, r12=0, r14=0; };
 namespace MemoryProt { constexpr int CpuWrite=1; }
@@ -38,7 +45,6 @@ u64 image_base=0x100000, world=0x200000, menu=0x300000, manager=0x400000;
 constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88, SprjLuaEventManPointerOffset=0x90;
 std::map<u64,u64> memory;
 std::vector<int> events; // journal=1, save=2, notify=3, suspend=4, stop=5
-void SetBbscQuitDisableMove(u8 on){memory[0xb00111]=on;}
 constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
@@ -63,9 +69,10 @@ void CancelBbscReinsert(std::string_view) {}
 void FlushBbscSessionJournals() { events.push_back(1); }
 void SendBbscSessionLeave() { events.push_back(3); }
 void SuspendBbscPersistence(std::string_view) { events.push_back(4); }
+extern int closed;
 u8 save_stub(s32 slot, s32 flag, s32 erase) {
     assert(session>=0 && session<=7);
-    assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
+    assert(closed==0 && memory[world+8]==0); // native menu remains; no early transition
     assert(slot==-1 && flag==0 && erase==0);
     events.push_back(2);
     if (!accept_save) return 0;
@@ -79,8 +86,15 @@ void title_stub() {
     events.push_back(6); memory[request_address]=2;
 }
 u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
+s32 transition_stub() {
+    assert(memory[request_address]==2 && closed==0); // target selected before transition
+    assert((session==0 || session==2 || session==5) && memory[world+0x1554]==0);
+    assert(memory[world+0x1520]==0); // never select phantom forced-home coordinates
+    memory[world+8]=1; events.push_back(8); return 1;
+}
+u64 StageTransitionOffset=reinterpret_cast<u64>(&transition_stub)-image_base;
 int closed=0;
-void close_stub(s32 mode) { assert(mode==3); ++closed; }
+void close_stub(s32 mode) { assert(mode==3 && memory[world+8]==1); ++closed; }
 u64 MultiPlayStopRequestOffset=reinterpret_cast<u64>(&stop_stub)-image_base;
 '''
 
@@ -93,9 +107,6 @@ state=state.replace('constexpr u64 BbscQuitCloseMenusOffset = 0x0176A900;', 'u64
 functions = '\n'.join(function(signature) for signature in (
     'void CleanupBbscDepartingRemotes()',
     'void PrepareBbscQuitToTitle()',
-    'void HoldBbscQuitCharacter(const BbscPendingQuit& q)',
-    'void PS4_SYSV_ABI BbscQuitMovementHook(u64, const GuestRegisterSnapshot* registers)',
-    'void RestoreBbscQuitControls(const BbscPendingQuit& pending)',
     'void CancelBbscPendingQuit(std::string_view why)',
     'void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers)',
     'void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers)',
@@ -106,7 +117,7 @@ functions = '\n'.join(function(signature) for signature in (
 
 fixture = r'''
 void reset(s32 role=6) {
-    memory.clear(); events.clear(); closed=0; session=role; now=1000; accept_save=true;
+    memory.clear(); events.clear(); closed=0; BbscMod::party_ready=true; session=role; now=1000; accept_save=true;
     bbsc_pending_quit={}; bbsc_title_quit={}; bbsc_quit_prepared=false; bbsc_quit_defer_store=0;
     bbsc_quit_save_hooks_ready=true; bbsc_quit_save_watch=false; bbsc_quit_save_result=-1;
     memory[character+0x58]=0xb00000;
@@ -120,7 +131,7 @@ void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
     memory[menu+0x25C]=0; // hook runs before native side effects
     BbscNativeQuitConfirmHook(0,&r);
-    if (BbscQuitInProgress()) assert(memory[0xb00111]==1);
+    assert(memory[0xb00111]==0); // no synthetic DisableMove
 
 }
 void result(s32 value, bool correct_manager=true) {
@@ -159,7 +170,7 @@ int main() {
         confirm(); assert(events.size()==1 && closed==0); // duplicate preserves the pending save
         PrepareBbscQuitToTitle(); assert(!stopped()); // Lua/load fallback cannot bypass save
         TickBbscPendingQuit();
-        assert(events==std::vector<int>({1,2}) && closed==1);
+        assert(events==std::vector<int>({1,2}) && closed==0);
         result(1); TickBbscPendingQuit(); assert(!stopped());
         result(0,false); memory[world+0x1554]=0;
         TickBbscPendingQuit(); assert(!stopped()); // idle is not proof of success
@@ -170,15 +181,21 @@ int main() {
         assert(session==7 && memory[menu+0x250]==0 && BbscQuitInProgress());
         TickBbscPendingQuit(); assert(memory[menu+0x250]==0); // Stop request is not completion
     
-        session=0; TickBbscPendingQuit();
-        assert(memory[0xb00111]==1);
+        session=0; BbscMod::party_ready=false;
+        TickBbscPendingQuit(); TickBbscPendingQuit();
+        assert(closed==0 && memory[world+8]==0 && memory[request_address]==0);
+        assert(memory[0xb00111]==0 && memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
+        BbscMod::party_ready=true; memory[world+8]=1;
+        TickBbscPendingQuit(); assert(closed==0 && memory[request_address]==0);
+        memory[world+8]=0; TickBbscPendingQuit();
+        assert(memory[0xb00111]==0 && closed==1 && memory[world+8]==1);
         assert(memory[menu+0x250]==0 && memory[request_address]==2 && BbscQuitInProgress());
         memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
-        TickBbscPendingQuit(); assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
+        TickBbscPendingQuit(); assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
         ReleaseBbscQuitTitleAtLoad(false,world); assert(BbscQuitInProgress());
         memory[world+0x1592]=0; ReleaseBbscQuitTitleAtLoad(true,world); assert(BbscQuitInProgress());
         memory[world+0x1592]=1; ReleaseBbscQuitTitleAtLoad(true,world); assert(!BbscQuitInProgress());
-        TickBbscPendingQuit(); assert(events.size()==8 && events.back()==6); // title once, no delayed disconnect
+        TickBbscPendingQuit(); assert(events.size()==9 && events.back()==8); // title once, no delayed disconnect
     }
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
@@ -191,9 +208,9 @@ int main() {
     TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); memory[world+0x08]=1; TickBbscPendingQuit();
     assert(!BbscQuitInProgress() && !stopped());
-    assert(memory[0xb00111]==1); // real load owns native resets
+    assert(memory[0xb00111]==0); // never wrote gameplay controls
 
-    assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1); // native load owns cleanup
+    assert(closed==0 && memory[world+8]==1); // unrelated native load is preserved
     reset(3); confirm(); session=6; TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); memory[world+0x1490]=3; TickBbscPendingQuit(); assert_cancelled();
     reset(); memory[world+0x1490]=static_cast<u64>(-1); confirm();
@@ -211,7 +228,7 @@ int main() {
     TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[image_base+MatchingStatePointerOffset]=0;
     TickBbscPendingQuit(); TickBbscPendingQuit();
-    assert(events==std::vector<int>({1,2,6}));
+    assert(events==std::vector<int>({1,2,6,8}));
     assert(memory[request_address]==2 && memory[menu+0x250]==0 && BbscQuitInProgress());
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[0x700000]=0; TickBbscPendingQuit(); assert_cancelled();
@@ -237,25 +254,12 @@ int main() {
     reset(); memory[menu+0x2DC]=9; memory[0x600000+0x8D]=1;
     confirm(); now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
     assert(!BbscQuitInProgress() && memory[menu+0x2DC]==9 && memory[0x600000+0x8D]==1);
-    // Title loading begins while the same living player can still consume movement.
-    // Model a native/menu reset AFTER the ordinary tick, then enter the real gate hook.
-    reset(); confirm(); memory[world+8]=1; memory[0xb00111]=0;
-    GuestRegisterSnapshot movement{}; movement.r12=0xb00000;
-    BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==1);
-    bbsc_title_quit=bbsc_pending_quit; bbsc_pending_quit={};
-    memory[0xb00111]=0; BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==1);
-    memory[0xb00111]=0; movement.r12=0xc00000;
-    BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==0); // remote control
-    movement.r12=0xb00000; character=0xd00000;
-    BbscQuitMovementHook(0,&movement); assert(memory[0xb00111]==0); // replacement player
-    reset(); memory[0xb00111]=0; BbscQuitMovementHook(0,&movement);
-    assert(memory[0xb00111]==0); // ordinary play
-    // Existing native movement restriction must survive cancellation.
-    reset(); memory[0xb00111]=1; confirm(); now+=BbscQuitSaveTimeoutMs;
-    TickBbscPendingQuit(); assert(memory[0xb00111]==1 && !BbscQuitInProgress());
-    // A replacement character owns its own native controls.
-    reset(); confirm(); memory[character+0x58]=0xc00000;
-    RestoreBbscQuitControls(bbsc_pending_quit); assert(memory[0xc00111]==0);
+    // Existing native restrictions are neither set nor cleared by quit/cancel.
+    reset(); memory[0xb00111]=7; memory[menu+0x2DC]=9; memory[0x600000+0x8D]=3;
+    GuestRegisterSnapshot r{}; BbscNativeQuitConfirmHook(0,&r);
+    now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
+    assert(memory[0xb00111]==7 && memory[menu+0x2DC]==9 && memory[0x600000+0x8D]==3);
+    assert(closed==0 && !BbscQuitInProgress());
     reset(); bbsc_quit_save_hooks_ready=false; confirm();
     assert(!BbscQuitInProgress() && bbsc_quit_defer_store==0 && events.empty());
 }
@@ -267,4 +271,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-menu-quit-') as temporary:
     cpp.write_text(prefix + state + functions + fixture, encoding='utf-8')
     subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++20', '-O0', str(cpp), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=10)
-print('Production menu quit: save before disconnect, role/slot guards, error/timeout cancellation: PASS')
+print('Production menu quit: native menu ownership, final group gate, title then StageTransition, cancellation: PASS')
