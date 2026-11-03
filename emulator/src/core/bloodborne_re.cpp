@@ -9849,14 +9849,7 @@ struct BbscPendingQuit {
     s64 started_ms = 0;
     bool requested = false;
     bool stopping = false;
-    u64 lua = 0;
-    s32 menu_brake = 0;
-    u8 load_wait = 0;
-    bool menus_closed = false;
     bool disconnect_warned = false;
-    u64 character = 0;
-    u64 character_control = 0;
-    u8 disable_move = 0;
 };
 BbscPendingQuit bbsc_pending_quit;
 BbscPendingQuit bbsc_title_quit; // retained until native character creation on Continue
@@ -10014,67 +10007,13 @@ void PrepareBbscQuitToTitle() {
 // writes. No stack frame exists here; skipping with RET is safe. The copied MOV
 // and CMP are position independent. The old final-store hook let +1547/+1548
 // start a competing stage flow while BBSC was still waiting for save/Stop.
-// Native Lua DisableMove (registration 0133DC5C, body 0132F770): resolve
-// player entity 10000 through 013C97A0, then set ChrControl+111. Unlike the
-// pending-death marker, this directly disables movement without consuming camera input.
-constexpr u64 BbscNativeDisableMoveOffset = 0x0132F770;
-void SetBbscQuitDisableMove(u8 disabled) {
-    using DisableMove = u8 PS4_SYSV_ABI (*)(u64, s32, u8);
-    reinterpret_cast<DisableMove>(image_base + BbscNativeDisableMoveOffset)(0, 10000, disabled);
-}
-
-void HoldBbscQuitCharacter(const BbscPendingQuit& q) {
-    // A title transition sets global+8 before the living character disappears.
-    // Keep the restriction on this exact character through that interval.
-    if (!q.global || GetGlobalState() != q.global || !q.character || !q.character_control) return;
-    const u64 player = GetLocalPlayerCharacter();
-    if (player == q.character && ReadValue<u64>(player, 0x58) == q.character_control &&
-        HasMemoryAccess(q.character_control + 0x111, 1, MemoryProt::CpuWrite) &&
-        ReadValue<u8>(q.character_control, 0x111) != 1) SetBbscQuitDisableMove(1);
-}
-
-// Reassert immediately before the native movement gate consumes DisableMove.
-// Closing menus / native events may clear it after our ordinary game tick.
-// CMP [r12+111],0 is replayed by the trampoline, preserving the game's branch.
-void PS4_SYSV_ABI BbscQuitMovementHook(u64, const GuestRegisterSnapshot* registers) {
-    if (!registers) return;
-    const auto& q = bbsc_pending_quit.global ? bbsc_pending_quit : bbsc_title_quit;
-    if (!q.global || GetGlobalState() != q.global || registers->r12 != q.character_control ||
-        GetLocalPlayerCharacter() != q.character ||
-        ReadValue<u64>(q.character, 0x58) != q.character_control) return;
-    HoldBbscQuitCharacter(q);
-    // Native 01513EE5 lets r14b override DisableMove and forces both movement
-    // permissions to one. Clear that frame-local override during confirmed quit,
-    // so the same native disabled branch applies to host and guest through title.
-    const_cast<GuestRegisterSnapshot*>(registers)->r14 &= ~u64{0xFF};
-}
-
-void RestoreBbscQuitControls(const BbscPendingQuit& pending) {
-    // Once a real load owns these locks, its native reset must release them.
-    if (GetGlobalState() != pending.global || ReadValue<u8>(pending.global, 8) != 0) return;
-    if (pending.menu == ReadValue<u64>(image_base + MenuManPointerOffset, 0) &&
-        HasMemoryAccess(pending.menu + 0x2DC, 4, MemoryProt::CpuWrite) &&
-        ReadValue<s32>(pending.menu, 0x2DC) == 1) {
-        WriteValue<s32>(pending.menu, 0x2DC, pending.menu_brake);
-    }
-    const u64 player = GetLocalPlayerCharacter();
-    if (player == pending.character && ReadValue<u64>(player, 0x58) == pending.character_control &&
-        HasMemoryAccess(pending.character_control + 0x111, 1, MemoryProt::CpuWrite))
-        SetBbscQuitDisableMove(pending.disable_move);
-    const u64 man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
-    if (ReadablePointer(man, 0x10) && ReadValue<u64>(man, 8) == pending.lua &&
-        HasMemoryAccess(pending.lua + 0x8D, 1, MemoryProt::CpuWrite) &&
-        ReadValue<u8>(pending.lua, 0x8D) == 1) {
-        WriteValue<u8>(pending.lua, 0x8D, pending.load_wait);
-    }
-}
-
+// Keep the native System menu alive during save/disconnect. Closing it early
+// hands control back to a live host world before a native transition exists.
 void CancelBbscPendingQuit(std::string_view why) {
 #ifdef BBSC_MOD
     BbscMod::PartyEndTitleWait();
 #endif
     const auto pending = bbsc_pending_quit;
-    RestoreBbscQuitControls(pending);
     bbsc_pending_quit = {};
     bbsc_quit_save_watch = false;
     bbsc_quit_prepared = false; // a failed Stop must not poison a later confirmed attempt
@@ -10092,27 +10031,14 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
         state < 0 || state > 7) return;
     const u64 global = GetGlobalState();
     const u64 menu = ReadValue<u64>(image_base + MenuManPointerOffset, 0);
-    const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
-    const u64 lua = ReadablePointer(lua_man, 0x10) ? ReadValue<u64>(lua_man, 8) : 0;
     if (!ReadablePointer(global, 0x1752) ||
-        !HasMemoryAccess(menu + 0x250, 0x90, MemoryProt::CpuWrite) ||
-        !HasMemoryAccess(lua + 0x8D, 1, MemoryProt::CpuWrite)) return;
+        !HasMemoryAccess(menu + 0x250, 0x10, MemoryProt::CpuWrite)) return;
     bbsc_quit_defer_store = 1; // return from Yes before its native save/stage side effects
     WriteValue<s32>(menu, 0x250, 0);
     if (BbscQuitInProgress()) return; // duplicate confirmation does not restart the save
     CancelBbscReinsert("confirmed System menu exit");
     FlushBbscSessionJournals(); // record the trip before the native save or any teardown
     bbsc_pending_quit = {global, menu, state, ReadValue<s32>(global, 0x1490), SteadyNowMs(), false};
-    bbsc_pending_quit.lua = lua;
-    bbsc_pending_quit.menu_brake = ReadValue<s32>(menu, 0x2DC);
-    bbsc_pending_quit.load_wait = ReadValue<u8>(lua, 0x8D);
-    bbsc_pending_quit.character = GetLocalPlayerCharacter();
-    bbsc_pending_quit.character_control = ReadValue<u64>(bbsc_pending_quit.character, 0x58);
-    bbsc_pending_quit.disable_move = ReadValue<u8>(bbsc_pending_quit.character_control, 0x111);
-    HoldBbscQuitCharacter(bbsc_pending_quit);
-    // The same menu close/brake and load-wait used by native EventMenuBrake/leave.
-    WriteValue<s32>(menu, 0x2DC, 1);
-    WriteValue<u8>(lua, 0x8D, 1);
     bbsc_quit_save_result = -1;
     LOG_INFO(Debug, "BBSC quit: native menu confirmed; saving slot {} before disconnect", bbsc_pending_quit.slot);
 }
@@ -10132,22 +10058,7 @@ void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* regis
 }
 
 void TickBbscPendingQuit() {
-    if (bbsc_title_quit.global != 0) {
-        // State 0 means disconnected, not "title reached". In particular a host
-        // still has its living own-world character during the title transition.
-        const auto& q = bbsc_title_quit;
-        HoldBbscQuitCharacter(q);
-        const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
-        if (GetGlobalState() == q.global &&
-            ReadValue<u64>(image_base + MenuManPointerOffset, 0) == q.menu &&
-            HasMemoryAccess(q.menu + 0x2DC, 4, MemoryProt::CpuWrite) &&
-            ReadablePointer(lua_man, 0x10) && ReadValue<u64>(lua_man, 8) == q.lua &&
-            HasMemoryAccess(q.lua + 0x8D, 1, MemoryProt::CpuWrite)) {
-            if (ReadValue<s32>(q.menu, 0x2DC) != 1) WriteValue<s32>(q.menu, 0x2DC, 1);
-            if (ReadValue<u8>(q.lua, 0x8D) != 1) WriteValue<u8>(q.lua, 0x8D, 1);
-        }
-        return;
-    }
+    if (bbsc_title_quit.global != 0) return; // native transition owns the world now
     if (!bbsc_pending_quit.global) return;
     auto& pending = bbsc_pending_quit;
     if (GetGlobalState() != pending.global ||
@@ -10156,21 +10067,10 @@ void TickBbscPendingQuit() {
         CancelBbscPendingQuit("world or menu context changed");
         return;
     }
-    HoldBbscQuitCharacter(pending);
-    if (!pending.menus_closed) {
-        // The confirmation functor has returned. Closing its owning menu on the
-        // confirmation stack could destroy a still-executing command object.
-        pending.menus_closed = true;
-        using CloseMenus = void PS4_SYSV_ABI (*)(s32);
-        reinterpret_cast<CloseMenus>(image_base + BbscQuitCloseMenusOffset)(3);
-        WriteValue<s32>(pending.menu, 0x2DC, 1);
-        WriteValue<u8>(pending.lua, 0x8D, 1);
-    }
+    // No CloseMenus or gameplay lock while waiting. The native System menu
+    // retains input ownership until save, Stop and final group leave complete.
     if (pending.stopping) {
-        if (ReadValue<s32>(pending.menu, 0x2DC) != 1)
-            WriteValue<s32>(pending.menu, 0x2DC, 1);
-        if (ReadablePointer(pending.lua, 0x8E) && ReadValue<u8>(pending.lua, 0x8D) != 1)
-            WriteValue<u8>(pending.lua, 0x8D, 1);
+        if (ReadValue<u8>(pending.global, 0x08) != 0) return; // an existing native load owns the world
         if (GetSessionState() == 0 || GetSessionState() == 2 || GetSessionState() == 5) {
 #ifdef BBSC_MOD
             if (!BbscMod::PartyTitleReady()) {
@@ -10191,13 +10091,20 @@ void TickBbscPendingQuit() {
             bbsc_title_quit = completed;
             bbsc_world_load_pending = 0; // a pre-title load cannot acknowledge the next Continue
             bbsc_pending_quit = {};
-            // Select title directly instead of starting another world-stage transition.
+            // Retire menu request latches; the native transition below owns title loading.
             WriteValue<s32>(completed.menu, 0x250, 0);
             WriteValue<s32>(completed.menu, 0x25C, 0);
-            // Native title flow owns its presentation; do not open a world loading screen.
+            // SendPhantomHome ends gameplay through StageTransition, not DisableMove.
+            // Select title first: no forced home-map bank or respawn selection here.
             using ReturnTitle = void PS4_SYSV_ABI (*)();
+            using Transition = s32 PS4_SYSV_ABI (*)();
+            using CloseMenus = void PS4_SYSV_ABI (*)(s32);
             reinterpret_cast<ReturnTitle>(image_base + OnReturnTitleOffset)();
-            LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; requested title directly (no world reload)");
+            reinterpret_cast<Transition>(image_base + StageTransitionOffset)();
+            // The native transition has taken world/input ownership; close the
+            // old menu only now, on a later stack than its confirmation functor.
+            reinterpret_cast<CloseMenus>(image_base + BbscQuitCloseMenusOffset)(3);
+            LOG_INFO(Debug, "BBSC quit: final leave complete; native stage transition to title started");
         } else if (!pending.disconnect_warned &&
                    SteadyNowMs() - pending.started_ms >= 5'000) {
             pending.disconnect_warned = true;
@@ -11241,12 +11148,7 @@ void InstallBbscQuitHook() {
         0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xEC, 0x48};
     static constexpr std::array<u8, 5> SaveResult{0x48, 0x83, 0xC4, 0x58, 0x5B};
     static constexpr std::array<u8, 8> ConfirmQuit{0x48, 0x8B, 0x00, 0x48, 0x83, 0x78, 0x08, 0x00};
-    static constexpr std::array<u8, 9> MovementGate{0x41, 0x80, 0xBC, 0x24,
-        0x11, 0x01, 0x00, 0x00, 0x00}; // CMP byte [r12+111],0
-    const bool quit_movement_ready = InstallGuestCodeHook(
-        reinterpret_cast<void*>(image_base + 0x01513EB5), MovementGate, 0, BbscQuitMovementHook);
-    if (!quit_movement_ready) LOG_ERROR(Debug, "BBSC quit: native movement gate hook unavailable");
-    bbsc_quit_save_hooks_ready = quit_movement_ready &&
+    bbsc_quit_save_hooks_ready =
         std::memcmp(reinterpret_cast<const void*>(image_base + BbscNativeSaveRequestOffset),
                     SavePrologue.data(), SavePrologue.size()) == 0 &&
         InstallGuestCodeHook(reinterpret_cast<void*>(image_base + BbscNativeSaveResultOffset),
@@ -11286,7 +11188,6 @@ void InstallBbscQuitHook() {
 void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global) {
     if (native_finish && bbsc_title_quit.global && GetSessionState() == 0 &&
         ReadValue<u8>(global, 0x1592) != 0) {
-        RestoreBbscQuitControls(bbsc_title_quit);
         bbsc_title_quit = {};
         LOG_INFO(Debug, "BBSC quit: Continue created our own character; exit guard released");
     }
