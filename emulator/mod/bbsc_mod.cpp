@@ -40,6 +40,7 @@
 #include "core/bbsc_cinematic.h"
 #include "core/bbsc_patch_tables.h"
 #include "core/bloodborne_re.h"
+#include "bbsc_quit_input.h"
 #include "bbsc_party.h"
 
 // One line in this run's BBSC timeline (bloodborne_re.cpp, "Timeline").
@@ -862,6 +863,17 @@ int PS4_SYSV_ABI PadReadState(s32 handle, u8* data) {
     const int result = original_pad_read(handle, data);
     ++cine_pad_reads;
     if (result != 0 || data == nullptr) {
+        return result;
+    }
+    // Filter the final pad state: bbport has already merged keyboard movement
+    // and physical controllers here. Do not rely on a later animation gate.
+    static thread_local bool quit_block_reported = false;
+    const bool quit_block = Core::Bloodborne::BbscQuitInputBlocked();
+    if (quit_block && !quit_block_reported)
+        LOG_INFO(Debug, "BBSC quit: gameplay pad neutralized while save/disconnect is pending");
+    quit_block_reported = quit_block;
+    if (quit_block) {
+        FilterBbscQuitPad(data);
         return result;
     }
     u32 buttons = 0;

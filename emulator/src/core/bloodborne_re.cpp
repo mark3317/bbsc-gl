@@ -9869,6 +9869,8 @@ std::atomic<s32> bbsc_quit_save_result{-1};
 std::atomic<bool> bbsc_talk_save_watch{false};
 std::atomic<s32> bbsc_talk_save_result{-1};
 
+std::atomic<bool> bbsc_quit_input_blocked{false};
+
 bool BbscQuitInProgress() {
     return bbsc_pending_quit.global != 0 || bbsc_title_quit.global != 0;
 }
@@ -10074,6 +10076,7 @@ void CancelBbscPendingQuit(std::string_view why) {
     BbscMod::PartyEndTitleWait();
 #endif
     const auto pending = bbsc_pending_quit;
+    bbsc_quit_input_blocked = false;
     RestoreBbscQuitControls(pending);
     bbsc_pending_quit = {};
     bbsc_quit_save_watch = false;
@@ -10109,6 +10112,7 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
     bbsc_pending_quit.character = GetLocalPlayerCharacter();
     bbsc_pending_quit.character_control = ReadValue<u64>(bbsc_pending_quit.character, 0x58);
     bbsc_pending_quit.disable_move = ReadValue<u8>(bbsc_pending_quit.character_control, 0x111);
+    bbsc_quit_input_blocked = true;
     HoldBbscQuitCharacter(bbsc_pending_quit);
     // The same menu close/brake and load-wait used by native EventMenuBrake/leave.
     WriteValue<s32>(menu, 0x2DC, 1);
@@ -10196,6 +10200,8 @@ void TickBbscPendingQuit() {
             WriteValue<s32>(completed.menu, 0x25C, 0);
             // Native title flow owns its presentation; do not open a world loading screen.
             using ReturnTitle = void PS4_SYSV_ABI (*)();
+            // Native title now owns input, including its menu navigation.
+            bbsc_quit_input_blocked = false;
             reinterpret_cast<ReturnTitle>(image_base + OnReturnTitleOffset)();
             LOG_INFO(Debug, "BBSC quit: native save and disconnect complete; requested title directly (no world reload)");
         } else if (!pending.disconnect_warned &&
@@ -11288,6 +11294,7 @@ void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global) {
         ReadValue<u8>(global, 0x1592) != 0) {
         RestoreBbscQuitControls(bbsc_title_quit);
         bbsc_title_quit = {};
+        bbsc_quit_input_blocked = false;
         LOG_INFO(Debug, "BBSC quit: Continue created our own character; exit guard released");
     }
 }
@@ -21821,6 +21828,11 @@ bool BbscConnectFirstPlacementFresh() {
 }
 
 } // namespace
+
+bool BbscQuitInputBlocked() {
+    return bbsc_quit_input_blocked.load(std::memory_order_relaxed);
+}
+
 
 #ifdef BBSC_MOD
 bool GiveSessionBloodDreg() { return GiveBbscSessionBloodDreg(); }
