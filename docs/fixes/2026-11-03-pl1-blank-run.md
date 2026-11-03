@@ -97,3 +97,9 @@ Legacy drain, existing admission/rejoin and guest menu cancellation cases pass
 precedes JoinRoom, so its causal contribution to that failed exchange is not
 established. The party engine is embedded on the three clients; no VPS service
 uses this private room allocator.
+
+Additional three-process Blank/final-drain regression PASS: active guest plus
+failed admission, host cancellation and real native API LeaveRoom, closing-room
+maintenance cancels the idle failed admission; state 7 retains ownership, state
+0 permits final drain, then another member's actual acquire succeeds. No timeout
+release or title-intent bypass is used in this test.
