@@ -1,4 +1,4 @@
-"""Native stdout capture for the experimental existing runner; no extra process."""
+"""Native stdout capture for the existing runner; no extra process."""
 import json
 import subprocess
 import time

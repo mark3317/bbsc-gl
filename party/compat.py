@@ -528,11 +528,12 @@ class Compatibility:
 def start_from_environment(env,port):
     cfg=json.loads(Path(env['BB_PARTY_CONFIG']).read_text(encoding='utf-8-sig'))
     member=env['BB_PARTY_MEMBER']; profile=Path(env['BBGL_PROFILE_DIR'])
-    engine=Engine(cfg,member,profile/'party').start(); compat=Compatibility(engine).start()
+    state_dir=profile/'coop/party/groups'/cfg['group']
+    engine=Engine(cfg,member,state_dir).start(); compat=Compatibility(engine).start()
     native=Path(port)/'coop/client/bbsc/bbsc-launch.exe'
     probe=Path(port)/'bin/bb-probe.exe'
     if not probe.exists(): probe=Path(port)/'bb-probe.exe'
-    overrides=profile/'party/host_overrides.json'
+    overrides=state_dir/'host_overrides.json'
     overrides.write_text(json.dumps({'https://ss4.scej-network.jp:20443':f'http://127.0.0.1:{compat.http_port}'}),encoding='utf-8')
     env.update(BBSC_PARTY='1',BBSC_PARTY_INSTANCE=cfg['group']+'-'+member,BBSC_PARTY_PORT=str(compat.http_port),BBSC_PARTY_TOKEN=compat.token,
         BBSC_RELAY=f'127.0.0.1:{compat.relay_port}',BB_SHADNET_SERVER=f'127.0.0.1:{compat.np_port}',
