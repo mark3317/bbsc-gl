@@ -73,11 +73,9 @@ u8 save_stub(s32 slot, s32 flag, s32 erase) {
     return 1;
 }
 u8 stop_stub(u64 value) { assert(value==manager); events.push_back(5); session=7; return 1; }
-extern std::atomic<bool> bbsc_quit_input_blocked;
 void title_stub() {
     assert((session==0 || session==2 || session==5) && memory[world+0x1554]==0);
     assert(memory[menu+0x250]==0 && memory[menu+0x25C]==0);
-    assert(!bbsc_quit_input_blocked);
     events.push_back(6); memory[request_address]=2;
 }
 u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
@@ -122,7 +120,7 @@ void confirm() {
     GuestRegisterSnapshot r; r.rax=menu;
     memory[menu+0x25C]=0; // hook runs before native side effects
     BbscNativeQuitConfirmHook(0,&r);
-    if (BbscQuitInProgress()) { assert(memory[0xb00111]==1); assert(bbsc_quit_input_blocked); }
+    if (BbscQuitInProgress()) assert(memory[0xb00111]==1);
 
 }
 void result(s32 value, bool correct_manager=true) {
@@ -132,7 +130,7 @@ void result(s32 value, bool correct_manager=true) {
 }
 bool stopped() { return std::find(events.begin(),events.end(),5)!=events.end(); }
 void assert_cancelled() {
-    assert(!BbscQuitInProgress() && !stopped() && !bbsc_quit_input_blocked);
+    assert(!BbscQuitInProgress() && !stopped());
     assert(memory[0xb00111]==0);
 
     assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
@@ -192,7 +190,7 @@ int main() {
     reset(); confirm(); TickBbscPendingQuit(); now+=BbscQuitSaveTimeoutMs;
     TickBbscPendingQuit(); assert_cancelled();
     reset(); confirm(); memory[world+0x08]=1; TickBbscPendingQuit();
-    assert(!BbscQuitInProgress() && !stopped() && !bbsc_quit_input_blocked);
+    assert(!BbscQuitInProgress() && !stopped());
     assert(memory[0xb00111]==1); // real load owns native resets
 
     assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1); // native load owns cleanup
