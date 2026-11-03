@@ -40,6 +40,7 @@
 #include "core/bbsc_cinematic.h"
 #include "core/bbsc_patch_tables.h"
 #include "core/bloodborne_re.h"
+#include "bbsc_party.h"
 
 // One line in this run's BBSC timeline (bloodborne_re.cpp, "Timeline").
 #define BBSC_TIMELINE(kind, ...) Core::Bloodborne::BbscTimelineEvent(kind, fmt::format(__VA_ARGS__))
@@ -431,6 +432,7 @@ DWORD WINAPI Worker(void*) {
         Sleep(WatchMs);
         // Keep network I/O outside patch_mutex and off the game's frame thread.
         BbscMod::MaintainSummonLifecycle();
+        BbscMod::PartyMaintain();
         std::scoped_lock lock{patch_mutex};
         if (const int redone = SyncSites(); redone != 0) {
             LOG_WARNING(Mod, "{} patch site(s) had changed back - written again", redone);

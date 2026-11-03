@@ -58,6 +58,7 @@
 
 #ifdef BBSC_MOD
 #include "../../mod/bbsc_register.h"
+#include "../../mod/bbsc_party.h"
 #include "core/bbsc_dreg_rules.h"
 #endif
 
@@ -20745,6 +20746,12 @@ void ApplyBbscBellsAnywhere(const GuestRegisterSnapshot* registers) {
     // before both the native-yes and bells-anywhere paths, independently of that
     // option. Keep Silencing Blank and the PvP toggle available.
     if (used_effect != 9000 && used_effect != 9005 && used_effect != 7511 && used_effect != 7) return;
+#ifdef BBSC_MOD
+    if (used_effect == 9000 && BbscMod::PartyEnabled() && !BbscMod::PartyCanBeckon()) {
+        const_cast<GuestRegisterSnapshot*>(registers)->rcx &= ~u64{0xFF};
+        return;
+    }
+#endif
     if (used_effect == 9000 || used_effect == 9005) {
         const s32 session = GetSessionState();
         if ((session == 4 || session == 6) && registers->r14 != 0 &&
@@ -20858,7 +20865,12 @@ void TickBbscNpcOwnQuests();                                                    
 
 // Keep diagnostic-only hooks out of normal play entirely (including register save/restore).
 // Keep this list aligned with the functional dispatch at the start of TraceEntry.
+u8 bbsc_party_item_skip = 0;
+
 bool BbscFunctionalTraceSite(const TraceSite& site) {
+#ifdef BBSC_MOD
+    if (BbscMod::PartyEnabled() && (site.offset == 0x018F9720 || site.offset == 0x018C9160)) return true;
+#endif
     return site.kind == TraceKind::LuaSessionEvent ||
            site.offset == ItemUsableResultOffset || site.offset == SummonBuildEntryOffset ||
            site.offset == CrossMapGuestHandoffOffset ||
@@ -20890,6 +20902,20 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     BbscPerfScope perf_scope{perf_site};
 
     const auto& site = Sites[tag];
+#ifdef BBSC_MOD
+    // Native entry, before goods effects, resource consumption and room creation.
+    // Menu availability never requests a role.
+    if (BbscMod::PartyEnabled() && (site.offset == 0x018F9720 || site.offset == 0x018C9160)) {
+        bbsc_party_item_skip = 0;
+        if (registers && (static_cast<u32>(registers->rsi) & 0x0FFFFFFFu) == 200u &&
+            registers->rdi == GetLocalPlayerCharacter() && !BbscMod::PartyAcquire()) {
+            const_cast<GuestRegisterSnapshot*>(registers)->rax = 0;
+            bbsc_party_item_skip = 1;
+            return;
+        }
+    }
+#endif
+
     if (site.kind == TraceKind::LuaSessionEvent) {
         HandleBbscLuaSessionEvent(*registers);
     }
@@ -20950,6 +20976,12 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         }
     }
     if (site.offset == BbscGameTickOffset) {
+#ifdef BBSC_MOD
+        const u64 party_global = GetGlobalState();
+        BbscMod::PartyObserve(GetSessionState(),
+            !ReadablePointer(party_global, 0x10) || ReadValue<u8>(party_global, 8) != 0,
+            BbscLocalEffectNode(9000) != 0);
+#endif
         TickBbscPerfReport();
         const u32 pending_work = TakeBbscWork();
         bbsc_tick_map.store(GetCurrentPackedMap(), std::memory_order_release);
@@ -23558,6 +23590,9 @@ void InstallReverseEngineeringTrace() {
         // The cutscene request sites can skip the game's own call (bbsc_cutscene_skip).
         if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + site.offset), expected,
                                   index, TraceEntry,
+                                  #ifdef BBSC_MOD
+                                  (BbscMod::PartyEnabled() && (site.offset == 0x018F9720 || site.offset == 0x018C9160)) ? &bbsc_party_item_skip :
+#endif
                                   site.offset == 0x0131E5C0 ? &bbsc_chalice_summon_skip :
                                   BbscCutsceneVariant(site.offset) >= 0 ? &bbsc_cutscene_skip : nullptr)) {
             LOG_ERROR(Debug, "Failed to install Bloodborne RE hook {} at {:#x}", site.name,

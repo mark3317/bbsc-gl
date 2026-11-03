@@ -37,7 +37,8 @@ class Compatibility:
         self.np_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
         self.native={'state':0,'loading':True,'bell':False}; self.observed=False; self.acquiring=False
         self.gate_lock=threading.Lock(); self.closed=False; self.relay_id=0; self.native_bindings={}
-        self.previous=copy.deepcopy(engine.state); self.session_id=uuid.uuid4().hex
+        self.previous=copy.deepcopy(engine.state); self.recovering=copy.deepcopy(engine.state)
+        self.native_fresh=False; self.session_id=uuid.uuid4().hex
         self.local_status={'sign':None,'placement':'','relay_id':0,'native':self.native}
         self.logfile=engine.profile/'party-events.jsonl'; self.log_lock=threading.Lock()
         outer=self
@@ -79,11 +80,16 @@ class Compatibility:
                     # Old EOF is transport cleanup only, never a room/member leave.
                     with outer.np_lock:
                         if outer.np and outer.np[1]==generation: outer.np=None
-        self.np_server=TcpServer(('127.0.0.1',0),NP)
-        self.np_port=self.np_server.server_address[1]
-        self.stun=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-        # Native library derives UDP port from TCP+1.
-        self.stun.bind(('127.0.0.1',self.np_port+1)); self.stun.settimeout(.25)
+        # Reserve TCP and its native-derived UDP neighbor; ephemeral UDP may already be busy.
+        for attempt in range(16):
+            self.np_server=TcpServer(('127.0.0.1',0),NP)
+            self.np_port=self.np_server.server_address[1]
+            self.stun=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+            try:
+                self.stun.bind(('127.0.0.1',self.np_port+1)); self.stun.settimeout(.25); break
+            except (OSError,OverflowError):
+                self.stun.close(); self.np_server.server_close()
+        else: raise OSError('Cannot reserve native compatibility ports')
         class HTTP(http.server.BaseHTTPRequestHandler):
             def log_message(self,*args): pass
             def do_GET(self): self.respond()
@@ -116,6 +122,7 @@ class Compatibility:
                 with outer.relay_lock:
                     outer.relay_generation+=1; gen=outer.relay_generation
                     old=outer.relay_sock; outer.relay_sock=self.request
+                    engine.reset_relay()
                     if old:
                         try: old.shutdown(socket.SHUT_RDWR)
                         except OSError: pass
@@ -131,7 +138,7 @@ class Compatibility:
                         native_id,=struct.unpack('<I',raw[5:9])
                         outer.relay_id=native_id; outer.local_status['relay_id']=native_id
                         outer.publish()
-                        if engine.state['owner'] is not None: engine.relay(raw)
+                        if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]})
                 except (OSError,EOFError,ValueError): pass
                 finally:
                     with outer.relay_lock:
@@ -207,7 +214,9 @@ class Compatibility:
                     'cur_members':len(s['room']['members']),'details':d}
         if cmd==103:
             if s['room'] and s['room']['id']!=r['room_id']: raise ValueError('Stale room leave')
-            if s['room'] and who in s['room']['members']: self.command('room_leave')
+            if s['room'] and who in s['room']['members']:
+                if who==s['owner'] and (s['joined'] or s['pending']): self.command('room_close')
+                else: self.command('room_leave')
             return {'room_id':r['room_id']}
         if cmd in (104,112):
             rooms=[self.external(s)] if s['room'] else []
@@ -233,7 +242,7 @@ class Compatibility:
                 s=self.state()
                 return int(s['owner']==self.e.id and self.e.disk['final']==s['revision'])
         if path=='/party/native':
-            self.native=body; self.local_status['native']=body; self.publish()
+            self.native=body; self.native_fresh=True; self.local_status['native']=body; self.publish()
             if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
             return 1
         if path=='/party/can_beckon':
@@ -257,7 +266,7 @@ class Compatibility:
             if kind=='create':
                 self.local_status['sign']=body; self.publish()
                 pending=s['pending'].get(who)
-                if pending: result.update({k:v for k,v in pending['claim'].items() if k not in ('MessageId','ResKind')})
+                if pending and not (s['room'] and s['room'].get('closing')): result.update({k:v for k,v in pending['claim'].items() if k not in ('MessageId','ResKind')})
             elif kind=='get':
                 result['SummonDataList']=[]
                 if s['owner']==who and self.e.disk['final']==s['revision']:
@@ -323,6 +332,8 @@ class Compatibility:
                     self.log('final',revision=s['revision'],owner=s['owner'],members=list(s['joined']),pending=list(s['pending']))
                     oldroom=old.get('room'); room=s.get('room')
                     if oldroom and room and oldroom['id']==room['id']:
+                        if room.get('closing') and not oldroom.get('closing') and self.e.id!=s['owner']:
+                            self.notify(0x1104,room=s)
                         for p,m in room['members'].items():
                             if p!=self.e.id and p not in oldroom['members']: self.notify(0x1101,(p,m),s)
                         for p,m in oldroom['members'].items():
@@ -332,12 +343,14 @@ class Compatibility:
                 # Forward all chunks individually. ACK IDs, generation and per-member native IDs
                 # are checked before existing BBSC dispatch sees an opaque frame.
                 while not self.e.relay_in.empty():
-                    sender,raw=self.e.relay_in.get_nowait()
+                    sender,raw,binding=self.e.relay_in.get_nowait()
                     if len(raw)<18 or raw[:5]!=b'SHAD\x40': continue
-                    with self.e.lock: status=copy.deepcopy(self.e.signs.get(sender,{}))
-                    if not status: continue
                     native_id,=struct.unpack('<I',raw[5:9])
-                    if native_id!=status['body'].get('relay_id'): continue
+                    connection=tuple(binding.get('connection',[]))
+                    if len(connection)!=2 or native_id!=binding.get('native_id'): continue
+                    previous=self.native_bindings.get(sender)
+                    if previous and (connection<previous[0] or (connection==previous[0] and native_id!=previous[1])): continue
+                    self.native_bindings[sender]=(connection,native_id)
                     with self.relay_lock:
                         if self.relay_sock:
                             try: self.relay_sock.sendall(blob(raw))
@@ -349,9 +362,12 @@ class Compatibility:
                             except OSError: pass
                 n=self.native
                 # Explicit native termination is required; EOF/loading/death never do this.
-                if self.observed and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
+                recovery=self.native_fresh and (self.e.id in self.recovering['pending'] or self.e.id in self.recovering['joined'] or self.recovering['owner']==self.e.id)
+                if (self.observed or recovery) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
                     if self.e.id in s['pending']:
                         self.command('admission_cancel')
+                    elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or recovery):
+                        self.command('room_leave')
                     elif s['owner']==self.e.id and not s['joined'] and not s['pending']:
                         if s['room']: self.command('room_leave')
                         else:
@@ -367,7 +383,7 @@ def start_from_environment(env,port):
     if not probe.exists(): probe=Path(port)/'bb-probe.exe'
     overrides=profile/'party/host_overrides.json'
     overrides.write_text(json.dumps({'https://ss4.scej-network.jp:20443':f'http://127.0.0.1:{compat.http_port}'}),encoding='utf-8')
-    env.update(BBSC_PARTY='1',BBSC_PARTY_PORT=str(compat.http_port),BBSC_PARTY_TOKEN=compat.token,
+    env.update(BBSC_PARTY='1',BBSC_PARTY_INSTANCE=cfg['group']+'-'+member,BBSC_PARTY_PORT=str(compat.http_port),BBSC_PARTY_TOKEN=compat.token,
         BBSC_RELAY=f'127.0.0.1:{compat.relay_port}',BB_SHADNET_SERVER=f'127.0.0.1:{compat.np_port}',
         BB_SHADNET_WEBAPI=f'http://127.0.0.1:{compat.http_port}',BB_SHADNET_NPID=member,BB_SHADNET_PASSWORD=compat.token,
         BB_HOST_OVERRIDES=str(overrides),BB_P2P_PORT=str(engine.member['p2p']),BB_P2P_RELAY='off',

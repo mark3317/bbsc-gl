@@ -82,11 +82,12 @@ def transition(state, sender, seq, op):
         # Native room identity is distinct from world generation.
         room = copy.deepcopy(op['room'])
         room['id'] = (s['generation'] << 24) | 1
+        room['next_incarnation'] = 1
         room['members'] = {sender: {'slot': 1, 'bins': room.pop('member_bins', [])}}
         s['room'] = room; result = room['id']
     elif kind == 'claim':
         target = op['target']
-        if sender != s['owner'] or target == sender or target not in s['roster']:
+        if sender != s['owner'] or target == sender or target not in s['roster'] or (s['room'] and s['room'].get('closing')):
             raise ValueError('Invalid claim')
         if target in s['pending'] or target in s['joined']: raise ValueError('Already joining')
         s['pending'][target] = {'generation': s['generation'], 'claim': op['claim']}
@@ -94,16 +95,23 @@ def transition(state, sender, seq, op):
         if sender not in s['pending']: raise ValueError('Only joining member may cancel')
         del s['pending'][sender]
     elif kind == 'room_join':
+        if s['room'] and s['room'].get('closing'): raise ValueError('Room is closing')
         if not s['room'] or sender not in s['pending'] or op['room_id'] != s['room']['id']:
             raise ValueError('No current admission')
         slots = {m['slot'] & 15 for m in s['room']['members'].values()}
         slot = next((i for i in range(2, 6) if i not in slots), None)
         if slot is None or len(slots) >= s['room']['max_slots']: raise ValueError('Room full')
         # Incarnation bits prevent a late event from resurrecting a reused slot.
-        member_id = ((s['revision'] + 1) << 4) | slot
+        incarnation = s['room']['next_incarnation']
+        if incarnation > 4095: raise ValueError('Recreate native room before incarnation wrap')
+        member_id = (incarnation << 4) | slot
+        s['room']['next_incarnation'] += 1
         s['room']['members'][sender] = {'slot': member_id, 'bins': op.get('bins', [])}
         s['joined'][sender] = s['generation']; del s['pending'][sender]
         result = member_id
+    elif kind == 'room_close':
+        if sender != s['owner'] or not s['room']: raise ValueError('Not room owner')
+        s['room']['closing'] = True
     elif kind == 'room_leave':
         if not s['room'] or sender not in s['room']['members']: raise ValueError('Not in room')
         if sender == s['owner']:
@@ -128,8 +136,11 @@ def transition(state, sender, seq, op):
     return s
 
 class _Server(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
+    allow_reuse_address = False
     daemon_threads = True
+    def server_bind(self):
+        if os.name == 'nt': self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
+        super().server_bind()
 
 class Engine:
     def __init__(self, cfg, member, profile, *, fault=None):
@@ -144,6 +155,7 @@ class Engine:
         self.fault = fault or {}; self.rng = random.Random(self.fault.get('seed', 1))
         self.blocked = set(); self.delayed = []; self.last_tick = 0
         self.signs = {}; self.update_seq = 0; self.relay_next = 0
+        self.relay_scope = None; self.relay_transport = 0
         self.relay_pending = {}; self.relay_received = {}; self.relay_out = queue.Queue(128)
         self.relay_in = queue.Queue(128); self.relay_error = None
         if self.path.exists():
@@ -185,13 +197,14 @@ class Engine:
                     if not part: return None
                     out.extend(part)
                 return bytes(out)
-        self.server = _Server(('0.0.0.0', self.member['port']), Handler)
+        self.server = _Server((self.member['host'], self.member['port']), Handler)
 
     def persist(self): atomic_json(self.path, self.disk)
     def snapshot(self):
         with self.lock:
             return {'id': self.id, 'state': copy.deepcopy(self.state), 'final': self.disk['final'],
-                    'pending': copy.deepcopy(self.pending_local), 'relay_error': self.relay_error}
+                    'pending': copy.deepcopy(self.pending_local), 'relay_error': self.relay_error,
+                    'tx_phase': self.disk['tx']['phase'] if self.disk['tx'] else None}
     def start(self):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.thread = threading.Thread(target=self.run, daemon=True); self.thread.start()
@@ -227,7 +240,7 @@ class Engine:
     def send(self, target, payload):
         if target == self.id:
             self.inbox.put_nowait(dict(payload, **{'from': self.id, 'group': self.cfg['group']})); return
-        if target in self.blocked: return
+        if target in self.blocked or payload.get('type') in self.fault.get('drop_types',[]): return
         if self.rng.random() < self.fault.get('loss', 0): return
         msg = dict(payload, **{'from': self.id, 'group': self.cfg['group']})
         msg['mac'] = hmac.new(self.key, canonical(msg), hashlib.sha256).hexdigest()
@@ -246,7 +259,7 @@ class Engine:
         try:
             if sock is None:
                 m = self.members[target]
-                sock = socket.create_connection((m['host'], m['port']), timeout=.08)
+                sock = socket.create_connection((m['host'], m['port']), timeout=.08,source_address=(self.member['host'],0))
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.links[target] = sock
             sock.sendall(struct.pack('<I', len(raw)) + raw)
@@ -311,7 +324,7 @@ class Engine:
                 else: tx['phase'] = {'prepare':'commit','commit':'final'}[tx['phase']]; tx['acks'] = []
             self.persist()
         elif kind == 'status':
-            if sender not in s['roster'] or m['epoch'] != s['epoch']: return
+            if sender not in s['roster'] or m['epoch'] != s['epoch'] or m.get('generation') != s['generation']: return
             stamp = (m['incarnation'], m['seq'])
             prev = self.signs.get(sender)
             if prev is None or stamp > tuple(prev['stamp']):
@@ -324,7 +337,7 @@ class Engine:
                 self.send(sender, {'type':'relay_ack', 'incarnation':m['incarnation'], 'seq':m['seq']}); return
             # Stop-and-wait prevents reordering; sequence can skip after an idle generation.
             raw = base64.b64decode(m['data'], validate=True)
-            try: self.relay_in.put_nowait((sender, raw))
+            try: self.relay_in.put_nowait((sender, raw, m.get('binding',{})))
             except queue.Full: self.relay_error = 'receive queue full'; return
             self.relay_received[sender] = stamp
             self.disk['relay_received'] = self.relay_received; self.persist()
@@ -337,9 +350,15 @@ class Engine:
         with self.lock:
             self.update_seq += 1
             self.signs[self.id] = {'stamp': (self.disk['incarnation'],self.update_seq), 'body': copy.deepcopy(body), 'at': time.monotonic()}
-    def relay(self, raw):
+    def reset_relay(self):
+        with self.lock:
+            self.relay_transport += 1
+            self.relay_pending.clear(); self.relay_error = None
+            while not self.relay_out.empty(): self.relay_out.get_nowait()
+
+    def relay(self, raw, binding=None):
         if len(raw) > 65536: raise ValueError('Oversized BBSC frame')
-        try: self.relay_out.put_nowait(raw)
+        try: self.relay_out.put_nowait((raw,binding or {}))
         except queue.Full:
             self.relay_error = 'send queue full'; raise ValueError(self.relay_error)
     def run(self):
@@ -360,26 +379,32 @@ class Engine:
                     self.delayed = [item for item in self.delayed if item[0] > now]
                     # Varying delay intentionally reorders traffic in fault scenarios.
                     for _,target,raw in sorted(ready): self.wire(target, raw)
-                    if now-self.last_tick < .12: continue
-                    self.last_tick = now
-                    tx = self.disk['tx']
-                    if tx: self.fan({'type': tx['phase'], 'proposal': tx['proposal']}, tx['proposal']['base']['roster'])
-                    if self.pending_local and not self.pending_local.get('error'):
-                        self.send(self.coordinator(), dict(self.pending_local, type='request', revision=self.state['revision']))
-                    own = self.signs.get(self.id)
-                    if own:
-                        self.fan({'type':'status','epoch':self.state['epoch'], 'incarnation':own['stamp'][0], 'seq':own['stamp'][1], 'body':own['body']}, self.state['roster'])
+                    if now-self.last_tick >= .12:
+                        self.last_tick = now
+                        tx = self.disk['tx']
+                        if tx: self.fan({'type': tx['phase'], 'proposal': tx['proposal']}, tx['proposal']['base']['roster'])
+                        if self.pending_local and not self.pending_local.get('error'):
+                            self.send(self.coordinator(), dict(self.pending_local, type='request', revision=self.state['revision']))
+                        own = self.signs.get(self.id)
+                        if own:
+                            self.fan({'type':'status','epoch':self.state['epoch'], 'generation':self.state['generation'], 'incarnation':own['stamp'][0], 'seq':own['stamp'][1], 'body':own['body']}, self.state['roster'])
+                    scope=(self.state['generation'],self.state['owner'])
+                    if self.relay_scope is not None and self.relay_scope!=scope:
+                        self.reset_relay()
+                    self.relay_scope=scope
                     if not self.relay_pending and not self.relay_error:
-                        try: raw = self.relay_out.get_nowait()
-                        except queue.Empty: raw = None
-                        if raw is not None:
+                        try: item = self.relay_out.get_nowait()
+                        except queue.Empty: item = None
+                        if item is not None:
+                            raw,binding=item
                             self.relay_next += 1
                             m = {'type':'relay','incarnation':self.disk['incarnation'], 'seq':self.relay_next,
-                                 'generation':self.state['generation'], 'data':base64.b64encode(raw).decode()}
-                            self.relay_pending = {p:{'msg':m,'at':now} for p in self.state['roster'] if p != self.id}
+                                 'generation':self.state['generation'], 'binding':binding, 'data':base64.b64encode(raw).decode()}
+                            self.relay_pending = {p:{'msg':m,'at':now,'sent':0} for p in self.state['roster'] if p != self.id}
                     for peer, pending in list(self.relay_pending.items()):
                         if now-pending['at'] > 10:
                             self.relay_error = 'unacknowledged BBSC frame expired'; self.relay_pending.clear(); break
-                        self.send(peer, pending['msg'])
+                        if now-pending['sent']>.08:
+                            self.send(peer, pending['msg']); pending['sent']=now
                 except OSError as error:
                     self.relay_error = str(error)

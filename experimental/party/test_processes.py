@@ -3,13 +3,16 @@ from pathlib import Path
 from engine import invite
 HERE=Path(__file__).resolve().parent
 class Client:
-    def __init__(self,path,who,profile,fault=None):
-        self.p=subprocess.Popen([sys.executable,str(HERE/'lite.py'),'--invite',str(path),'--id',who,'--profile',str(profile),'--fault',json.dumps(fault or {})],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8')
+    def __init__(self,path,who,profile,fault=None,compat=False):
+        self.p=subprocess.Popen([sys.executable,str(HERE/'lite.py'),'--invite',str(path),'--id',who,'--profile',str(profile),'--fault',json.dumps(fault or {}),*(['--compat'] if compat else [])],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8')
         self.q=queue.Queue(); self.stash={}; self.serial=0
         def read():
             for line in self.p.stdout: self.q.put(json.loads(line))
         threading.Thread(target=read,daemon=True).start()
-        assert self.q.get(timeout=5)['ready']==who
+        try: self.info=self.q.get(timeout=5)
+        except queue.Empty:
+            self.p.kill(); self.p.wait(); raise RuntimeError(self.p.stderr.read())
+        assert self.info['ready']==who
     def send(self,cmd,**kw):
         self.serial+=1; self.p.stdin.write(json.dumps(dict(kw,cmd=cmd,token=self.serial))+'\n'); self.p.stdin.flush(); return self.serial
     def get(self,t,timeout=17):
@@ -31,16 +34,16 @@ class Tests(unittest.TestCase):
         for c in self.cs:
             if c.p.poll() is None: c.kill()
         self.tmp.cleanup()
-    def group(self,n,fault=None):
+    def group(self,n,fault=None,compat=False):
         members=[]
         for i in range(n):
             with socket.socket() as s: s.bind(('127.0.0.1',0)); port=s.getsockname()[1]
             members.append({'id':chr(65+i),'host':'127.0.0.1','port':port,'p2p':3658+i})
         self.file=self.root/'invite.json'; self.file.write_text(json.dumps(invite(members)))
-        for m in members: self.start(m['id'],fault)
+        for m in members: self.start(m['id'],fault,compat)
         return self.cs[:]
-    def start(self,who,fault=None):
-        c=Client(self.file,who,self.root/who,fault); self.cs.append(c); return c
+    def start(self,who,fault=None,compat=False):
+        c=Client(self.file,who,self.root/who,fault,compat); self.cs.append(c); return c
     def settled(self,cs=None,timeout=10):
         cs=cs or [c for c in self.cs if c.p.poll() is None]; end=time.monotonic()+timeout
         while time.monotonic()<end:
@@ -94,4 +97,41 @@ class Tests(unittest.TestCase):
         a,b,c=self.group(3); self.assertNotIn('error',a.op('membership',roster=['A','B'])); self.settled()
         self.assertIn('error',c.call('command',op={'kind':'acquire'},timeout=2))
         self.assertIsNone(a.state()['state']['owner']); self.assertEqual(b.op('acquire').get('result'),1); self.settled([a,b])
+    def test_coordinator_restart_after_durable_commit(self):
+        a,b,c=self.group(3,{'drop_types':['commit']})
+        a.send('command',op={'kind':'acquire'},timeout=2)
+        end=time.monotonic()+4
+        while time.monotonic()<end and a.state()['tx_phase']!='commit': time.sleep(.02)
+        self.assertEqual(a.state()['tx_phase'],'commit'); a.kill()
+        self.assertIsNone(b.state()['state']['owner']); self.assertIsNone(c.state()['state']['owner'])
+        a=self.start('A')
+        end=time.monotonic()+10
+        while a.state()['final']<1 and time.monotonic()<end: time.sleep(.03)
+        settled=self.settled([a,b,c],timeout=12)
+        self.assertEqual(settled[0]['state']['owner'],'A')
+        b.call('fault',value={}); c.call('fault',value={})
+        self.assertNotIn('error',a.op('release'))
+    def test_explicit_close_waits_for_guest_acknowledgements(self):
+        a,b,c=self.group(3); a.op('acquire')
+        rid=a.op('room_create',room={'max_slots':5,'world':1,'bins':[],'flags':0,'member_bins':[]})['result']
+        for who,client in [('B',b),('C',c)]:
+            a.op('claim',target=who,claim={}); self.assertNotIn('error',client.op('room_join',room_id=rid))
+        self.assertNotIn('error',a.op('room_close')); self.assertIn('error',a.op('release'))
+        self.assertNotIn('error',b.op('room_leave')); self.assertIn('error',a.op('release'))
+        self.assertNotIn('error',c.op('room_leave')); self.assertNotIn('error',a.op('room_leave'))
+        self.assertNotIn('error',a.op('release')); self.assertEqual(c.op('acquire').get('result'),2)
+        self.settled()
+    def test_stale_generations_and_wrong_coordinator(self):
+        from engine import transition
+        a,b=self.group(2); base=a.state()['state']
+        old={'base':base,'sender':'A','seq':1,'op':{'kind':'acquire'},'next':transition(base,'A',1,{'kind':'acquire'})}
+        # B cannot coordinate revision zero, even though it is an invited member.
+        for kind in ('prepare','commit','final'):
+            b.call('inject',target='A',message={'type':kind,'proposal':old})
+        time.sleep(.2); self.assertEqual(a.state()['state'],base)
+        self.assertEqual(a.op('acquire').get('result'),1); self.assertNotIn('error',a.op('release'))
+        self.assertEqual(b.op('acquire').get('result'),2); before=self.settled()[0]['state']
+        for kind in ('prepare','commit','final'):
+            a.call('inject',target='B',message={'type':kind,'proposal':old})
+        time.sleep(.3); self.assertEqual(b.state()['state'],before)
 if __name__=='__main__': unittest.main(verbosity=2)
