@@ -1,12 +1,16 @@
 import argparse,json,sys,threading
 from pathlib import Path
 from engine import Engine
-ap=argparse.ArgumentParser(); ap.add_argument('--invite'); ap.add_argument('--id'); ap.add_argument('--profile'); ap.add_argument('--fault',default='{}'); a=ap.parse_args()
+ap=argparse.ArgumentParser(); ap.add_argument('--invite'); ap.add_argument('--id'); ap.add_argument('--profile'); ap.add_argument('--fault',default='{}'); ap.add_argument('--compat',action='store_true'); a=ap.parse_args()
 e=Engine(json.loads(Path(a.invite).read_text(encoding='utf-8-sig')),a.id,a.profile,fault=json.loads(a.fault)).start()
 lock=threading.Lock()
 def emit(x):
     with lock: print(json.dumps(x),flush=True)
-emit({'ready':a.id})
+compat=None
+if a.compat:
+    from compat import Compatibility
+    compat=Compatibility(e).start()
+emit(dict(ready=a.id,**({'http':compat.http_port,'np':compat.np_port,'relay':compat.relay_port,'token':compat.token} if compat else {})))
 def command(r):
     try: emit({'token':r['token'],'result':e.command(r['op'],r.get('timeout',12))})
     except (ValueError,TimeoutError) as ex: emit({'token':r['token'],'error':str(ex)})
@@ -18,9 +22,15 @@ try:
         elif c=='block':
             with e.lock: e.blocked=set(r['peers'])
             emit({'token':t,'ok':True})
+        elif c=='fault':
+            with e.lock: e.fault=r['value']
+            emit({'token':t,'ok':True})
+        elif c=='inject': e.send(r['target'],r['message']); emit({'token':t,'ok':True})
         elif c=='relay': e.relay(r['data'].encode()); emit({'token':t,'ok':True})
         elif c=='received':
             frames=[]
             while not e.relay_in.empty(): frames.append(e.relay_in.get_nowait()[1].decode())
             emit({'token':t,'frames':frames})
-finally: e.close()
+finally:
+    if compat: compat.close()
+    else: e.close()

@@ -8,6 +8,17 @@
 #include "bbsc_party.h"
 #include "common/logging/log.h"
 namespace {
+// A crashed runner must not authorize a second native world while its old game lives.
+bool ExclusiveNative() {
+    static const bool unique=[] {
+        const char* identity=std::getenv("BBSC_PARTY_INSTANCE");
+        if(!identity || !*identity) return false;
+        const std::string name="Local\\BBSC-Party-Native-"+std::string(identity);
+        const HANDLE handle=CreateMutexA(nullptr,FALSE,name.c_str());
+        return handle && GetLastError()!=ERROR_ALREADY_EXISTS; // retained until process exit
+    }();
+    return unique;
+}
 std::atomic<unsigned> native{1u<<8};
 std::atomic<bool> can_beckon{false};
 std::atomic<ULONGLONG> refreshed{0};
@@ -49,19 +60,20 @@ bool PartyEnabled() {
 }
 bool PartyAcquire() {
     if(!PartyEnabled()) return true;
+    if(!ExclusiveNative()) return false;
     const bool granted=Call(L"/party/acquire","{}",8500)=="1";
     LOG_INFO(Mod,"Serverless party: actual Beckoning request {} before native item execution",
              granted?"unanimously granted":"denied/unconfirmed");
     return granted;
 }
 bool PartyCanBeckon() {
-    return !PartyEnabled() || (can_beckon.load() && GetTickCount64()-refreshed.load()<1500);
+    return !PartyEnabled() || (ExclusiveNative() && can_beckon.load() && GetTickCount64()-refreshed.load()<1500);
 }
 void PartyObserve(std::int32_t state,bool loading,bool bell) {
     if(PartyEnabled()) native=static_cast<unsigned>(state&255)|(loading?256u:0u)|(bell?512u:0u);
 }
 void PartyMaintain() {
-    if(!PartyEnabled()) return;
+    if(!PartyEnabled() || !ExclusiveNative()) return;
     static ULONGLONG last=0;
     const ULONGLONG now=GetTickCount64();
     if(now-last<250) return;
