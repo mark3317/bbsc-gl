@@ -9856,6 +9856,9 @@ struct BbscPendingQuit {
     bool requested = false;
     bool stopping = false;
     bool disconnect_warned = false;
+    u64 input_lua = 0;
+    s32 menu_brake = 0;
+    u8 load_wait = 0;
 };
 BbscPendingQuit bbsc_pending_quit;
 BbscPendingQuit bbsc_title_quit; // retained until native character creation on Continue
@@ -10013,13 +10016,38 @@ void PrepareBbscQuitToTitle() {
 // writes. No stack frame exists here; skipping with RET is safe. The copied MOV
 // and CMP are position independent. The old final-store hook let +1547/+1548
 // start a competing stage flow while BBSC was still waiting for save/Stop.
-// Keep the native System menu alive during save/disconnect. Closing it early
-// hands control back to a live host world before a native transition exists.
+// Use the guest departure's native SetLoadWait restriction for a host awaiting
+// title teardown. Menu brake also prevents reopening System; camera stays native.
+void HoldBbscHostQuitInput(const BbscPendingQuit& pending) {
+    if (!pending.input_lua || GetGlobalState() != pending.global ||
+        ReadValue<u8>(pending.global, 0x08) != 0 ||
+        ReadValue<u64>(image_base + MenuManPointerOffset, 0) != pending.menu) return;
+    const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
+    if (!ReadablePointer(lua_man, 0x10) ||
+        ReadValue<u64>(lua_man, 8) != pending.input_lua) return;
+    if (HasMemoryAccess(pending.input_lua + 0x8D, 1, MemoryProt::CpuWrite))
+        WriteValue<u8>(pending.input_lua, 0x8D, 1);
+    if (HasMemoryAccess(pending.menu + 0x2DC, 4, MemoryProt::CpuWrite))
+        WriteValue<s32>(pending.menu, 0x2DC, 1);
+}
+
+// Keep the native System menu alive during save/disconnect; native transition
+// takes ownership when teardown completes.
 void CancelBbscPendingQuit(std::string_view why) {
 #ifdef BBSC_MOD
     BbscMod::PartyEndTitleWait();
 #endif
     const auto pending = bbsc_pending_quit;
+    if (pending.input_lua && GetGlobalState() == pending.global &&
+        ReadValue<u8>(pending.global, 0x08) == 0) {
+        const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
+        if (ReadablePointer(lua_man, 0x10) && ReadValue<u64>(lua_man, 8) == pending.input_lua &&
+            HasMemoryAccess(pending.input_lua + 0x8D, 1, MemoryProt::CpuWrite))
+            WriteValue<u8>(pending.input_lua, 0x8D, pending.load_wait);
+        if (ReadValue<u64>(image_base + MenuManPointerOffset, 0) == pending.menu &&
+            HasMemoryAccess(pending.menu + 0x2DC, 4, MemoryProt::CpuWrite))
+            WriteValue<s32>(pending.menu, 0x2DC, pending.menu_brake);
+    }
     bbsc_pending_quit = {};
     bbsc_quit_save_watch = false;
     bbsc_quit_prepared = false; // a failed Stop must not poison a later confirmed attempt
@@ -10045,6 +10073,18 @@ void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* re
     CancelBbscReinsert("confirmed System menu exit");
     FlushBbscSessionJournals(); // record the trip before the native save or any teardown
     bbsc_pending_quit = {global, menu, state, ReadValue<s32>(global, 0x1490), SteadyNowMs(), false};
+    if (state == 1 || state == 3) {
+        const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
+        const u64 lua = ReadablePointer(lua_man, 0x10) ? ReadValue<u64>(lua_man, 8) : 0;
+        if (ReadablePointer(lua, 0x90) &&
+            HasMemoryAccess(lua + 0x8D, 1, MemoryProt::CpuWrite) &&
+            HasMemoryAccess(menu + 0x2DC, 4, MemoryProt::CpuWrite)) {
+            bbsc_pending_quit.input_lua = lua;
+            bbsc_pending_quit.load_wait = ReadValue<u8>(lua, 0x8D);
+            bbsc_pending_quit.menu_brake = ReadValue<s32>(menu, 0x2DC);
+            HoldBbscHostQuitInput(bbsc_pending_quit);
+        }
+    }
     bbsc_quit_save_result = -1;
     LOG_INFO(Debug, "BBSC quit: native menu confirmed; saving slot {} before disconnect", bbsc_pending_quit.slot);
 }
@@ -10073,8 +10113,8 @@ void TickBbscPendingQuit() {
         CancelBbscPendingQuit("world or menu context changed");
         return;
     }
-    // No CloseMenus or gameplay lock while waiting. The native System menu
-    // retains input ownership until save, Stop and final group leave complete.
+    HoldBbscHostQuitInput(pending);
+    // Do not close System until native title transition takes ownership.
     if (pending.stopping) {
         if (ReadValue<u8>(pending.global, 0x08) != 0) return; // an existing native load owns the world
         if (GetSessionState() == 0 || GetSessionState() == 2 || GetSessionState() == 5) {
@@ -19577,6 +19617,7 @@ void TickBbscHostSearchLimit() {
 }
 
 void TickBbscHostBlank() {
+    if (BbscQuitInProgress()) return; // title owns the host's load-wait restriction
     static bool was = false;
     const bool now = bbsc_duel_bell_ready && !bbsc_blank_effect_rows.empty() && GetSessionState() == 3 &&
                      BbscLocalEffectActive(bbsc_blank_effect_rows);
