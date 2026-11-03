@@ -248,11 +248,15 @@ class Compatibility:
             return {'room_id':s['room']['id'],'member_id':d['me_member_id'],'max_slots':s['room']['max_slots'],
                     'cur_members':len(s['room']['members']),'details':d}
         if cmd==103:
-            if s['room'] and s['room']['id']!=r['room_id']: raise ValueError('Stale room leave')
+            # Proto3 omits room_id=0 after a failed CreateRoom. It acknowledges
+            # no membership; never let it tear down a newer room.
+            room_id=r.get('room_id',0)
+            if not room_id: return {'room_id':0}
+            if s['room'] and s['room']['id']!=room_id: raise ValueError('Stale room leave')
             if s['room'] and (who in s['room']['members'] or who in s['joined']):
                 if who==s['owner'] and (s['joined'] or s['pending']): self.command('room_close')
                 else: self.command('room_leave')
-            return {'room_id':r['room_id']}
+            return {'room_id':room_id}
         if cmd in (104,112):
             rooms=[self.external(s)] if s['room'] else []
             return {'rooms':rooms,**({'range_start':1,'range_total':len(rooms),'range_result':len(rooms)} if cmd==104 else {})}
@@ -385,7 +389,7 @@ class Compatibility:
                 s=self.state(); old=self.previous
                 if self.e.disk['final']!=s['revision']: continue
                 if s!=old:
-                    self.log('final',revision=s['revision'],owner=s['owner'],members=list(s['joined']),pending=list(s['pending']))
+                    self.log('final',revision=s['revision'],owner=s['owner'],members=list(s['joined']),pending=list(s['pending']),room_id=s['room']['id'] if s['room'] else None,closing=bool(s['room'] and s['room'].get('closing')))
                     oldroom=old.get('room'); room=s.get('room')
                     if oldroom and room and oldroom['id']==room['id']:
                         if room.get('closing') and not oldroom.get('closing') and self.e.id!=s['owner']:
@@ -437,6 +441,12 @@ class Compatibility:
                 recovery=self.native_fresh and self.recovery_pending
                 if recovery and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell'):
                     self.recovery_pending=False; self.release_intent=True; self.observed=True
+                # A confirmed owner LeaveRoom closes admission first. Once guests
+                # acknowledge and native is idle, retire that room even if the
+                # Beckoning effect remains. World ownership still needs cancel.
+                if s['owner']==self.e.id and s['room'] and s['room'].get('closing') and not s['joined'] and not s['pending'] and not n.get('loading',True) and n.get('state') in (0,2,5) and not self.e.pending_local:
+                    self.command('room_leave')
+                    continue
                 if (self.observed or recovery) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
                     if self.e.id in s['pending']:
                         self.command('admission_cancel')

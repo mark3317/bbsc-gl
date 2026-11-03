@@ -23,6 +23,37 @@ class CompatibilityTests(ProcessTests):
             if kind==2: continue
             self.assertEqual((kind,code,ident),(1,cmd,9)); self.assertEqual(data[0],0)
             return decode(reply,data[5:]) if reply else {}
+    def test_closed_room_retires_with_bell_and_recreation_fences_late_leave(self):
+        a,b=self.group(2,compat=True)
+        with self.np_connect(a,'A') as sa, self.np_connect(b,'B') as sb:
+            self.assertEqual(self.http(a,'/party/acquire',control=True),b'1')
+            self.http(a,'/party/native',{'state':3,'loading':False,'bell':True},True)
+            first=self.np_call(sa,101,'CreateRoomRequest',{'max_slots':5},'CreateRoomReply')['room_id']
+            self.assertNotIn('error',a.op('claim',target='B',claim={}))
+            self.np_call(sb,102,'JoinRoomRequest',{'room_id':first},'JoinRoomReply')
+            self.np_call(sa,103,'LeaveRoomRequest',{'room_id':first},'LeaveRoomReply')
+            self.http(a,'/party/native',{'state':0,'loading':False,'bell':True},True)
+            time.sleep(.2)
+            self.assertTrue(a.state()['state']['room']['closing'])
+            self.np_call(sb,103,'LeaveRoomRequest',{'room_id':first},'LeaveRoomReply')
+            end=time.monotonic()+5
+            while time.monotonic()<end:
+                snap=a.state()
+                if snap['state']['room'] is None and snap['final']==snap['state']['revision'] and snap['pending'] is None: break
+                time.sleep(.05)
+            self.assertIsNone(a.state()['state']['room'])
+            self.assertEqual(a.state()['state']['owner'],'A')
+            second=self.np_call(sa,101,'CreateRoomRequest',{'max_slots':5},'CreateRoomReply')['room_id']
+            self.assertNotEqual(first,second)
+            self.np_call(sa,103,'LeaveRoomRequest',{},'LeaveRoomReply')
+            sa.sendall(packet(0,103,9,blob(encode('LeaveRoomRequest',{'room_id':first}))))
+            while True:
+                kind,code,size,ident=struct.unpack('<BHIQ',recv_exact(sa,15)); data=recv_exact(sa,size-15)
+                if kind==2: continue
+                self.assertEqual(code,103); self.assertNotEqual(data[0],0); break
+            self.assertEqual(a.state()['state']['room']['id'],second)
+            self.np_call(sa,103,'LeaveRoomRequest',{'room_id':second},'LeaveRoomReply')
+
     def test_compatibility_native_contract(self):
         a,b=self.group(2,compat=True)
         with self.np_connect(a,'A') as sa, self.np_connect(b,'B') as sb:
