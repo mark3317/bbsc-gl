@@ -20671,12 +20671,93 @@ void ApplyBbscHunterCap(u64 summon_manager) {
     }
 }
 
+// A seamless guest can finish native insertion without the vanilla summon-result
+// event draining SosStatus's request list. That list then blocks every later
+// candidate until its 180-second timeout, despite a resident guest being ready.
+// Use the same identity-bound completion as 01336200/013807E0/0138B180. Never
+// clear a queue/count ourselves or complete a merely joined/loading member.
+void CompleteBbscResidentSummons(u64 status) {
+    if (!BbscHuntersEnabled() || image_base == 0 || BbscQuitInProgress() ||
+        BbscReturningToTitle() || !ReadablePointer(status, 0x218)) return;
+    const u64 queued = ReadValue<u64>(status, 0x1C8);
+    if (queued == 0 || queued > 4) return;
+    const u64 session = GetMatchingState();
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(session, 0x128) || ReadValue<s32>(session, 0x124) != 3 ||
+        !ReadablePointer(global, 0x1593) || ReadValue<u8>(global, 8) != 0 ||
+        ReadValue<u8>(global, 0x1592) == 0 ||
+        GetCharacterHp(GetLocalPlayerCharacter()) <= 0) return;
+    constexpr u64 completion_offset = 0x01877D00;
+    constexpr std::array<u8, 6> signature{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
+    if (!ReadablePointer(image_base + completion_offset, signature.size()) ||
+        std::memcmp(reinterpret_cast<const void*>(image_base + completion_offset),
+                    signature.data(), signature.size()) != 0) return;
+    const u64 world = ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0);
+    if (!ReadablePointer(world, 0x68)) return;
+    const s32 count = ReadValue<s32>(world, 0x30);
+    const u64 entries = ReadValue<u64>(world, 0x38);
+    if (count <= 0 || count > 64 || !ReadablePointer(entries, count * 0x38)) return;
+    using Equals = bool PS4_SYSV_ABI (*)(u64, u64);
+    using Data = u64 PS4_SYSV_ABI (*)(u64);
+    using Complete = void PS4_SYSV_ABI (*)(u64, s32);
+    const auto equals = reinterpret_cast<Equals>(image_base + MemberIdEqualsOffset);
+    const auto complete = reinterpret_cast<Complete>(image_base + completion_offset);
+    for (const u64 task : GetMultiPlayerInsTasks()) {
+        if (!ReadablePointer(task, 0xEE) || ReadValue<s32>(task, 0xE8) != 1 ||
+            ReadValue<s32>(task, 0x50) != 6 || ReadValue<s32>(task, 0x54) != 6 ||
+            (ReadValue<u8>(task, 0xED) & 0xA) != 8 ||
+            !IsValidMemberId(task + 0xC8)) continue;
+        const auto slot = GetMemberSlotInfo(task);
+        if (slot.type != 1 || (slot.role != 7 && slot.role != 21 && slot.role != 22 &&
+                              slot.role != 23 && slot.role != 24)) continue;
+        for (s32 i = 0; i < count; ++i) {
+            const u64 player = ReadValue<u64>(entries, i * 0x38);
+            if (!ReadablePointer(player, 0x400) || GetCharacterType(player) != 1 ||
+                GetCharacterHp(player) <= 0 || !IsValidMemberId(player + 0x3D8) ||
+                !equals(player + 0x3D8, task + 0xC8)) continue;
+            const u64 vtable = ReadValue<u64>(player, 0);
+            if (!ReadablePointer(vtable, 0x1D0)) continue;
+            const u64 getter = ReadValue<u64>(vtable, 0x1C8);
+            if (!ReadablePointer(getter, 1)) continue;
+            const u64 data = reinterpret_cast<Data>(getter)(player);
+            if (!ReadablePointer(data, 0x698)) continue;
+            const u64 user = ReadValue<u64>(data, 0x688);
+            const u64 character = ReadValue<u64>(data, 0x690);
+            if (user == 0) continue;
+            const u64 head = ReadValue<u64>(status, 0x1C0);
+            if (!ReadablePointer(head, 0x18)) continue;
+            u64 node = ReadValue<u64>(head, 0);
+            bool matched = false;
+            for (u32 guard = 0; guard < 4 && node != head; ++guard) {
+                if (!ReadablePointer(node, 0x18)) break;
+                const u64 request = ReadValue<u64>(node, 0x10);
+                if (!ReadablePointer(request, 0x68)) break;
+                const u8 role = ReadValue<u8>(request, 8);
+                if (role == slot.role && ReadValue<u64>(request, 0x58) == user &&
+                    ReadValue<u64>(request, 0x60) == character) { matched = true; break; }
+                node = ReadValue<u64>(node, 0);
+            }
+            if (!matched) continue;
+            const u64 before = ReadValue<u64>(status, 0x1C8);
+            complete(status, ReadValue<s32>(data, 0x10));
+            const u64 after = ReadValue<u64>(status, 0x1C8);
+            if (after < before) {
+                LOG_INFO(Debug, "BBSC matchmaking: resident guest completed native summon request "
+                         "(role {}, queued {} -> {})", slot.role, before, after);
+            }
+        }
+    }
+}
+
 // Observe the native gates before the delay hook edits R13. This does not
 // change readiness, pending-state ownership or request capacity.
 void TraceBbscSummonSelection(const GuestRegisterSnapshot* registers) {
-    if (!registers || !BbscHuntersEnabled() || registers->rbp < 0x110 ||
+    if (!registers || !BbscHuntersEnabled() || registers->rbp < 0x6F0 ||
         !ReadablePointer(registers->rbp - 0x110, 0x2C) ||
-        !ReadablePointer(registers->rax, 0x1CC)) return;
+        !ReadablePointer(registers->rbp - 0x6F0, 8) ||
+        !ReadablePointer(registers->rax, 0x1B0)) return;
+    const u64 status = ReadValue<u64>(registers->rbp - 0x6F0, 0);
+    if (!ReadablePointer(status, 0x218)) return;
     const u64 head = ReadValue<u64>(registers->rax, 0x1A8);
     if (!ReadablePointer(head, 8) || ReadValue<u64>(head, 0) == head) return;
     const std::array<u32, 7> key{
@@ -20685,7 +20766,7 @@ void TraceBbscSummonSelection(const GuestRegisterSnapshot* registers) {
         ReadValue<u32>(registers->rbp - 0x110, 0x10),
         ReadValue<u32>(registers->rbp - 0x110, 0x1C),
         ReadValue<u32>(registers->rbp - 0x110, 0x28),
-        ReadValue<u32>(registers->rax, 0x1C8)};
+        ReadValue<u32>(status, 0x1C8)};
     static thread_local std::array<u32, 7> previous{};
     static thread_local bool observed = false;
     if (observed && key == previous) return;
@@ -21014,6 +21095,9 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     BbscPerfScope perf_scope{perf_site};
 
     const auto& site = Sites[tag];
+    if (site.offset == SosStatusUpdateOffset) {
+        CompleteBbscResidentSummons(registers->rdi);
+    }
     if (site.offset == 0x01873269) {
         TraceBbscSummonSelection(registers);
     }

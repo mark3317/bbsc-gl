@@ -1,3 +1,17 @@
+## 03.11.2026 — resident summon queue completion; ready for build
+
+Latest17:44 run still blocks next guest despite open role mask. P2/P3/P1 finally
+show3 actors at17:54:50 after a long delay with first guest still present. Added
+host-only native identity-bound completion18777D00 for an already created,
+arrived6/6 cooperative insertion task and matching live actor/full user+character
+identity. Original destructor/unlink/count/backoff own completion; unfinished and
+foreign requests remain. Corrected queue diagnostic to SosStatus[rbp-6F0], not
+candidate manager. Direct queue removal/parallel-request bypass rejected: native
+has one active request/result context and live+queued admission reservations.
+Production policy + exact native completion and gate fixture PASS, five roles,
+unrelated pending retained,21 rejection cases; full game TU syntax PASS.
+Build/deploy/gameplay pending. See fixes/2026-11-03-resident-summon-request.md.
+
 ## 03.11.2026 — 17:16 second guest review: residual native co-op masks
 
 Individual joins and Blank host release confirmed in the new run, but a waiting
