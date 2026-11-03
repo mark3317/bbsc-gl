@@ -296,7 +296,7 @@ struct WideEdit {
     Group group;
 };
 
-constexpr std::array<WideEdit, 11> WideEdits{{
+constexpr std::array<WideEdit, 13> WideEdits{{
     // Every blood echo reward the local player receives is computed by 0x01335400 and left in a
     // float at [[0x0553B130]+8]+0xF8. Halfway through:
     //     MOV EAX, dword ptr [R15 + 0x78]    ; the local player's character type
@@ -380,6 +380,13 @@ constexpr std::array<WideEdit, 11> WideEdits{{
      Group::Hunters},
     {"Hunters.CoopMaskSelect", 0x01879383, {0x7F, 0xFF, 0xF7, 0xFF}, {0xFF, 0xFF, 0xFF, 0xFF},
      Group::Hunters},
+    // The same two slot states also gate covenant co-op masks (bits 21..23).
+    // Relaxing only the earlier 0xFFF7FF7F leaves these signs unselectable.
+    // Preserve the separate PvP masks and the builder's member/queued-request caps.
+    {"Hunters.CovenantCoopMaskSearch", 0x01873086, {0xFF, 0xFF, 0x1F, 0xFF},
+     {0xFF, 0xFF, 0xFF, 0xFF}, Group::Hunters},
+    {"Hunters.CovenantCoopMaskSelect", 0x018793B9, {0xFF, 0xFF, 0x1F, 0xFF},
+     {0xFF, 0xFF, 0xFF, 0xFF}, Group::Hunters},
 }};
 
 // Function entries replaced by a jmp to a sibling function with the same arguments.
