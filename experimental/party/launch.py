@@ -1,5 +1,5 @@
 """Executed by the existing frozen BBGL --script role; stays alive around run.py."""
-import __main__ as bbgl
+bbgl = BBGL_RUNTIME  # retained launcher module, before runpy replaces __main__
 import os,runpy,sys
 from pathlib import Path
 port=Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(__file__).resolve().parents[4]
@@ -9,7 +9,8 @@ settings.update(game_dir=os.environ['BB_PARTY_GAME'],user_dir=str(profile/'user'
                 player_name=os.environ['BB_PARTY_MEMBER'],mods_enabled=True)
 env=bbgl.game_environment(settings)
 env.update(BB_PARTY_CONFIG=os.environ['BB_PARTY_CONFIG'],BB_PARTY_MEMBER=os.environ['BB_PARTY_MEMBER'],
-           BBGL_PROFILE_DIR=str(profile),BB_DATA_DIR=str(profile),BBSC_SAVE_DIR=str(profile/'seed/SPRJ0005'))
+           BBGL_PROFILE_DIR=str(profile),BB_DATA_DIR=str(profile),BB_CONFIG=str(profile/'bbport.ini'),
+           BB_MODS_CONFIG=str(profile/'mods.json'),BB_PATCHES_CONFIG=str(profile/'patches.json'),BBSC_SAVE_DIR=str(profile/'seed/SPRJ0005'))
 os.environ.update(env)
 sys.argv=[str(port/'run.py')]
 runpy.run_path(str(port/'run.py'),run_name='__main__')

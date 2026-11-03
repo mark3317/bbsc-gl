@@ -121,6 +121,18 @@ class Tests(unittest.TestCase):
         self.assertNotIn('error',c.op('room_leave')); self.assertNotIn('error',a.op('room_leave'))
         self.assertNotIn('error',a.op('release')); self.assertEqual(c.op('acquire').get('result'),2)
         self.settled()
+    def test_network_rejects_wrong_group_sender_mac_and_generation(self):
+        import hashlib,hmac,struct
+        from engine import canonical
+        a,b=self.group(2); cfg=json.loads(self.file.read_text()); before=b.state()['state']
+        base={'group':cfg['group'],'from':'A','type':'relay','generation':99,'incarnation':1,'seq':1,'data':'b2xk'}
+        variants=[dict(base,group='another-group'),dict(base,**{'from':'Outsider'}),dict(base)]
+        for i,msg in enumerate(variants):
+            msg['mac']=hmac.new(bytes.fromhex(cfg['secret']),canonical(msg),hashlib.sha256).hexdigest() if i!=2 else '0'*64
+            with socket.create_connection(('127.0.0.1',cfg['members'][1]['port']),timeout=2) as sock:
+                raw=canonical(msg); sock.sendall(struct.pack('<I',len(raw))+raw)
+        a.call('inject',target='B',message={k:v for k,v in base.items() if k not in ('group','from')})
+        time.sleep(.3); self.assertEqual(b.state()['state'],before); self.assertEqual(b.call('received')['frames'],[])
     def test_stale_generations_and_wrong_coordinator(self):
         from engine import transition
         a,b=self.group(2); base=a.state()['state']

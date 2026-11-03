@@ -64,9 +64,19 @@ class CompatibilityTests(ProcessTests):
                 for _ in expected:
                     length,=struct.unpack('<I',recv_exact(rb,4)); actual.append(recv_exact(rb,length))
                 self.assertEqual(actual,expected) # Same-type multipart snapshots remain byte-exact.
+            self.np_call(sa,115,'SendRoomMessageRequest',{'room_id':room_id,'cast_type':1,'msg':b'native-room-message'},'SendRoomMessageReply')
+            kind,code,size,ident=struct.unpack('<BHIQ',recv_exact(sb,15)); notification=recv_exact(sb,size-15)
+            self.assertEqual((kind,code),(2,11)); self.assertEqual(decode('NotifyRoomMessage',notification[4:])['msg'],b'native-room-message')
             # Replacing a local native connection and closing the old one must not leave.
-            replacement=self.np_connect(b,'B'); sb.close(); time.sleep(.2)
+            replacement=self.np_connect(b,'B')
+            sb.sendall(packet(0,103,88,blob(encode('LeaveRoomRequest',{'room_id':room_id}))))
+            sb.close(); time.sleep(.2)
             self.assertIn('B',a.state()['state']['joined'])
+            self.np_call(sa,110,'KickoutRoomMemberRequest',{'room_id':room_id,'target_member_id':joined['member_id']},'KickoutRoomMemberReply')
+            self.assertIn('B',a.state()['state']['joined']) # native teardown still has to acknowledge
+            kind,code,size,ident=struct.unpack('<BHIQ',recv_exact(replacement,15)); notification=recv_exact(replacement,size-15)
+            event=decode('NotifyRoomEvent',notification[4:]); self.assertEqual(event['event'],0x1103)
+            self.assertEqual(event['error_code'],0xFF000019)
             self.np_call(replacement,103,'LeaveRoomRequest',{'room_id':room_id},'LeaveRoomReply'); replacement.close()
             self.np_call(sa,103,'LeaveRoomRequest',{'room_id':room_id},'LeaveRoomReply')
         self.http(a,'/party/native',{'state':3,'loading':False,'bell':True},True)

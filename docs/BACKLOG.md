@@ -1,3 +1,20 @@
+## 03.11.2026 — serverless-party, эксперимент подготовлен к игре
+
+Отдельный parent worktree `bloodborne_pc-serverless-party`, ветки
+`experiment/serverless-party` родителя и подмодуля. База 572e066/151e24c +
+скопированные локальные правки, исходные деревья сохранены; чужие правки
+не включены в коммиты эксперимента. Протокол unanimity + durable journal,
+независимые процессы, embedded compatibility в существующем runner BBGL,
+нативные bell gates до side effects, сохранённый direct VPN UDP.
+10 сценариев процессов, adapter/WinHTTP/trampoline/menu-exit проверки PASS;
+DLL и frozen launcher build exit=0. Отдельные тестовые установки ПК+ноут,
+копии start-clinic-teststart, LAN invitation; основные сейвы/установки/VPS/
+роутер/firewall не менялись. Игры не запускались, **игрового подтверждения нет**.
+Сценарий, пути и границы: [отчёт родителя](../../../docs/experiments/serverless-party.md)
+и [протокол](../experimental/party/PROTOCOL.md). ACK сетевого компонента не
+означает exactly-once применение игровых эффектов после краша; VPN/NAT между
+разными провайдерами и каталог чаш ещё не проверены/не перенесены.
+
 ## 2026-11-02 — black fade restored for deaths without reload (source only)
 
 Restored native SprjFade black curtain around in-place co-op respawn: 0.6s

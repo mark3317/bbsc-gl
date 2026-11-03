@@ -87,3 +87,25 @@ Protocol tests, adapter tests, successful builds and gameplay are different clai
 Two LAN devices do not prove cross-provider NAT/VPN behavior. Game confirmation
 must include concurrent bells, cancellation, guest join/leave, host alternation and
 recovery on isolated profiles. Never run games automatically for this experiment.
+
+## Implementation notes after targeted verification
+
+Explicit cancellation uses a monotonic native cancel counter (Blank, ringing bell,
+search cancellation, confirmed menu quit). Idle/death/loading alone do not release.
+A current native process has an exclusive Windows identity mutex; transport bind
+is also exclusive. Startup recovery may acknowledge quiescence of a prior native
+incarnation only after a fresh report from the new exclusive game process.
+Native kick retains a departing-member barrier until explicit leave/idle recovery.
+Source-IP bind pins outgoing control traffic to the invitation's interface.
+Request results retain a bounded 32-entry per-member cache so overlapping completion
+observers cannot lose an earlier ACK. Matching2 messages use native callback shapes.
+
+First-stage ACK is transport ingress, not a transaction with the native game. A
+receiver crash between receipt and application may lose the application; reconnect
+requires ordinary BBSC state resynchronization. Exactly-once game effects across
+crashes are not claimed. No WorldFlags chunk is coalesced by message type.
+
+The prepared two-device run uses LAN addresses. The same explicit endpoint format
+accepts VPN IPv4 addresses, but cross-provider VPN reachability/NAT fallback and
+native gameplay remain unverified. First-stage private ancillary APIs return empty
+social lists and do not implement the chalice catalog.

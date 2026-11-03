@@ -60,7 +60,7 @@ def validate_invite(cfg):
 def initial(cfg):
     return {'revision': 0, 'epoch': cfg['epoch'], 'roster': [m['id'] for m in cfg['members']],
             'generation': 0, 'owner': None, 'room': None, 'joined': {}, 'pending': {},
-            'completed': {}}
+            'completed': {}, 'results': {}}
 
 def transition(state, sender, seq, op):
     """Pure transition. Exceptions reject a proposal, never advance a revision."""
@@ -112,13 +112,21 @@ def transition(state, sender, seq, op):
     elif kind == 'room_close':
         if sender != s['owner'] or not s['room']: raise ValueError('Not room owner')
         s['room']['closing'] = True
+    elif kind == 'kick':
+        target=op['target']
+        if sender!=s['owner'] or not s['room'] or target==sender or target not in s['room']['members']: raise ValueError('Invalid native kick')
+        s['room'].setdefault('departing',{})[target]=s['room']['members'].pop(target)
+    elif kind == 'room_message':
+        if not s['room'] or sender not in s['room']['members']: raise ValueError('Not in native room')
+        s['room']['message']=dict(op['message'],sender=sender,sequence=s['revision']+1)
     elif kind == 'room_leave':
-        if not s['room'] or sender not in s['room']['members']: raise ValueError('Not in room')
+        if not s['room'] or (sender not in s['room']['members'] and sender not in s['joined']): raise ValueError('Not in room')
         if sender == s['owner']:
             if s['joined'] or s['pending']: raise ValueError('Guests/admissions must drain first')
             s['room'] = None
         else:
-            s['room']['members'].pop(sender); s['joined'].pop(sender, None)
+            s['room']['members'].pop(sender,None); s['joined'].pop(sender, None)
+            s['room'].get('departing',{}).pop(sender,None)
     elif kind == 'room_update':
         if sender != s['owner'] or not s['room']: raise ValueError('Not room owner')
         s['room'].update({k: op[k] for k in ('bins', 'flags') if k in op})
@@ -133,6 +141,9 @@ def transition(state, sender, seq, op):
     else: raise ValueError('Unknown operation')
     s['revision'] += 1
     s['completed'][sender] = [seq, result]
+    results=s.setdefault('results',{}).setdefault(sender,{})
+    results[str(seq)]=result
+    while len(results)>32: del results[min(results,key=int)]
     return s
 
 class _Server(socketserver.ThreadingTCPServer):
@@ -229,8 +240,10 @@ class Engine:
         while time.monotonic() < deadline:
             with self.lock:
                 done = self.state['completed'].get(self.id)
-                if done and done[0] == seq and self.disk['final'] >= self.state['revision']:
-                    return done[1]
+                if done and self.disk['final'] >= self.state['revision']:
+                    results=self.state.get('results',{}).get(self.id,{})
+                    if str(seq) in results: return results[str(seq)]
+                    if done[0]==seq: return done[1]
                 if self.pending_local and self.pending_local.get('error'):
                     error = self.pending_local['error']; self.pending_local = None
                     raise ValueError(error)
