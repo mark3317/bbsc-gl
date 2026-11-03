@@ -10161,6 +10161,16 @@ void TickBbscPendingQuit() {
         if (ReadablePointer(pending.lua, 0x8E) && ReadValue<u8>(pending.lua, 0x8D) != 1)
             WriteValue<u8>(pending.lua, 0x8D, 1);
         if (GetSessionState() == 0 || GetSessionState() == 2 || GetSessionState() == 5) {
+#ifdef BBSC_MOD
+            if (!BbscMod::PartyTitleReady()) {
+                if (!pending.disconnect_warned && SteadyNowMs() - pending.started_ms >= 5'000) {
+                    pending.disconnect_warned = true;
+                    LOG_INFO(Debug, "BBSC quit: waiting for final party leave before title load");
+                }
+                return;
+            }
+            LOG_INFO(Debug, "BBSC quit: final party leave confirmed; permitting title load");
+#endif
             const u64 request = BbscEventRequestAddress();
             if (!request || !HasMemoryAccess(request, sizeof(s32), MemoryProt::CpuWrite)) {
                 CancelBbscPendingQuit("disconnected, but title request became unavailable");
@@ -10233,6 +10243,11 @@ void TickBbscPendingQuit() {
     pending.started_ms = SteadyNowMs();
     bbsc_quit_save_watch = false;
     PrepareBbscQuitToTitle(); // journals, explicit leave, native Stop; old session identity still valid
+#ifdef BBSC_MOD
+    // Arm a fresh confirmation even if native was already idle. A cached ACK
+    // from an earlier Blank/menu must never authorize this title transition.
+    BbscMod::PartyCancel();
+#endif
     LOG_INFO(Debug, "BBSC quit: native save completed; waiting for session state 0 before title exit");
 }
 
