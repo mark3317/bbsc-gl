@@ -83,6 +83,7 @@ class Compatibility:
         self.native_fresh=False; self.recovery_pending=bool(engine.state['owner']==engine.id or engine.id in engine.state['joined'] or engine.id in engine.state['pending'])
         self.release_intent=False; self.latest_cancel=0; self.cancel_floor=0; self.session_id=uuid.uuid4().hex
         self.local_status={'sign':None}
+        self.search_diagnostic=None
         self.logfile=engine.profile/'party-events.jsonl'; self.log_lock=threading.Lock()
         outer=self
         class NP(socketserver.BaseRequestHandler):
@@ -411,17 +412,31 @@ class Compatibility:
                 if pending and not (s['room'] and s['room'].get('closing')): result.update({k:v for k,v in pending['claim'].items() if k not in ('MessageId','ResKind')})
             elif kind=='get':
                 result['SummonDataList']=[]
+                diagnostic=[]
                 if s['owner']==who and self.e.finalized(s):
                     with self.e.lock: signs=copy.deepcopy(self.e.signs)
+                    diagnostic.extend((peer,'not_received') for peer in s['roster'] if peer!=who and peer not in signs)
                     for peer,entry in signs.items():
                         sign=entry['body'].get('sign')
-                        if peer==who or peer not in s['roster'] or peer in s['pending'] or peer in s['joined'] or not sign or time.monotonic()-entry['at']>12: continue
+                        reason=('self' if peer==who else 'outside_roster' if peer not in s['roster'] else
+                                'pending' if peer in s['pending'] else 'joined' if peer in s['joined'] else
+                                'no_sign' if not sign else 'stale' if time.monotonic()-entry['at']>12 else None)
+                        if reason:
+                            diagnostic.append((peer,reason)); continue
                         sign=dict(sign)
                         try:
                             data=bytearray(base64.b64decode(sign.get('SummonData','')))
                             if len(data)==224: data[0x79]=max(1,data[0x79]); sign['SummonData']=base64.b64encode(data).decode()
-                        except ValueError: continue
+                        except ValueError:
+                            diagnostic.append((peer,'invalid_base64')); continue
+                        diagnostic.append((peer,'returned',sign.get('AreaId'),len(data),
+                                           list(data[0x78:0x7b]) if len(data)==224 else []))
                         sign.pop('MessageId',None); result['SummonDataList'].append(sign)
+                snapshot=(s['owner'],self.e.finalized(s),diagnostic)
+                if snapshot!=self.search_diagnostic:
+                    self.search_diagnostic=copy.deepcopy(snapshot)
+                    self.log('sign_search',owner=s['owner'],finalized=snapshot[1],
+                             candidates=diagnostic,returned=len(result['SummonDataList']))
             elif kind=='request':
                 target=next((p for p in s['roster'] if self.game_ids[p]==int(body['TargetUserId'])),None)
                 if target is None: raise ValueError('Unknown claim target')
