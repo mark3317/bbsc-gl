@@ -327,6 +327,15 @@ class Compatibility:
                 if self.latest_cancel>self.cancel_floor: self.release_intent=True
                 if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
             return 1
+        if path=='/party/leave_ready':
+            with self.gate_lock, self.e.lock:
+                s=self.e.state; n=self.native; room=s['room'] or {}
+                seq=int(body.get('cancel_seq',0))
+                if seq<=0 or seq!=self.latest_cancel or seq!=n.get('cancel_seq'): return 0
+                if not self.native_fresh or n.get('loading',True) or n.get('state') not in (0,2,5) or n.get('bell'): return 0
+                if self.e.disk['final']!=s['revision'] or self.e.pending_local: return 0
+                if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return 0
+                return int(self.e.id not in room.get('members',{}) and self.e.id not in room.get('departing',{}))
         if path=='/party/can_beckon':
             s=self.state(); return int(self.e.id in s['roster'] and s['owner'] in (None,self.e.id) and self.e.disk['final']==s['revision'])
         if path=='/party/owner':

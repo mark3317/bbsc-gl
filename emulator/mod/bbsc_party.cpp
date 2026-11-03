@@ -22,7 +22,8 @@ bool ExclusiveNative() {
 std::atomic<unsigned> native{1u<<8};
 std::atomic<bool> can_beckon{false};
 std::atomic<unsigned> cancel_sequence{0};
-std::atomic<ULONGLONG> refreshed{0};
+std::atomic<ULONGLONG> refreshed{0}, leave_refreshed{0};
+std::atomic<unsigned> leave_confirmed{0};
 std::string Call(const wchar_t* path, const std::string& body, int timeout) {
     const char* port_text=std::getenv("BBSC_PARTY_PORT");
     const char* token=std::getenv("BBSC_PARTY_TOKEN");
@@ -71,6 +72,12 @@ bool PartyCanBeckon() {
     return !PartyEnabled() || (ExclusiveNative() && can_beckon.load() && GetTickCount64()-refreshed.load()<1500);
 }
 void PartyCancel() { if(PartyEnabled()) ++cancel_sequence; }
+bool PartyTitleReady() {
+    if(!PartyEnabled()) return true;
+    const unsigned cancel=cancel_sequence.load();
+    return ExclusiveNative() && cancel && leave_confirmed.load()==cancel &&
+           GetTickCount64()-leave_refreshed.load()<1500;
+}
 void PartyObserve(std::int32_t state,bool loading,bool bell) {
     if(PartyEnabled()) native=static_cast<unsigned>(state&255)|(loading?256u:0u)|(bell?512u:0u);
 }
@@ -79,11 +86,18 @@ void PartyMaintain() {
     static ULONGLONG last=0;
     const ULONGLONG now=GetTickCount64();
     if(now-last<250) return;
-    last=now; const unsigned value=native.load();
+    last=now; const unsigned value=native.load(), cancel=cancel_sequence.load();
     const std::string body="{\"state\":"+std::to_string(value&255)+",\"loading\":"+
         ((value&256)?"true":"false")+",\"bell\":"+((value&512)?"true":"false")+
-        ",\"cancel_seq\":"+std::to_string(cancel_sequence.load())+"}";
+        ",\"cancel_seq\":"+std::to_string(cancel)+"}";
     Call(L"/party/native",body,300);
+    if(cancel) {
+        const bool ready=Call(L"/party/leave_ready",body,300)=="1";
+        if(cancel_sequence.load()==cancel) {
+            leave_confirmed=ready?cancel:0;
+            leave_refreshed=GetTickCount64();
+        }
+    }
     const std::string result=Call(L"/party/can_beckon","{}",300);
     can_beckon=result=="1"; refreshed=GetTickCount64();
 }

@@ -14,6 +14,21 @@ int main(int argc,char** argv){
   BbscMod::PartyObserve(3,false,true); BbscMod::PartyMaintain(); Sleep(300);
   BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain(); return 0;
  }
+ if(argc>1 && std::string(argv[1])=="title"){
+  BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain();
+  if(BbscMod::PartyTitleReady()) return 8;
+  std::puts("waiting");std::fflush(stdout);
+  const auto end=GetTickCount64()+15000;
+  while(GetTickCount64()<end){
+   Sleep(50);BbscMod::PartyMaintain();
+   if(BbscMod::PartyTitleReady()){
+    BbscMod::PartyCancel();
+    if(BbscMod::PartyTitleReady())return 9;
+    std::puts("confirmed-and-old-ack-invalidated");return 0;
+   }
+  }
+  return 10;
+ }
  if(argc>1 && std::string(argv[1])=="hold"){
   BbscMod::PartyMaintain(); std::puts("ready"); std::fflush(stdout); Sleep(10000); return 0;
  }
@@ -21,6 +36,29 @@ int main(int argc,char** argv){
 }
 '''
 class BridgeTests(ProcessTests):
+ def test_native_title_waits_for_unanimous_leave(self):
+  a,b=self.group(2,compat=True)
+  self.assertNotIn('error',a.op('acquire'))
+  rid=a.op('room_create',room={'max_slots':5,'world':1,'bins':[],'flags':0,'member_bins':[]})['result']
+  a.op('claim',target='B',claim={});b.op('room_join',room_id=rid)
+  cpp=self.root/'title.cpp';exe=self.root/'title.exe';cpp.write_text(SOURCE)
+  subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-DFMT_HEADER_ONLY',
+    '-I',str(ROOT/'emulator/mod'),'-I',str(ROOT/'emulator/mod/shim'),'-I',str(ROOT/'emulator/externals/fmt/include'),
+    str(cpp),str(ROOT/'emulator/mod/bbsc_party.cpp'),'-lwinhttp','-o',str(exe)],check=True)
+  env=dict(os.environ);env.update(BBSC_PARTY='1',BBSC_PARTY_PORT=str(b.info['http']),BBSC_PARTY_TOKEN=b.info['token'],BBSC_PARTY_INSTANCE='title-'+uuid.uuid4().hex)
+  proc=subprocess.Popen([str(exe),'title'],env=env,stdout=subprocess.PIPE,text=True)
+  try:
+   self.assertEqual(proc.stdout.readline().strip(),'waiting')
+   b.call('block',peers=['A'])
+   ticket=b.send('command',op={'kind':'room_leave'})
+   time.sleep(.7);self.assertIsNone(proc.poll())
+   self.assertIn('B',a.state()['state']['joined'])
+   b.call('block',peers=[]);self.assertNotIn('error',b.get(ticket))
+   out,_=proc.communicate(timeout=6)
+   self.assertEqual(proc.returncode,0);self.assertIn('confirmed-and-old-ack-invalidated',out)
+  finally:
+   if proc.poll() is None:proc.kill();proc.wait()
+   proc.stdout.close()
  def test_actual_winhttp_and_native_process_fence(self):
   a,b=self.group(2,compat=True)
   cpp=self.root/'bridge.cpp'; exe=self.root/'bridge.exe'; cpp.write_text(SOURCE)
