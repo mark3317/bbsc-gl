@@ -19616,11 +19616,64 @@ void TickBbscHostSearchLimit() {
                  "host search ended");
 }
 
+// Native host Blank does not raise OnLeaveMagic and its SpEffect can be gone
+// before the next tick. Latch the actual local item entry instead.
+s64 bbsc_host_blank_requested_ms = 0;
+void ObserveBbscHostBlankItem(u32 goods) {
+    if (goods == 111 && GetSessionState() == 3 && !BbscQuitInProgress())
+        bbsc_host_blank_requested_ms = SteadyNowMs();
+}
+
+bool CloseBbscEmptyBlankHost(s64 requested_ms) {
+    if (!requested_ms || SteadyNowMs() - requested_ms < 3'000 ||
+        BbscQuitInProgress() || GetSessionState() != 3 || BbscInAnotherWorld()) return false;
+    const u64 global = GetGlobalState();
+    const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
+    const u64 player = GetLocalPlayerCharacter();
+    if (!ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 8) != 0 ||
+        ReadValue<u8>(global, 0x1592) == 0 || !ReadablePointer(manager, 0x128) ||
+        !player || GetCharacterHp(player) <= 0) return false;
+    const u64 world = ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0);
+    if (!ReadablePointer(world, 0x68) || ReadValue<u64>(world, 0x60) != player) return false;
+    const s32 count = ReadValue<s32>(world, 0x30);
+    const u64 entries = ReadValue<u64>(world, 0x38);
+    if (count <= 0 || count > 64 || !ReadablePointer(entries, static_cast<size_t>(count) * 0x38)) return false;
+    for (s32 i=0; i<count; ++i) {
+        const u64 chr = ReadValue<u64>(entries, static_cast<size_t>(i) * 0x38);
+        if (chr != 0 && chr != player) return false; // unreadable remote is not proof of an empty world
+    }
+    // A selected-member kick must leave any remaining guests in their session.
+    // Once empty, finish with the native Stop/remote-cleanup pair, without a
+    // stage/title request or suspending the host's kept-session patches.
+    if (BbscLocalEffectNode(9000) != 0 && !BbscEraseLocalEffect(9000)) return false;
+#ifdef BBSC_MOD
+    BbscMod::PartyCancel();
+#endif
+    SendBbscSessionLeave();
+    using Stop = u8 PS4_SYSV_ABI (*)(u64);
+    reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(manager);
+    CleanupBbscDepartingRemotes();
+    LOG_INFO(Debug, "BBSC leave: empty host room stopped after Blank; waiting for native idle and party release");
+    BBSC_TIMELINE("LEAVE", "empty host room stopped after Blank; waiting for native idle and party release");
+    return true;
+}
+
 void TickBbscHostBlank() {
     if (BbscQuitInProgress()) return; // title owns the host's load-wait restriction
-    static bool was = false;
-    const bool now = bbsc_duel_bell_ready && !bbsc_blank_effect_rows.empty() && GetSessionState() == 3 &&
-                     BbscLocalEffectActive(bbsc_blank_effect_rows);
+    static bool was = false, was_searching = false;
+    const u64 player = GetLocalPlayerCharacter();
+    const u64 host_global = GetGlobalState();
+    const bool ready_host = GetSessionState() == 3 && ReadablePointer(player, 0x498) &&
+        GetCharacterHp(player) > 0 && ReadablePointer(host_global, 0x1598) &&
+        ReadValue<u8>(host_global, 8) == 0 && ReadValue<u8>(host_global, 0x1592) != 0;
+    const bool searching = ready_host && BbscLocalEffectNode(9000) != 0;
+    const bool search_ended = ready_host && was_searching && !searching;
+    was_searching = searching; // loading/death never becomes an explicit cancellation
+    const bool item = ready_host && ReadValue<u32>(player, 0x1C0) == 111 &&
+                      ReadValue<u32>(player, 0x490) == 3;
+    const bool effect = ready_host && bbsc_duel_bell_ready && !bbsc_blank_effect_rows.empty() &&
+                        BbscLocalEffectActive(bbsc_blank_effect_rows);
+    const bool now = item || effect || search_ended;
     // Test 2026-10-06 (host abady): with the session patches suspended here, the room timeout 10 s
     // after the Blank (0x01789B60: hosting, alone, timer out -> CSMultiPlayMan::Stop) ran with the
     // stage Stop sites back to vanilla, a StageTransition followed and the host landed on the title
@@ -19628,12 +19681,16 @@ void TickBbscHostBlank() {
     // session state 0 cleanly, no load. The game's own Blank already removes the guests (and each
     // guest's "sent home" path suspends on the guest's side), so the host keeps its patches.
     static s64 blank_ms = 0;
+    if (bbsc_host_blank_requested_ms != 0) {
+        blank_ms = bbsc_host_blank_requested_ms;
+        bbsc_host_blank_requested_ms = 0;
+    }
     if (now && !was) {
         blank_ms = SteadyNowMs();
-        LOG_INFO(Debug, "BBSC leave: host leave (Blank, guest leave or session end) - the guests go home, the "
-                        "host's room closes on its own timeout (session patches stay on)");
-        BBSC_TIMELINE("LEAVE", "leave: host leave (Blank, guest leave or session end) - the guests go home, the "
-                        "host's room closes on its own timeout (session patches stay on)");
+        LOG_INFO(Debug, "BBSC leave: host Blank/search end observed (item {}, effect {}, search ended {}); empty room will stop natively",
+                 item, effect, search_ended);
+        BBSC_TIMELINE("LEAVE", "host Blank/search end observed (item {}, effect {}, search ended {}); empty room will stop natively",
+                      item, effect, search_ended);
     }
     was = now;
     // Test 2026-10-08 (abood host): after his Blank "he couldn't use anything until he exited, then
@@ -19647,12 +19704,17 @@ void TickBbscHostBlank() {
         const u64 global = GetGlobalState();
         const u64 lua_man = ReadValue<u64>(image_base + 0x0553B0C8, 0);
         const u64 lua = ReadablePointer(lua_man, 0x10) ? ReadValue<u64>(lua_man, 8) : 0;
+        CloseBbscEmptyBlankHost(blank_ms);
         if (t - blank_ms > 120'000) {
             blank_ms = 0;
         } else if (GetSessionState() == 0 && ReadablePointer(global, 0x1598) &&
-                   ReadValue<u8>(global, 0x1592) != 0 && ReadValue<u8>(global, 0x08) == 0 &&
-                   ReadablePointer(lua, 0x90) && ReadValue<u8>(lua, 0x8D) != 0) {
-            WriteValue<u8>(lua, 0x8D, 0);
+                   ReadValue<u8>(global, 0x1592) != 0 && ReadValue<u8>(global, 0x08) == 0) {
+            if (BbscLocalEffectNode(9000) != 0 && !BbscEraseLocalEffect(9000)) return;
+#ifdef BBSC_MOD
+            BbscMod::PartyCancel();
+#endif
+            if (ReadablePointer(lua, 0x90) && ReadValue<u8>(lua, 0x8D) != 0)
+                WriteValue<u8>(lua, 0x8D, 0);
             blank_ms = 0;
             LOG_INFO(Debug, "BBSC leave: the host's Blank left the game waiting for a load that never "
                             "comes (Lua +0x8D) - lifted, the host can act again");
@@ -20935,6 +20997,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         if (registers && registers->rdi == GetLocalPlayerCharacter()) {
             const u32 goods = static_cast<u32>(registers->rsi) & 0x0FFFFFFFu;
             if (goods == 111 || goods == 201) BbscMod::PartyCancel();
+            ObserveBbscHostBlankItem(goods);
         }
         if (registers && (static_cast<u32>(registers->rsi) & 0x0FFFFFFFu) == 200u &&
             registers->rdi == GetLocalPlayerCharacter() && !BbscMod::PartyAcquire()) {
