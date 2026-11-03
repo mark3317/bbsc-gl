@@ -25,6 +25,31 @@ class RPCTests(CompatibilityTests):
             b.call('block',peers=[]);self.assertNotIn('error',b.get(ticket))
             self.assertEqual(tick(3,True),'0 3')
         finally:connection.close()
+    def test_host_menu_retained_bell_waits_for_guest_then_releases(self):
+        a,b=self.group(2,compat=True)
+        self.http(a,'/party/acquire',control=True)
+        with self.np_connect(a,'A') as sa,self.np_connect(b,'B') as sb:
+            rid=self.np_call(sa,101,'CreateRoomRequest',{'max_slots':5},'CreateRoomReply')['room_id']
+            a.op('claim',target='B',claim={});self.np_call(sb,102,'JoinRoomRequest',{'room_id':rid},'JoinRoomReply')
+            body={'state':0,'loading':False,'bell':True,'cancel_seq':1,'await_title':False}
+            self.http(a,'/party/tick',body,True);time.sleep(.15)
+            self.assertEqual(a.state()['state']['owner'],'A') # ringing/idle alone is not enough
+            body['await_title']=True;body['loading']=True
+            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
+            body['loading']=False
+            self.np_call(sa,103,'LeaveRoomRequest',{'room_id':rid},'LeaveRoomReply')
+            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
+            self.assertIn('B',a.state()['state']['joined'])
+            self.np_call(sb,103,'LeaveRoomRequest',{'room_id':rid},'LeaveRoomReply')
+            end=time.monotonic()+5;answer=b''
+            while time.monotonic()<end:
+                answer=self.http(a,'/party/tick',body,True)
+                if answer==b'1 1':break
+                time.sleep(.05)
+            self.assertEqual(answer,b'1 1')
+            self.assertIsNone(a.state()['state']['owner']);self.assertIsNone(a.state()['state']['room'])
+            body['cancel_seq']=2;body['loading']=True
+            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
     def test_private_http_backlog_capacity(self):
         from compat import Compatibility
         from engine import Engine,invite

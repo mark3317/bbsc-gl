@@ -306,7 +306,7 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         BbscMod::ReceiveRegisterKill(sender, session, frame.data(), static_cast<u32>(frame.size()));
     } else if (frame[4] == SessionLeaveType && frame.size() == 5 && session != 0 && session == SessionKey()) {
         BbscMod::ForgetSessionRegister(sender);
-        Core::Bloodborne::OnBbscPeerLeft(sender, from_our_host());
+        Core::Bloodborne::OnBbscExplicitSessionLeave(sender, from_our_host());
     } else if (frame[4] == FollowType && frame.size() >= 0x1E) {
         FollowPacket follow{};
         std::memcpy(&follow, frame.data(), std::min(frame.size(), sizeof(follow)));
