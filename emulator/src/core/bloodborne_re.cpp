@@ -10039,7 +10039,14 @@ void HoldBbscQuitCharacter(const BbscPendingQuit& q) {
 void PS4_SYSV_ABI BbscQuitMovementHook(u64, const GuestRegisterSnapshot* registers) {
     if (!registers) return;
     const auto& q = bbsc_pending_quit.global ? bbsc_pending_quit : bbsc_title_quit;
-    if (q.global && registers->r12 == q.character_control) HoldBbscQuitCharacter(q);
+    if (!q.global || GetGlobalState() != q.global || registers->r12 != q.character_control ||
+        GetLocalPlayerCharacter() != q.character ||
+        ReadValue<u64>(q.character, 0x58) != q.character_control) return;
+    HoldBbscQuitCharacter(q);
+    // Native 01513EE5 lets r14b override DisableMove and forces both movement
+    // permissions to one. Clear that frame-local override during confirmed quit,
+    // so the same native disabled branch applies to host and guest through title.
+    const_cast<GuestRegisterSnapshot*>(registers)->r14 &= ~u64{0xFF};
 }
 
 void RestoreBbscQuitControls(const BbscPendingQuit& pending) {

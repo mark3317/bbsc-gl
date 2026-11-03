@@ -32,7 +32,7 @@ using s32=int32_t; using s64=int64_t;
 #define LOG_INFO(...)
 #define LOG_ERROR(...)
 
-struct GuestRegisterSnapshot { u64 rax=0, rbx=0, r12=0; };
+struct GuestRegisterSnapshot { u64 rax=0, rbx=0, r12=0, r14=0; };
 namespace MemoryProt { constexpr int CpuWrite=1; }
 u64 image_base=0x100000, world=0x200000, menu=0x300000, manager=0x400000;
 constexpr u64 MenuManPointerOffset=0x80, MatchingStatePointerOffset=0x88, SprjLuaEventManPointerOffset=0x90;
