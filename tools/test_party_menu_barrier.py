@@ -6,6 +6,7 @@ source=source.replace('#define PS4_SYSV_ABI',"""#define BBSC_MOD
 namespace BbscMod {
 bool party_ready=true;
 void PartyCancel() {}
+void PartyEndTitleWait() {}
 bool PartyTitleReady() {return party_ready;}
 }
 #define PS4_SYSV_ABI""")

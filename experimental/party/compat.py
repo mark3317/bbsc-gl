@@ -48,6 +48,9 @@ def recv_exact(sock,size,*,idle=False,deadline=None,budget=10,stopped=None):
         out.extend(part)
     return bytes(out)
 
+class PrivateHTTPServer(http.server.ThreadingHTTPServer):
+    request_queue_size=128
+
 class TcpServer(socketserver.ThreadingTCPServer):
     allow_reuse_address=True; daemon_threads=True
 
@@ -76,7 +79,7 @@ class Compatibility:
         self.np_lock=threading.Lock(); self.np_operation_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
         self.native={'state':0,'loading':True,'bell':False}; self.observed=False
         self.gate_lock=threading.Lock(); self.closed=False; self.relay_id=0; self.native_bindings={}
-        self.previous=copy.deepcopy(engine.state)
+        self.previous=copy.deepcopy(engine.state); self.maintenance_seq=None
         self.native_fresh=False; self.recovery_pending=bool(engine.state['owner']==engine.id or engine.id in engine.state['joined'] or engine.id in engine.state['pending'])
         self.release_intent=False; self.latest_cancel=0; self.cancel_floor=0; self.session_id=uuid.uuid4().hex
         self.local_status={'sign':None}
@@ -136,6 +139,9 @@ class Compatibility:
                 self.stun.close(); self.np_server.server_close()
         else: raise OSError('Cannot reserve native compatibility ports')
         class HTTP(http.server.BaseHTTPRequestHandler):
+            protocol_version='HTTP/1.1'
+            def setup(self):
+                super().setup(); self.connection.settimeout(5)
             def log_message(self,*args): pass
             def do_GET(self): self.respond()
             def do_POST(self): self.respond()
@@ -159,7 +165,7 @@ class Compatibility:
                 except (ValueError,KeyError,TimeoutError) as ex:
                     outer.log('http_reject',path=self.path,reason=str(ex)); self.send_error(409)
                 except (OSError,EOFError): pass
-        self.http=http.server.ThreadingHTTPServer(('127.0.0.1',0),HTTP)
+        self.http=PrivateHTTPServer(('127.0.0.1',0),HTTP)
         self.http_port=self.http.server_address[1]
         class Relay(socketserver.BaseRequestHandler):
             def handle(self):
@@ -183,13 +189,39 @@ class Compatibility:
                             if raw[:5]!=b'SHAD\x40': return
                             native_id,=struct.unpack('<I',raw[5:9])
                             outer.relay_id=native_id
-                            if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]},relay_recipients(raw,engine.snapshot()['state'],engine.id))
+                            if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]},outer.relay_targets(raw))
                 except (OSError,EOFError,ValueError): pass
                 finally:
                     with outer.relay_lock:
                         if gen==outer.relay_generation: outer.relay_sock=None
         self.relay_server=TcpServer(('127.0.0.1',0),Relay)
         self.relay_port=self.relay_server.server_address[1]
+    def relay_targets(self,raw):
+        with self.e.lock:return relay_recipients(raw,self.e.state,self.e.id)
+    def maintain_command(self,kind):
+        with self.e.lock:
+            if self.maintenance_seq is None and not self.e.pending_local:
+                self.maintenance_seq=self.e.request({'kind':kind})
+    def relay_loop(self):
+        while not self.closed:
+            try:sender,raw,binding=self.e.relay_in.get(timeout=.05)
+            except queue.Empty:
+                if self.e.relay_error:
+                    with self.relay_lock:
+                        if self.relay_sock:
+                            try:self.relay_sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:pass
+                continue
+            if len(raw)<18 or raw[:5]!=b'SHAD\x40':continue
+            native_id,=struct.unpack('<I',raw[5:9]);connection=tuple(binding.get('connection',[]))
+            if len(connection)!=2 or native_id!=binding.get('native_id'):continue
+            previous=self.native_bindings.get(sender)
+            if previous and (connection<previous[0] or (connection==previous[0] and native_id!=previous[1])):continue
+            self.native_bindings[sender]=(connection,native_id)
+            with self.relay_lock:
+                if self.relay_sock:
+                    try:self.relay_sock.sendall(blob(raw))
+                    except OSError:pass
     def log(self,event,**fields):
         with self.log_lock:
             with self.logfile.open('a',encoding='utf-8') as f:
@@ -197,6 +229,7 @@ class Compatibility:
     def start(self):
         for server in (self.np_server,self.http,self.relay_server): threading.Thread(target=server.serve_forever,daemon=True).start()
         threading.Thread(target=self.stun_loop,daemon=True).start()
+        threading.Thread(target=self.relay_loop,daemon=True).start()
         threading.Thread(target=self.monitor,daemon=True).start()
         self.log('start',group=self.e.cfg['group'],revision=self.e.state['revision'])
         return self
@@ -205,7 +238,8 @@ class Compatibility:
         for server in (self.np_server,self.http,self.relay_server): server.shutdown(); server.server_close()
         self.stun.close(); self.e.close()
     def publish(self): self.e.publish(self.local_status)
-    def state(self): return self.e.snapshot()['state']
+    def state(self):
+        with self.e.lock:return copy.deepcopy(self.e.state)
     def command(self,kind,**kw):
         seq=self.e.request(dict(kw,kind=kind)); return self.e.wait(seq,8)
     def member_data(self,who,m):
@@ -245,7 +279,7 @@ class Compatibility:
             return {'target_npid':target,'target_ip':m['host'],'target_port':m['p2p'],
                     'target_member_id':s['room']['members'].get(target,{}).get('slot',0) if s['room'] else 0}
         if cmd==101:
-            if s['owner']!=who or self.e.disk['final']!=s['revision']: raise ValueError('Bell role not finalized')
+            if s['owner']!=who or not self.e.finalized(s): raise ValueError('Bell role not finalized')
             self.command('room_create',room={'max_slots':min(5,r.get('max_slots',5)),'world':r.get('world_id',1),
                 'flags':r.get('flags',0),'bins':json_bins(r.get('internal_bin_attrs',[])),
                 'member_bins':json_bins(r.get('member_bin_attrs',[]))})
@@ -304,14 +338,19 @@ class Compatibility:
         with self.gate_lock, self.e.lock:
             s=self.e.state; n=self.native; room=s['room'] or {}
             if not self.release_intent or not self.native_fresh or self.recovery_pending: return
-            if self.e.disk['final']!=s['revision'] or self.e.pending_local: return
+            if not self.e.finalized(s) or self.e.pending_local: return
             if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return
             if self.e.id in room.get('members',{}) or self.e.id in room.get('departing',{}): return
             if n.get('loading',True) or n.get('state') not in (0,2,5) or n.get('bell'): return
             self.cancel_floor=self.latest_cancel; self.release_intent=False; self.observed=False
-            self.log('guest_cancel_retired',cancel_seq=self.cancel_floor,revision=s['revision'])
+            retired=self.cancel_floor;saved_revision=s['revision']
+        self.log('guest_cancel_retired',cancel_seq=retired,revision=saved_revision)
 
     def control(self,path,body):
+        if path=='/party/tick':
+            self.control('/party/native',body)
+            ready=self.control('/party/leave_ready',body) if body.get('await_title') else 0
+            return f"{self.control('/party/can_beckon',{})} {int(body.get('cancel_seq',0)) if ready else 0}"
         if path=='/party/acquire':
             with self.gate_lock:
                 s=self.state()
@@ -319,7 +358,7 @@ class Compatibility:
                 if s['owner'] is None:
                     self.command('acquire'); self.observed=False; self.release_intent=False; self.cancel_floor=self.latest_cancel
                 s=self.state()
-                return int(s['owner']==self.e.id and self.e.disk['final']==s['revision'])
+                return int(s['owner']==self.e.id and self.e.finalized(s))
         if path=='/party/native':
             with self.gate_lock:
                 self.native=body; self.native_fresh=True
@@ -333,13 +372,17 @@ class Compatibility:
                 seq=int(body.get('cancel_seq',0))
                 if seq<=0 or seq!=self.latest_cancel or seq!=n.get('cancel_seq'): return 0
                 if not self.native_fresh or n.get('loading',True) or n.get('state') not in (0,2,5) or n.get('bell'): return 0
-                if self.e.disk['final']!=s['revision'] or self.e.pending_local: return 0
+                if not self.e.finalized(s) or self.e.pending_local: return 0
                 if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return 0
                 return int(self.e.id not in room.get('members',{}) and self.e.id not in room.get('departing',{}))
         if path=='/party/can_beckon':
-            s=self.state(); return int(self.e.id in s['roster'] and s['owner'] in (None,self.e.id) and self.e.disk['final']==s['revision'])
+            with self.e.lock:
+                s=self.e.state
+                return int(self.e.id in s['roster'] and s['owner'] in (None,self.e.id) and self.e.finalized(s))
         if path=='/party/owner':
-            s=self.state(); return int(s['owner']==self.e.id and self.e.disk['final']==s['revision'])
+            with self.e.lock:
+                s=self.e.state
+                return int(s['owner']==self.e.id and self.e.finalized(s))
         raise ValueError('Unknown local control')
     def ss_info(self):
         text=Path(__file__).with_name('ss_info_template.xml').read_text(encoding='utf-8-sig')
@@ -362,7 +405,7 @@ class Compatibility:
                 if pending and not (s['room'] and s['room'].get('closing')): result.update({k:v for k,v in pending['claim'].items() if k not in ('MessageId','ResKind')})
             elif kind=='get':
                 result['SummonDataList']=[]
-                if s['owner']==who and self.e.disk['final']==s['revision']:
+                if s['owner']==who and self.e.finalized(s):
                     with self.e.lock: signs=copy.deepcopy(self.e.signs)
                     for peer,entry in signs.items():
                         sign=entry['body'].get('sign')
@@ -417,9 +460,15 @@ class Compatibility:
         while not self.closed:
             time.sleep(.05)
             try:
-                s=self.state(); old=self.previous
-                if self.e.disk['final']!=s['revision']: continue
-                if s!=old:
+                if self.maintenance_seq is not None:
+                    try:
+                        done,_=self.e.poll(self.maintenance_seq)
+                        if done:self.maintenance_seq=None
+                    except ValueError:self.maintenance_seq=None
+                confirmed,changed=self.e.confirmed_state(self.previous['revision'])
+                if not confirmed:continue
+                old=self.previous;s=changed if changed is not None else old
+                if changed is not None:
                     self.log('final',revision=s['revision'],owner=s['owner'],members=list(s['joined']),pending=list(s['pending']),room_id=s['room']['id'] if s['room'] else None,closing=bool(s['room'] and s['room'].get('closing')))
                     oldroom=old.get('room'); room=s.get('room')
                     if oldroom and room and oldroom['id']==room['id']:
@@ -446,27 +495,7 @@ class Compatibility:
                                             try: self.np[0].sendall(packet(2,11,0,blob(encode('NotifyRoomMessage',obj))))
                                             except OSError: pass
                         if room['bins']!=oldroom['bins'] or room['flags']!=oldroom['flags']: self.notify(0x1106,room=s)
-                    self.previous=copy.deepcopy(s)
-                # Forward all chunks individually. ACK IDs, generation and per-member native IDs
-                # are checked before existing BBSC dispatch sees an opaque frame.
-                while not self.e.relay_in.empty():
-                    sender,raw,binding=self.e.relay_in.get_nowait()
-                    if len(raw)<18 or raw[:5]!=b'SHAD\x40': continue
-                    native_id,=struct.unpack('<I',raw[5:9])
-                    connection=tuple(binding.get('connection',[]))
-                    if len(connection)!=2 or native_id!=binding.get('native_id'): continue
-                    previous=self.native_bindings.get(sender)
-                    if previous and (connection<previous[0] or (connection==previous[0] and native_id!=previous[1])): continue
-                    self.native_bindings[sender]=(connection,native_id)
-                    with self.relay_lock:
-                        if self.relay_sock:
-                            try: self.relay_sock.sendall(blob(raw))
-                            except OSError: pass
-                if self.e.relay_error:
-                    with self.relay_lock:
-                        if self.relay_sock:
-                            try: self.relay_sock.shutdown(socket.SHUT_RDWR)
-                            except OSError: pass
+                    self.previous=s
                 self.retire_guest_cancel()
                 n=self.native
                 # Explicit native termination is required; EOF/loading/death never do this.
@@ -477,17 +506,17 @@ class Compatibility:
                 # acknowledge and native is idle, retire that room even if the
                 # Beckoning effect remains. World ownership still needs cancel.
                 if s['owner']==self.e.id and s['room'] and s['room'].get('closing') and not s['joined'] and not s['pending'] and not n.get('loading',True) and n.get('state') in (0,2,5) and not self.e.pending_local:
-                    self.command('room_leave')
+                    self.maintain_command('room_leave')
                     continue
                 if (self.observed or recovery or self.e.id in s['pending']) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
                     if self.e.id in s['pending']:
-                        self.command('admission_cancel')
+                        self.maintain_command('admission_cancel')
                     elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{}) or recovery):
-                        self.command('room_leave')
+                        self.maintain_command('room_leave')
                     elif s['owner']==self.e.id and not s['joined'] and not s['pending']:
-                        if s['room']: self.command('room_leave')
+                        if s['room']: self.maintain_command('room_leave')
                         else:
-                            self.command('release'); self.observed=False; self.release_intent=False; self.cancel_floor=self.latest_cancel
+                            self.maintain_command('release')
             except (ValueError,TimeoutError,OSError,KeyError): pass
 
 def start_from_environment(env,port):

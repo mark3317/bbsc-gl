@@ -109,3 +109,35 @@ The prepared two-device run uses LAN addresses. The same explicit endpoint forma
 accepts VPN IPv4 addresses, but cross-provider VPN reachability/NAT fallback and
 native gameplay remain unverified. First-stage private ancillary APIs return empty
 social lists and do not implement the chalice catalog.
+
+## Bounded I/O revision (03.11.2026)
+
+Control decisions remain unanimous and durable. Filesystem operations run in a
+bounded writer outside Engine.lock; outgoing protocol replies wait for their
+persistence ticket. Only the ticket containing the final revision gates native
+role/title approval; unrelated later counter/ACK metadata cannot retract it.
+Snapshots are cumulative, so queued writes to the same path may be coalesced.
+Write errors never authorize a decision. Network sends use bounded independent
+per-peer workers with control priority and duplicate queued-frame suppression.
+
+BBSC relay uses16 outstanding frames per recipient, with per-recipient sequences
+and stream identity(process incarnation, transport generation). A replacement
+native connection or world generation starts a new stream. Receiver buffers at
+most16 out-of-order frames per sender, delivers contiguous frames individually,
+and cumulatively ACKs only a durable contiguous ingress watermark. Parts are
+never merged by message type. Per-peer retransmit timeout follows RTT with
+backoff, rather than resending every80ms on a healthy higher-latency path.
+Backlogs and10s expiry remain bounded; expiry never releases world ownership.
+
+Receipt watermarks live in party-relay-journal.json, separate from control state.
+Old receipt fields are migrated durably before rewriting party-journal.json.
+ACK still means durable ingress, not native application: the documented crash
+window between receiving and applying an effect remains. Updating all party
+clients together is required for the new window/stream wire format.
+
+A separate event-driven relay dispatcher cannot be blocked by the lifecycle
+monitor's group operations. Lifecycle commands are polled asynchronously and
+confirmed state is copied only on revision change. Native bridge uses one
+pooled HTTP/1.1 tick RPC; title confirmation is requested only for an awaiting
+current exit ticket. The native title transition still requires final group
+leave and never accepts a timeout or an earlier ticket's ACK.
