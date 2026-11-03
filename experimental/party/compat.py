@@ -58,17 +58,28 @@ COMMANDS={110:('KickoutRoomMemberRequest','KickoutRoomMemberReply'),115:('SendRo
 112:('GetRoomDataExternalListRequest','GetRoomDataExternalListReply'),113:('GetUserInfoListRequest','GetUserInfoListReply'),114:('GetRoomMemberDataExternalListRequest','GetRoomMemberDataExternalListReply'),
 116:('SetRoomMemberDataInternalRequest','SetRoomMemberDataInternalReply')}
 
+def relay_recipients(raw,state,sender):
+    # Public discovery/follow and unknown frames keep their bootstrap semantics.
+    # Session state must reach pending/departing peers as well as joined members.
+    if len(raw)<18 or raw[:5]!=b'SHAD\x40' or raw[13:17]!=b'SHAD':
+        return state['roster']
+    if raw[17] not in range(0x22,0x2e): return state['roster']
+    room=state.get('room') or {}
+    active=set(state['joined']) | set(state['pending']) | set(room.get('members',{})) | set(room.get('departing',{}))
+    if state['owner']: active.add(state['owner'])
+    return [p for p in state['roster'] if p!=sender and p in active]
+
 class Compatibility:
     def __init__(self,engine):
         self.game_ids=game_user_map(engine.members)
         self.e=engine; self.token=secrets.token_hex(24); self.ctx=0; self.np=None; self.np_generation=0
         self.np_lock=threading.Lock(); self.np_operation_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
-        self.native={'state':0,'loading':True,'bell':False}; self.observed=False; self.acquiring=False
+        self.native={'state':0,'loading':True,'bell':False}; self.observed=False
         self.gate_lock=threading.Lock(); self.closed=False; self.relay_id=0; self.native_bindings={}
-        self.previous=copy.deepcopy(engine.state); self.recovering=copy.deepcopy(engine.state)
+        self.previous=copy.deepcopy(engine.state)
         self.native_fresh=False; self.recovery_pending=bool(engine.state['owner']==engine.id or engine.id in engine.state['joined'] or engine.id in engine.state['pending'])
         self.release_intent=False; self.latest_cancel=0; self.cancel_floor=0; self.session_id=uuid.uuid4().hex
-        self.local_status={'sign':None,'placement':'','relay_id':0,'native':self.native}
+        self.local_status={'sign':None}
         self.logfile=engine.profile/'party-events.jsonl'; self.log_lock=threading.Lock()
         outer=self
         class NP(socketserver.BaseRequestHandler):
@@ -171,9 +182,8 @@ class Compatibility:
                             if gen!=outer.relay_generation: return
                             if raw[:5]!=b'SHAD\x40': return
                             native_id,=struct.unpack('<I',raw[5:9])
-                            outer.relay_id=native_id; outer.local_status['relay_id']=native_id
-                            outer.publish()
-                            if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]})
+                            outer.relay_id=native_id
+                            if engine.state['owner'] is not None: engine.relay(raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]},relay_recipients(raw,engine.snapshot()['state'],engine.id))
                 except (OSError,EOFError,ValueError): pass
                 finally:
                     with outer.relay_lock:
@@ -298,7 +308,7 @@ class Compatibility:
                 s=self.state()
                 return int(s['owner']==self.e.id and self.e.disk['final']==s['revision'])
         if path=='/party/native':
-            self.native=body; self.native_fresh=True; self.local_status['native']=body; self.publish()
+            self.native=body; self.native_fresh=True
             self.latest_cancel=max(self.latest_cancel,int(body.get('cancel_seq',0)))
             if self.latest_cancel>self.cancel_floor: self.release_intent=True
             if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
@@ -330,8 +340,6 @@ class Compatibility:
             elif kind=='get':
                 result['SummonDataList']=[]
                 if s['owner']==who and self.e.disk['final']==s['revision']:
-                    placement=headers.get('X-ShadPS4-Bloodborne-Host-Placement','')
-                    self.local_status['placement']=placement; self.publish()
                     with self.e.lock: signs=copy.deepcopy(self.e.signs)
                     for peer,entry in signs.items():
                         sign=entry['body'].get('sign')

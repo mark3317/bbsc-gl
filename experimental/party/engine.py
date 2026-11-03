@@ -169,6 +169,7 @@ class Engine:
         self.fault = fault or {}; self.rng = random.Random(self.fault.get('seed', 1))
         self.blocked = set(); self.delayed = []; self.last_tick = 0
         self.signs = {}; self.update_seq = 0; self.relay_next = 0
+        self.status_last = None; self.status_at = 0; self.status_tx = 0
         self.relay_scope = None; self.relay_transport = 0
         self.relay_pending = {}; self.relay_received = {}; self.relay_out = queue.Queue(128)
         self.relay_in = queue.Queue(128); self.relay_error = None
@@ -343,7 +344,9 @@ class Engine:
             if sender not in s['roster'] or m['epoch'] != s['epoch'] or m.get('generation') != s['generation']: return
             stamp = (m['incarnation'], m['seq'])
             prev = self.signs.get(sender)
-            if prev is None or stamp > tuple(prev['stamp']):
+            if prev is not None and stamp == tuple(prev['stamp']) and m['body'] == prev['body']:
+                prev['at'] = time.monotonic() # periodic full refresh, including after reconnect
+            elif prev is None or stamp > tuple(prev['stamp']):
                 self.signs[sender] = {'stamp': stamp, 'body': m['body'], 'at': time.monotonic()}
         elif kind == 'relay':
             if sender not in s['roster'] or m['generation'] != s['generation'] or not s['owner']: return
@@ -364,6 +367,8 @@ class Engine:
                 self.relay_pending.pop(sender)
     def publish(self, body):
         with self.lock:
+            previous = self.signs.get(self.id)
+            if previous and previous['body'] == body: return
             self.update_seq += 1
             self.signs[self.id] = {'stamp': (self.disk['incarnation'],self.update_seq), 'body': copy.deepcopy(body), 'at': time.monotonic()}
     def reset_relay(self):
@@ -372,9 +377,9 @@ class Engine:
             self.relay_pending.clear(); self.relay_error = None
             while not self.relay_out.empty(): self.relay_out.get_nowait()
 
-    def relay(self, raw, binding=None):
+    def relay(self, raw, binding=None, recipients=None):
         if len(raw) > 65536: raise ValueError('Oversized BBSC frame')
-        try: self.relay_out.put_nowait((raw,binding or {}))
+        try: self.relay_out.put_nowait((raw,binding or {},None if recipients is None else tuple(recipients)))
         except queue.Full:
             self.relay_error = 'send queue full'; raise ValueError(self.relay_error)
     def run(self):
@@ -402,7 +407,9 @@ class Engine:
                         if self.pending_local and not self.pending_local.get('error'):
                             self.send(self.coordinator(), dict(self.pending_local, type='request', revision=self.state['revision']))
                         own = self.signs.get(self.id)
-                        if own:
+                        stamp = (self.state['epoch'],self.state['generation'],own['stamp']) if own else None
+                        if own and (stamp != self.status_last or now-self.status_at >= 2):
+                            self.status_last = stamp; self.status_at = now; self.status_tx += 1
                             self.fan({'type':'status','epoch':self.state['epoch'], 'generation':self.state['generation'], 'incarnation':own['stamp'][0], 'seq':own['stamp'][1], 'body':own['body']}, self.state['roster'])
                     scope=(self.state['generation'],self.state['owner'])
                     if self.relay_scope is not None and self.relay_scope!=scope:
@@ -412,11 +419,11 @@ class Engine:
                         try: item = self.relay_out.get_nowait()
                         except queue.Empty: item = None
                         if item is not None:
-                            raw,binding=item
+                            raw,binding,recipients=item
                             self.relay_next += 1
                             m = {'type':'relay','incarnation':self.disk['incarnation'], 'seq':self.relay_next,
                                  'generation':self.state['generation'], 'binding':binding, 'data':base64.b64encode(raw).decode()}
-                            self.relay_pending = {p:{'msg':m,'at':now,'sent':0} for p in self.state['roster'] if p != self.id}
+                            self.relay_pending = {p:{'msg':m,'at':now,'sent':0} for p in self.state['roster'] if p != self.id and (recipients is None or p in recipients)}
                     for peer, pending in list(self.relay_pending.items()):
                         if now-pending['at'] > 10:
                             self.relay_error = 'unacknowledged BBSC frame expired'; self.relay_pending.clear(); break

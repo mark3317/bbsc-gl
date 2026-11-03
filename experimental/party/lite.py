@@ -17,7 +17,8 @@ def command(r):
 try:
     for line in sys.stdin:
         r=json.loads(line); c=r['cmd']; t=r['token']
-        if c=='state': emit(dict(e.snapshot(),token=t))
+        if c=='status': emit({'token':t,'signs':e.signs,'tx':e.status_tx})
+        elif c=='state': emit(dict(e.snapshot(),token=t))
         elif c=='command': threading.Thread(target=command,args=(r,),daemon=True).start()
         elif c=='block':
             with e.lock: e.blocked=set(r['peers'])
