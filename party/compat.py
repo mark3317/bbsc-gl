@@ -246,11 +246,12 @@ class Compatibility:
     def member_data(self,who,m):
         cfg=self.e.members[who]
         return {'npid':who,'member_id':m['slot'],'is_owner':who==self.e.state['owner'],
-                'join_date':(self.e.state['generation']<<32)|m['slot'],'nat_type':2,'addr':cfg['host'],
+                'join_date':(self.e.state['generation']<<32)|m.get('incarnation',m['slot']),'nat_type':2,'addr':cfg['host'],
                 'port':cfg['p2p'],'account_id':account(who),'platform':2,'bin_attrs_internal':native_bins(m.get('bins',[]))}
     def room_details(self,s):
         room=s['room']; members=room['members']; me=members[self.e.id]['slot']; owner=members[s['owner']]['slot']
-        mask=sum(1<<((m['slot']&15)-1) for m in members.values())
+        place=lambda m: m['slot']>>4 if room.get('member_id_layout')==2 else m['slot']&15
+        mask=sum(1<<(place(m)-1) for m in members.values())
         rd={'public_slots':room['max_slots'],'open_public_slots':room['max_slots']-len(members),
             'max_slot':room['max_slots'],'server_id':1,'world_id':room['world'],'room_id':room['id'],
             'joined_slot_mask':mask,'flags':room['flags'],'bin_attrs_internal':native_bins(room['bins'])}
