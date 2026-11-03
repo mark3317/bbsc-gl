@@ -47,6 +47,10 @@ def main(bbgl):
     settings.update(game_dir=os.environ['BB_PARTY_GAME'], user_dir=str(profile / 'user'),
                     player_name=member, mods_enabled=True)
     env = bbgl.game_environment(settings)
+    # Existing stock patch, selected only for this experimental launch.
+    patches=[name.strip() for name in env.get('BB_PATCHES','').split(';') if name.strip()]
+    if 'Skip Intro' not in patches: patches.append('Skip Intro')
+    env['BB_PATCHES']=';'.join(patches)
     env.update(BB_PARTY_CONFIG=str(config), BB_PARTY_MEMBER=member,
                BBGL_PROFILE_DIR=str(profile), BB_DATA_DIR=str(profile), BB_CONFIG=str(profile / 'bbport.ini'),
                BB_MODS_CONFIG=str(profile / 'mods.json'), BB_PATCHES_CONFIG=str(profile / 'patches.json'),

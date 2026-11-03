@@ -8,6 +8,18 @@ from protobuf import encode,decode
 def blob(raw): return struct.pack('<I',len(raw))+raw
 def packet(kind,cmd,ident,raw): return struct.pack('<BHIQ',kind,cmd,15+len(raw),ident)+raw
 def account(who): return int.from_bytes(hashlib.sha256(who.encode()).digest()[:7],'little')+1000
+
+def game_user_id(who):
+    # Bloodborne's HTTP UserId is stored in a signed 32-bit field. NP AccountId
+    # remains 64-bit and must never be substituted for this game identity.
+    return (account(who) & 0x7fffffff) or 1
+
+def game_user_map(members):
+    result={who:game_user_id(who) for who in members}
+    if len(set(result.values()))!=len(result):
+        raise ValueError('Game UserId collision in invitation; use distinct member IDs')
+    return result
+
 def json_bins(bins):
     return [dict(x,data=base64.b64encode(x.get('data',b'')).decode()) for x in bins]
 def merge_bins(old,new):
@@ -48,6 +60,7 @@ COMMANDS={110:('KickoutRoomMemberRequest','KickoutRoomMemberReply'),115:('SendRo
 
 class Compatibility:
     def __init__(self,engine):
+        self.game_ids=game_user_map(engine.members)
         self.e=engine; self.token=secrets.token_hex(24); self.ctx=0; self.np=None; self.np_generation=0
         self.np_lock=threading.Lock(); self.np_operation_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
         self.native={'state':0,'loading':True,'bell':False}; self.observed=False; self.acquiring=False
@@ -303,6 +316,8 @@ class Compatibility:
         names={'create':'SummonDataCreateResponse','get':'SummonDataGetListResponse','request':'SummonDataSummonResponse','delete':'SummonDataRemoveResponse'}
         s=self.state(); who=self.e.id
         if path.startswith('/summon_messenger/'):
+            if 'UserId' in body and int(body['UserId'])!=self.game_ids[who]:
+                raise ValueError('Summon UserId does not belong to this member')
             kind=path.rsplit('/',1)[-1]; result={'ResKind':0,'MessageId':names[kind]}
             if kind=='create':
                 self.local_status['sign']=body; self.publish()
@@ -324,7 +339,7 @@ class Compatibility:
                         except ValueError: continue
                         sign.pop('MessageId',None); result['SummonDataList'].append(sign)
             elif kind=='request':
-                target=next((p for p in s['roster'] if account(p)==int(body['TargetUserId'])),None)
+                target=next((p for p in s['roster'] if self.game_ids[p]==int(body['TargetUserId'])),None)
                 if target is None: raise ValueError('Unknown claim target')
                 if target not in s['pending'] and target not in s['joined']:
                     self.command('claim',target=target,claim=body)
@@ -336,7 +351,7 @@ class Compatibility:
         lists=['PublishCharacterIdList','BloodMessList','BloodMessEvaluationList','LostBloodMessIdList','ChairMessList','WanderingGhostList','ChannelList','ChannelInfoList','LostChannelIdList','TombMessList','NoticeList','Agreements']
         result={k:[] for k in lists}; result.update(ResKind=0,MessageId='UnknownResponse')
         if path=='/basic_utils/login':
-            result.update(ServerVersion=1,UserStatus=0,SessionId=self.session_id,PlatformAccountId=str(body.get('PlatformAccountId',account(who))),LanguageId=19,UserId=account(who),IssuerId=100,MessageId='LoginResponse')
+            result.update(ServerVersion=1,UserStatus=0,SessionId=self.session_id,PlatformAccountId=str(body.get('PlatformAccountId',account(who))),LanguageId=19,UserId=self.game_ids[who],IssuerId=100,MessageId='LoginResponse')
         else:
             ids={'/basic_utils/get_normal_notice':'NormalNoticeGetResponse','/basic_utils/get_emergency_notice':'EmergencyNoticeGetResponse','/basic_utils/get_user_agreement':'UserAgreementGetResponse',
                  '/basic_utils/get_datetime':'DateTimeResponse','/basic_utils/sync_chara_id':'SyncCharaIdResponse','/wandering_ghost/get':'WanderingGhostGetResponse',
