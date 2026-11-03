@@ -2,7 +2,7 @@
 import base64,json,socket,struct,time,urllib.request,unittest
 from test_processes import Tests as ProcessTests
 from protobuf import encode,decode
-from compat import account,packet,blob,recv_exact
+from compat import account,game_user_id,packet,blob,recv_exact
 class CompatibilityTests(ProcessTests):
     # This class only runs its explicitly named compatibility test below.
     def http(self,c,path,body=None,control=False):
@@ -27,8 +27,12 @@ class CompatibilityTests(ProcessTests):
         a,b=self.group(2,compat=True)
         with self.np_connect(a,'A') as sa, self.np_connect(b,'B') as sb:
             login=json.loads(self.http(b,'/basic_utils/login',{'PlatformAccountId':'B'}))
-            self.assertEqual(login['UserId'],account('B'))
-            sign={'UserId':account('B'),'SessionId':login['SessionId'],'CharaId':9223372036854775808,
+            self.assertEqual(login['UserId'],game_user_id('B'))
+            self.assertNotEqual(login['UserId'],account('B'))
+            self.assertTrue(0 < login['UserId'] <= 0x7fffffff)
+            lookup=self.np_call(sa,41,'LookupOnlineIdRequest',{'npid':'B'},'LookupOnlineIdReply')
+            self.assertEqual(lookup['account_id'],account('B'))
+            sign={'UserId':struct.unpack('<i',struct.pack('<i',login['UserId']))[0],'SessionId':login['SessionId'],'CharaId':9223372036854775808,
                   'SummonDataVersion':3,'SummonData':base64.b64encode(bytes(224)).decode(),'AreaId':23}
             self.http(b,'/summon_messenger/create',sign)
             self.assertEqual(self.http(a,'/party/acquire',control=True),b'1')
@@ -45,7 +49,7 @@ class CompatibilityTests(ProcessTests):
                 time.sleep(.05)
             self.assertEqual(found[0]['CharaId'],9223372036854775808)
             self.assertEqual(base64.b64decode(found[0]['SummonData'])[0x79],1)
-            claim={'UserId':account('A'),'TargetUserId':account('B'),'TargetCharaId':sign['CharaId'],'SessionId':login['SessionId'],'HostData':'native-opaque'}
+            claim={'UserId':game_user_id('A'),'TargetUserId':struct.unpack('<i',struct.pack('<i',sign['UserId']))[0],'TargetCharaId':sign['CharaId'],'SessionId':login['SessionId'],'HostData':'native-opaque'}
             self.http(a,'/summon_messenger/request',claim)
             delivered=json.loads(self.http(b,'/summon_messenger/create',sign)); self.assertEqual(delivered['HostData'],'native-opaque')
             joined=self.np_call(sb,102,'JoinRoomRequest',{'room_id':room_id},'JoinRoomReply')
