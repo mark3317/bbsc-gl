@@ -1,0 +1,89 @@
+# Serverless party, experiment v1
+
+## Baseline and scope
+
+BBGL HEAD 572e066, BBSC HEAD 151e24c, plus the exact dirty working copies copied
+on 2026-11-03. Original trees are untouched. `out/serverless-baseline` in the
+experimental parent worktree contains binary patches and status before new edits.
+Inherited changes are not authored or committed by this experiment.
+
+The launcher is the client network component. Its own threads host a loopback-only
+compatibility API; no shadnet.exe, gameserver.exe, VPS or additional server process
+is started. The same party engine runs in independent lightweight test clients.
+It is experimental and opt-in at process launch; legacy launch is unchanged.
+
+## Identities and transport
+
+An invitation contains a random group ID, epoch, secret, ordered immutable roster,
+and explicit unicast IPv4 endpoints. Each member has a stable ID/account ID and
+independent profile. TCP connection incarnation, proposal revision, native room ID,
+and game-world owner are distinct. There is no broadcast/multicast. TCP is chosen
+for bounded authenticated control and opaque BBSC commands, not for native game
+packets: those keep their existing P2P UDP framing and Bloodborne semantics.
+The existing VPN provides reachability and NAT traversal; this protocol does not.
+
+The invitation is a capability: keep it private. HMAC-SHA256 authenticates group,
+epoch, sender and entire envelope; the source IP must match the configured member.
+The model assumes honest invited members, not Byzantine members sharing secrets.
+Malformed/oversized inputs are rejected. Local compatibility APIs bind loopback.
+
+## State machine (defined before implementation)
+
+Replicated state: revision, roster, epoch, generation, owner (or null), room,
+joined members, pending admissions, and per-member completed request sequence.
+Local durable state: current state, accepted proposal, final revision and outgoing
+request counter. A missing journal in an already used invitation is not recovery:
+restore the profile or create a fresh group while all games are closed.
+
+Each revision has one deterministic temporary coordinator: roster[revision % N].
+The coordinator is unrelated to the native world owner and rotates after commits.
+No local timeout changes the coordinator, membership or owner.
+
+1. IDLE: everyone in own world; acquire(member) may be requested by actual bell use.
+2. PREPARE: coordinator serializes one request against exact current revision;
+   every member validates the transition and durably accepts the identical proposal.
+3. COMMIT: only after all PREPARED replies; everyone persists the next state.
+4. FINAL: only after all COMMITTED replies; coordinator disseminates finality.
+   The requester may consume the bell / create a native room only after FINAL.
+5. RESERVED: owner is locked while beckoning, admitting, joining or playing.
+   admission is replicated before its native join; completion retires pending join.
+6. RELEASE: only the owner may request it, after its native create/search has been
+   fenced and the room, guests and pending admissions have explicitly drained.
+   Cancellation without guests uses the same unanimous transaction. Map loads,
+   death, TCP EOF and heartbeat loss never release anything.
+7. RECOVERY: accepted/committed work is retransmitted from journal; repeated IDs
+   are not re-executed. Older revisions/epochs and late FINAL replies are ignored.
+   Crashed active owner stays locked until recovery and explicit native teardown.
+
+If a coordinator crashes midway, progress waits for that member to restart.
+Availability is deliberately sacrificed to prohibit two worlds during partitions.
+There are no leases and no timeout-based failover. Live-world migration is absent.
+
+Membership change is allowed only while idle, by the same unanimous transaction
+of the old roster. First-stage removal supports a subset of existing members;
+adding members uses a new one-time invitation after all clients close the old group.
+An unavailable member cannot be removed unilaterally. A removed member's old
+revision/epoch cannot get all confirmations and cannot acquire a world.
+
+## Compatibility mapping
+
+- Accounts: stable IDs from invitation; loopback shadNet login only accepts own ID.
+  No external registration/email/password service is contacted.
+- Matching2: local protocol codec retains protobuf response shapes, native callback
+  IDs, slot membership and peer endpoints; mutations go through the party log.
+- Signaling/STUN: VPN addresses + per-client P2P ports; existing signaling remains.
+- Summon broker: per-group advertisements, one owner, idempotent claims tied to
+  generation; stock JSON create/get/request/delete responses and placement headers.
+- BBSC relay: loopback framed adapter routes opaque existing envelopes only within
+  current group/generation, with ACK IDs and bounded queues/deduplication. Frequent
+  state has bounded backlog; overload fails the local channel rather than replaying
+  arbitrarily old commands. Native gameplay UDP payloads are never rewritten.
+- Online messages/ghosts: well-formed empty list replies; public social services,
+  account recovery and public matchmaking are outside this private experiment.
+
+## Evidence boundaries
+
+Protocol tests, adapter tests, successful builds and gameplay are different claims.
+Two LAN devices do not prove cross-provider NAT/VPN behavior. Game confirmation
+must include concurrent bells, cancellation, guest join/leave, host alternation and
+recovery on isolated profiles. Never run games automatically for this experiment.
