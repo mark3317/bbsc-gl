@@ -20681,48 +20681,61 @@ void CompleteBbscResidentSummons(u64 status) {
         BbscReturningToTitle() || !ReadablePointer(status, 0x218)) return;
     const u64 queued = ReadValue<u64>(status, 0x1C8);
     if (queued == 0 || queued > 4) return;
+    const auto blocked = [queued](const char* reason) {
+        static thread_local s64 next_log_ms = 0;
+        const s64 now = SteadyNowMs();
+        if (now < next_log_ms) return;
+        next_log_ms = now + 5'000;
+        LOG_INFO(Debug, "BBSC matchmaking: resident completion pending (queued {}, reason {})", queued, reason);
+    };
     const u64 session = GetMatchingState();
     const u64 global = GetGlobalState();
     if (!ReadablePointer(session, 0x128) || ReadValue<s32>(session, 0x124) != 3 ||
         !ReadablePointer(global, 0x1593) || ReadValue<u8>(global, 8) != 0 ||
         ReadValue<u8>(global, 0x1592) == 0 ||
-        GetCharacterHp(GetLocalPlayerCharacter()) <= 0) return;
+        GetCharacterHp(GetLocalPlayerCharacter()) <= 0) { blocked("host not ready"); return; }
     constexpr u64 completion_offset = 0x01877D00;
     constexpr std::array<u8, 6> signature{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
     if (!ReadablePointer(image_base + completion_offset, signature.size()) ||
         std::memcmp(reinterpret_cast<const void*>(image_base + completion_offset),
-                    signature.data(), signature.size()) != 0) return;
+                    signature.data(), signature.size()) != 0) { blocked("native signature"); return; }
     const u64 world = ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0);
-    if (!ReadablePointer(world, 0x68)) return;
+    if (!ReadablePointer(world, 0x68)) { blocked("world unavailable"); return; }
     const s32 count = ReadValue<s32>(world, 0x30);
     const u64 entries = ReadValue<u64>(world, 0x38);
-    if (count <= 0 || count > 64 || !ReadablePointer(entries, count * 0x38)) return;
+    if (count <= 0 || count > 64 || !ReadablePointer(entries, count * 0x38)) { blocked("actor table unavailable"); return; }
     using Equals = bool PS4_SYSV_ABI (*)(u64, u64);
-    using Data = u64 PS4_SYSV_ABI (*)(u64);
     using Complete = void PS4_SYSV_ABI (*)(u64, s32);
     const auto equals = reinterpret_cast<Equals>(image_base + MemberIdEqualsOffset);
     const auto complete = reinterpret_cast<Complete>(image_base + completion_offset);
+    const char* reason = "no arrived cooperative task";
     for (const u64 task : GetMultiPlayerInsTasks()) {
         if (!ReadablePointer(task, 0xEE) || ReadValue<s32>(task, 0xE8) != 1 ||
             ReadValue<s32>(task, 0x50) != 6 || ReadValue<s32>(task, 0x54) != 6 ||
             (ReadValue<u8>(task, 0xED) & 0xA) != 8 ||
             !IsValidMemberId(task + 0xC8)) continue;
         const auto slot = GetMemberSlotInfo(task);
-        if (slot.type != 1 || (slot.role != 7 && slot.role != 21 && slot.role != 22 &&
+        if (slot.index < 0 || slot.index > 3 || slot.type != 1 || (slot.role != 7 && slot.role != 21 && slot.role != 22 &&
                               slot.role != 23 && slot.role != 24)) continue;
+        reason = "no matching resident actor";
         for (s32 i = 0; i < count; ++i) {
             const u64 player = ReadValue<u64>(entries, i * 0x38);
+            // Arrival completion belongs to this insertion/identity, not remote
+            // HP (which may still be zero here, or the arrived guest may have died).
+            // The task's ready/arrived/not-leaving guards remain mandatory.
             if (!ReadablePointer(player, 0x400) || GetCharacterType(player) != 1 ||
-                GetCharacterHp(player) <= 0 || !IsValidMemberId(player + 0x3D8) ||
+                !IsValidMemberId(player + 0x3D8) ||
                 !equals(player + 0x3D8, task + 0xC8)) continue;
-            const u64 vtable = ReadValue<u64>(player, 0);
-            if (!ReadablePointer(vtable, 0x1D0)) continue;
-            const u64 getter = ReadValue<u64>(vtable, 0x1C8);
-            if (!ReadablePointer(getter, 1)) continue;
-            const u64 data = reinterpret_cast<Data>(getter)(player);
+            // Resolve the identity-bound insertion slot from the same table
+            // used by native 01877D00, rather than a PlayerIns virtual accessor.
+            const u64 slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
+            const u64 table = ReadablePointer(slots, 0x18) ? ReadValue<u64>(slots, 0x10) : 0;
+            const u64 data = table ? table + static_cast<u64>(slot.index) * 0x6A0 : 0;
+            reason = "remote slot unavailable";
             if (!ReadablePointer(data, 0x698)) continue;
             const u64 user = ReadValue<u64>(data, 0x688);
             const u64 character = ReadValue<u64>(data, 0x690);
+            reason = "remote slot identity unavailable";
             if (user == 0) continue;
             const u64 head = ReadValue<u64>(status, 0x1C0);
             if (!ReadablePointer(head, 0x18)) continue;
@@ -20737,16 +20750,19 @@ void CompleteBbscResidentSummons(u64 status) {
                     ReadValue<u64>(request, 0x60) == character) { matched = true; break; }
                 node = ReadValue<u64>(node, 0);
             }
+            reason = "queued role or identity mismatch";
             if (!matched) continue;
             const u64 before = ReadValue<u64>(status, 0x1C8);
             complete(status, ReadValue<s32>(data, 0x10));
             const u64 after = ReadValue<u64>(status, 0x1C8);
+            reason = "native completion retained request";
             if (after < before) {
                 LOG_INFO(Debug, "BBSC matchmaking: resident guest completed native summon request "
                          "(role {}, queued {} -> {})", slot.role, before, after);
             }
         }
     }
+    if (ReadValue<u64>(status, 0x1C8) != 0) blocked(reason);
 }
 
 // Observe the native gates before the delay hook edits R13. This does not
