@@ -45,8 +45,9 @@ def main(bbgl):
         return
     settings = bbgl.app_settings({})
     settings.update(game_dir=os.environ['BB_PARTY_GAME'], user_dir=str(profile / 'user'),
-                    player_name=member, mods_enabled=True)
+                    player_name=member, mods_enabled=True, fps_mode='60', frame_cap='60')
     env = bbgl.game_environment(settings)
+    env.update(BB_FPS='60', BB_FPS_LIMIT='60')
     # Existing stock patch, selected only for this experimental launch.
     patches=[name.strip() for name in env.get('BB_PATCHES','').split(';') if name.strip()]
     if 'Skip Intro' not in patches: patches.append('Skip Intro')
