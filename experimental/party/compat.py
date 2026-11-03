@@ -332,6 +332,12 @@ class Compatibility:
             # External attributes are not used for private direct room admission.
             return {'room_id':r['room_id']}
         raise ValueError('Unsupported private operation')
+    def native_leave_idle(self,n):
+        if not self.native_fresh or n.get('loading',True) or n.get('state') not in (0,2,5):return False
+        # A saved, stopped menu exit is explicit intent even if native retains
+        # Beckoning's SpEffect until title unload. Ordinary ringing still blocks.
+        title=n.get('await_title') and n.get('cancel_seq',0)>0 and n['cancel_seq']==self.latest_cancel
+        return not n.get('bell') or bool(title)
     def retire_guest_cancel(self):
         # A cancellation belongs to the drained participation, not every later
         # admission in this process. Never retire before final leave + native idle.
@@ -341,7 +347,7 @@ class Compatibility:
             if not self.e.finalized(s) or self.e.pending_local: return
             if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return
             if self.e.id in room.get('members',{}) or self.e.id in room.get('departing',{}): return
-            if n.get('loading',True) or n.get('state') not in (0,2,5) or n.get('bell'): return
+            if not self.native_leave_idle(n):return
             self.cancel_floor=self.latest_cancel; self.release_intent=False; self.observed=False
             retired=self.cancel_floor;saved_revision=s['revision']
         self.log('guest_cancel_retired',cancel_seq=retired,revision=saved_revision)
@@ -371,7 +377,7 @@ class Compatibility:
                 s=self.e.state; n=self.native; room=s['room'] or {}
                 seq=int(body.get('cancel_seq',0))
                 if seq<=0 or seq!=self.latest_cancel or seq!=n.get('cancel_seq'): return 0
-                if not self.native_fresh or n.get('loading',True) or n.get('state') not in (0,2,5) or n.get('bell'): return 0
+                if not self.native_leave_idle(n):return 0
                 if not self.e.finalized(s) or self.e.pending_local: return 0
                 if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return 0
                 return int(self.e.id not in room.get('members',{}) and self.e.id not in room.get('departing',{}))
@@ -500,7 +506,7 @@ class Compatibility:
                 n=self.native
                 # Explicit native termination is required; EOF/loading/death never do this.
                 recovery=self.native_fresh and self.recovery_pending
-                if recovery and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell'):
+                if recovery and self.native_leave_idle(n):
                     self.recovery_pending=False; self.release_intent=True; self.observed=True
                 # A confirmed owner LeaveRoom closes admission first. Once guests
                 # acknowledge and native is idle, retire that room even if the
@@ -508,7 +514,7 @@ class Compatibility:
                 if s['owner']==self.e.id and s['room'] and s['room'].get('closing') and not s['joined'] and not s['pending'] and not n.get('loading',True) and n.get('state') in (0,2,5) and not self.e.pending_local:
                     self.maintain_command('room_leave')
                     continue
-                if (self.observed or recovery or self.e.id in s['pending']) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
+                if (self.observed or recovery or self.e.id in s['pending']) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and self.native_leave_idle(n) and not self.e.pending_local:
                     if self.e.id in s['pending']:
                         self.maintain_command('admission_cancel')
                     elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{}) or recovery):

@@ -9875,6 +9875,7 @@ bool BbscQuitInProgress() {
 std::mutex bbsc_peer_left_mutex;
 std::map<u32, bool> bbsc_peer_left_pending;
 s64 bbsc_confirmed_departure_ms = 0;
+std::atomic<u32> bbsc_explicit_host_leave_pending{0};
 
 void SendBbscSessionLeave() {
     const std::array<u8, 5> packet{'S', 'H', 'A', 'D', 0x2A};
@@ -10979,6 +10980,7 @@ void TickBbscKeptHome() {
 // 0x01385930): event state 2, forced warp global+0x1520 = 1, home respawn point 0x01332BC0(-1),
 // StageTransition 0x013CDE30.
 constexpr s64 BbscStrandedMs = 15'000;
+constexpr s64 BbscConfirmedHostLeaveMs = 1'000;
 void TickBbscStrandedGuest() {
     if (BbscQuitInProgress() || BbscDreamFinaleHolding()) return;
     static s64 since_ms = 0;
@@ -11460,12 +11462,14 @@ void TickBbscSessionExit(bool peer_work) {
         left.swap(bbsc_peer_left_pending);
     }
     for (const auto& [player, host] : left) {
+        const bool explicit_host = host && bbsc_explicit_host_leave_pending.load() == player;
+        if (explicit_host) bbsc_explicit_host_leave_pending.store(0);
         const u32 known = BbscPeerLifeCounts().first;
         if (((state == 4 || state == 6) && host) ||
             (state == 3 && known == 0 && RemotePlayerCount() <= 1)) {
             FlushBbscSessionJournals();
             SuspendBbscPersistenceOnce("confirmed partner departure");
-            bbsc_confirmed_departure_ms = SteadyNowMs();
+            bbsc_confirmed_departure_ms = explicit_host ? SteadyNowMs() : 0;
             stop = true;
         }
         LOG_INFO(Debug, "BBSC session: player {:08x} left (host {}, {} remaining life record(s))",
@@ -22532,6 +22536,13 @@ void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t seq
     if (changed) {
         LOG_INFO(Debug, "BBSC life: player {:08x} says it is {}", player, dead ? "dead" : "alive");
     }
+}
+
+void OnBbscExplicitSessionLeave(std::uint32_t player, bool host) {
+    // Only the validated SHAD SessionLeave path marks explicit intent. EOF,
+    // generic peer loss and stale follow timeouts keep their ordinary grace.
+    if (host) bbsc_explicit_host_leave_pending.store(player);
+    OnBbscPeerLeft(player,host);
 }
 
 void OnBbscPeerLeft(std::uint32_t player, bool host) {
