@@ -298,6 +298,19 @@ class Compatibility:
             # External attributes are not used for private direct room admission.
             return {'room_id':r['room_id']}
         raise ValueError('Unsupported private operation')
+    def retire_guest_cancel(self):
+        # A cancellation belongs to the drained participation, not every later
+        # admission in this process. Never retire before final leave + native idle.
+        with self.gate_lock, self.e.lock:
+            s=self.e.state; n=self.native; room=s['room'] or {}
+            if not self.release_intent or not self.native_fresh or self.recovery_pending: return
+            if self.e.disk['final']!=s['revision'] or self.e.pending_local: return
+            if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return
+            if self.e.id in room.get('members',{}) or self.e.id in room.get('departing',{}): return
+            if n.get('loading',True) or n.get('state') not in (0,2,5) or n.get('bell'): return
+            self.cancel_floor=self.latest_cancel; self.release_intent=False; self.observed=False
+            self.log('guest_cancel_retired',cancel_seq=self.cancel_floor,revision=s['revision'])
+
     def control(self,path,body):
         if path=='/party/acquire':
             with self.gate_lock:
@@ -308,10 +321,11 @@ class Compatibility:
                 s=self.state()
                 return int(s['owner']==self.e.id and self.e.disk['final']==s['revision'])
         if path=='/party/native':
-            self.native=body; self.native_fresh=True
-            self.latest_cancel=max(self.latest_cancel,int(body.get('cancel_seq',0)))
-            if self.latest_cancel>self.cancel_floor: self.release_intent=True
-            if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
+            with self.gate_lock:
+                self.native=body; self.native_fresh=True
+                self.latest_cancel=max(self.latest_cancel,int(body.get('cancel_seq',0)))
+                if self.latest_cancel>self.cancel_floor: self.release_intent=True
+                if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
             return 1
         if path=='/party/can_beckon':
             s=self.state(); return int(self.e.id in s['roster'] and s['owner'] in (None,self.e.id) and self.e.disk['final']==s['revision'])
@@ -444,6 +458,7 @@ class Compatibility:
                         if self.relay_sock:
                             try: self.relay_sock.shutdown(socket.SHUT_RDWR)
                             except OSError: pass
+                self.retire_guest_cancel()
                 n=self.native
                 # Explicit native termination is required; EOF/loading/death never do this.
                 recovery=self.native_fresh and self.recovery_pending
@@ -455,7 +470,7 @@ class Compatibility:
                 if s['owner']==self.e.id and s['room'] and s['room'].get('closing') and not s['joined'] and not s['pending'] and not n.get('loading',True) and n.get('state') in (0,2,5) and not self.e.pending_local:
                     self.command('room_leave')
                     continue
-                if (self.observed or recovery) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
+                if (self.observed or recovery or self.e.id in s['pending']) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and not n.get('loading',True) and n.get('state') in (0,2,5) and not n.get('bell') and not self.e.pending_local:
                     if self.e.id in s['pending']:
                         self.command('admission_cancel')
                     elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{}) or recovery):
