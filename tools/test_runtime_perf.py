@@ -1,6 +1,6 @@
 """Production progress merge and NPC event index regressions; isolated memory only."""
 from pathlib import Path
-import os, subprocess, tempfile
+import os, subprocess, tempfile, sys
 s=(Path(__file__).resolve().parents[1]/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 def fun(sig):
  a=s.index(sig+' {');i=s.index('{',a)+1;depth=1
@@ -72,7 +72,7 @@ int main(){
  LocalizeBbscQuestEvent(instance);assert(ReadValue<u8>(instance,0x78)==1);
  WriteValue(instance,0xB0,instructions+96);const int before=queries;
  for(int i=0;i<1000;++i)LocalizeBbscQuestEvent(instance);
- assert(queries-before==1000); // no full-directory validation/scanning on a negative hit
+ assert(queries-before==0); // no full-directory or write validation on a negative hit
  WriteValue(instance,0xB0,instructions+32);WriteValue<s64>(ev,0,9);
  LocalizeBbscQuestEvent(instance);assert(bbsc_quest_indexes.empty());
  LocalizeBbscQuestEvent(instance);assert(ReadValue<u8>(instance,0x78)==1); // reused event no stale permission
@@ -85,12 +85,16 @@ int main(){
  assert(ReadValue<u8>(instance,0x78)==0);
 }
 '''
+npc_only = '--npc-only' in sys.argv
+if npc_only:
+ main = 'int main(){\n' + main[main.index(' alignas(16)'):]
 with tempfile.TemporaryDirectory(prefix='bbsc-runtime-perf-') as d:
  p=Path(d);cpp=p/'t.cpp';exe=p/'t.exe'
  cpp.write_text(prefix+fun('u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)')+fun('std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when)')+index+main,encoding='utf-8')
  subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-O2',str(cpp),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True,timeout=15)
-assert 'if (bosses == -2) return;' in fun('void TickBbscSharedProgress()')
-assert 'if (bosses == -2) return;' in fun('void ApplyBbscSharedProgressAtLoad()')
+if not npc_only:
+ assert 'if (bosses == -2) return;' in fun('void TickBbscSharedProgress()')
+ assert 'if (bosses == -2) return;' in fun('void ApplyBbscSharedProgressAtLoad()')
 assert 'bbsc_quest_indexes.clear();' in s.split('if (site.offset == 0x0178D9C0) {',1)[1].split('}',1)[0]
-print('Progress no-op/backup failure/repeat/filter preservation; NPC indexed misses/reuse/reload/overlap: PASS')
+print('NPC indexed misses/reuse/reload/overlap: PASS' if npc_only else 'Progress and NPC regressions: PASS')

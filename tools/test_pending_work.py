@@ -190,7 +190,7 @@ int main() {
 """
 
 # Diagnostic handlers must exit before clocks/memory scans even if invoked elsewhere.
-for name in ("GateWatch", "ItemSurvey", "StateDiff", "SendBacklog"):
+for name in ("GateWatch", "ItemSurvey", "StateDiff"):
     body = function("void TickBbsc" + name + "()")
     assert body.splitlines()[1].strip() == "if (!BbscResearchEnabled()) return;"
 exit_handler = function("void TickBbscSessionExit(bool peer_work)")

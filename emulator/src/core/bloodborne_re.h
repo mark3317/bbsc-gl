@@ -22,6 +22,7 @@ bool SetSeamlessHostPlacementHeader(std::string_view value);
 void ClearSeamlessHostPlacementHeader();
 // BBSC timeline: one line in this run's bbsc-timeline-*.txt ("kind" like NET, RELAY, JOIN). Any
 // thread; reads no game memory.
+bool BbscTimelineActive();
 void BbscTimelineEvent(std::string_view kind, std::string_view text);
 // BBSC connect-first cross-map summon: the host map a pending sign should advertise, if any.
 std::optional<std::uint32_t> GetBbscConnectFirstAreaId();

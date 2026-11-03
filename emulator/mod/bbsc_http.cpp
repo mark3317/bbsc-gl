@@ -57,10 +57,12 @@
 
 #include "common/logging/log.h"
 #include "common/types.h"
+#include "bbsc_network_attempt.h"
 #include "core/bloodborne_re.h"
 
 // One line in this run's BBSC timeline (bloodborne_re.cpp, "Timeline").
-#define BBSC_TIMELINE(kind, ...) Core::Bloodborne::BbscTimelineEvent(kind, fmt::format(__VA_ARGS__))
+#define BBSC_TIMELINE(kind, ...) do { if (Core::Bloodborne::BbscTimelineActive()) \
+    Core::Bloodborne::BbscTimelineEvent(kind, fmt::format(__VA_ARGS__)); } while (false)
 
 namespace BbscMod {
 void RelaySendAimedPlacement(s64 target_user, const std::string& placement);
@@ -72,6 +74,7 @@ std::vector<std::wstring> HostOverridesFiles(); // below: the emulator's overrid
 }
 
 namespace {
+BbscMod::NetworkAttemptTrace network_attempt_trace;
 
 constexpr u64 EbootSize = 0x056D4000ULL;
 constexpr u64 SlotCreateConnection = 0x053E5618;
@@ -128,6 +131,8 @@ std::atomic<bool> placement_aimed{false}; // the placement came aimed at our sig
 // Serializes departure cleanup with the next native create. The maintenance thread
 // never sends a delete after a replacement sign has been dispatched.
 std::mutex summon_lifecycle_mutex;
+u64 summon_lifecycle_generation = 0; // protected by summon_lifecycle_mutex
+bool summon_cleanup_in_flight = false;
 std::string own_sign_url;
 std::string own_sign_body;
 s64 cleanup_retry_ms = 0;
@@ -356,9 +361,6 @@ DWORD Post(const std::string& url, const std::string& body) {
 // The broker keeps Preparing/Claimed/Delivered records 15 minutes and Bloodborne reuses its
 // SessionId/UserId after a restart, so the first seamless sign of this run removes any old one.
 bool ClearStaleRecord(const std::string& url, const std::string& body) {
-    if (stale_cleared.load()) {
-        return true;
-    }
     const std::string session = JsonString(body, "SessionId");
     const std::string user = JsonNumber(body, "UserId");
     if (session.empty() || user.empty()) {
@@ -369,8 +371,8 @@ bool ClearStaleRecord(const std::string& url, const std::string& body) {
                         std::strlen("/summon_messenger/create"), "/summon_messenger/delete");
     const std::string removal = "{\"MessageId\":\"SummonDataRemoveRequest\",\"SessionId\":\"" +
                                 session + "\",\"UserId\":" + user + ",\"Force\":true}";
-    // It must finish before the new sign is created (the delete names the same session), so it
-    // stays on this thread - the game's - with short timeouts (2026-10-08: up to 14 s before).
+    // Only the maintenance worker calls this. A generation/in-flight fence keeps
+    // creates behind this deletion without making the game's HTTP wrapper wait.
     const DWORD status = Post(removal_url, removal);
     LOG_INFO(Mod, "HTTP: stale summon cleanup for session {} user {}: status {}", session, user,
              status);
@@ -378,8 +380,6 @@ bool ClearStaleRecord(const std::string& url, const std::string& body) {
              status);
     // A failed delete must not let a new create receive the old room's claim.
     const bool ok = status >= 200 && status < 300;
-    stale_cleared = ok;
-    cleanup_retry_ms = ok ? 0 : NowMs() + 2'000;
     return ok;
 }
 
@@ -410,6 +410,9 @@ s32 SessionState() {
 // maintenance thread, including while the native game tick is stopped in menus.
 void WatchSessionForStaleClaims() {
     const s32 state = SessionState();
+    if (network_attempt_trace.State(state, claim_delivered_ms.load() != 0)) {
+        LOG_INFO(Mod, "Network attempt trace: native join transition serial={}", network_attempt_trace.serial.load());
+    }
     static bool guest_join_seen = false; // protected by summon_lifecycle_mutex
     if (state != 6) guest_join_seen = false;
     if (state == 6 && !guest_join_seen) {
@@ -417,14 +420,9 @@ void WatchSessionForStaleClaims() {
         // JoinRoom has completed. Retained claims exist only to retry an unfinished
         // join; consume ours now so the host cannot discover/re-summon a member.
         joined_claim_cleanup_due = true;
-        cleanup_retry_ms = 0;
-    }
-    if (state == 6 && joined_claim_cleanup_due && !own_sign_url.empty() && NowMs() >= cleanup_retry_ms) {
         stale_cleared = false;
-        if (ClearStaleRecord(own_sign_url, own_sign_body)) {
-            joined_claim_cleanup_due = false;
-            LOG_INFO(Mod, "HTTP: joined guest's sign retired; completed members cannot be summoned again");
-        }
+        ++summon_lifecycle_generation;
+        cleanup_retry_ms = 0;
     }
     if (state == 3 || state == 4 || state == 6) {
         was_in_session = true;
@@ -439,6 +437,7 @@ void WatchSessionForStaleClaims() {
         return;
     }
     if (was_in_session.exchange(false)) {
+        ++summon_lifecycle_generation;
         joined_claim_cleanup_due = false;
         stale_cleared = false;
         cleanup_retry_ms = 0;
@@ -453,6 +452,7 @@ void WatchSessionForStaleClaims() {
     }
     const s64 delivered = claim_delivered_ms.load();
     if (delivered != 0 && NowMs() - delivered > ClaimJoinWaitMs) {
+        ++summon_lifecycle_generation;
         Core::Bloodborne::SetBbscNativeSignClaimPending(false);
         claim_delivered_ms = 0;
         stale_cleared = false;
@@ -464,25 +464,25 @@ void WatchSessionForStaleClaims() {
                          "clearing it now",
                     (NowMs() - delivered) / 1000);
     }
-    if (!stale_cleared && !own_sign_url.empty() && NowMs() >= cleanup_retry_ms) {
-        ClearStaleRecord(own_sign_url, own_sign_body);
-    }
 }
 
 int SendCleanSummonCreate(int request, const std::string& url, const void* data, u64 size) {
     std::string body(static_cast<const char*>(data), static_cast<size_t>(size));
-    std::scoped_lock lifecycle_lock{summon_lifecycle_mutex};
+    // Never wait for background network cleanup on a native game callback.
+    std::unique_lock lifecycle_lock{summon_lifecycle_mutex, std::try_to_lock};
+    if (!lifecycle_lock || summon_cleanup_in_flight) return static_cast<int>(0x80431068);
     WatchSessionForStaleClaims();
     // A different character / server has its own broker identity.
     if (own_sign_url != url || JsonString(own_sign_body, "SessionId") != JsonString(body, "SessionId") ||
         JsonNumber(own_sign_body, "UserId") != JsonNumber(body, "UserId")) {
+        ++summon_lifecycle_generation;
         stale_cleared = false;
         cleanup_retry_ms = 0;
     }
     own_sign_url = url;
     own_sign_body = body;
-    if (!ClearStaleRecord(url, body)) {
-        return static_cast<int>(0x80431068); // HTTP timeout; native error/retry path
+    if (!stale_cleared) {
+        return static_cast<int>(0x80431068); // worker cleanup pending; native error/retry path
     }
     if (const std::string user = JsonNumber(body, "UserId"); !user.empty()) {
         const s64 id = std::atoll(user.c_str());
@@ -541,6 +541,13 @@ int PS4_SYSV_ABI SendRequest(int request, const void* data, u64 size) {
         std::scoped_lock lock{state_mutex};
         if (const auto it = request_urls.find(request); it != request_urls.end()) {
             url = it->second;
+        }
+    }
+    // Opt the private game APIs into pre-send TCP-connect retries too, including
+    // ss.info and auxiliary requests. This is separate from broker semantics.
+    if (!url.empty() && !IsPublicServer(url)) {
+        if (const u64 add = CurrentSlot(SlotAddHeader); add != 0) {
+            reinterpret_cast<AddHeaderFn>(add)(request, "X-BBSC-Connect-Retry", "1", 0);
         }
     }
     // No network wait here: departure cleanup is done by maintenance. A create
@@ -687,13 +694,27 @@ int PS4_SYSV_ABI ReadData(int request, void* data, u64 size) {
                 LOG_INFO(Mod, "HTTP: summon reply ({}, {} bytes): {}", what, read, text);
             }
         }
-        if (IsSummonCreate(url)) {
+        if (IsSummonCreate(url) && !IsPublicServer(url)) {
+            std::scoped_lock lifecycle_lock{summon_lifecycle_mutex};
             // A create dispatched before JoinRoom can finish AFTER the first
             // joined acknowledgement. Retire that late publication as well.
-            if (SessionState() == 6) joined_claim_cleanup_due = true;
+            if (SessionState() == 6) {
+                joined_claim_cleanup_due = true;
+                stale_cleared = false;
+                cleanup_retry_ms = 0;
+                ++summon_lifecycle_generation;
+            }
             const std::string_view reply(static_cast<const char*>(data), static_cast<size_t>(read));
-            if (reply.find("\"UserId\"") != std::string_view::npos &&
-                claim_delivered_ms.exchange(NowMs()) == 0) {
+            // Retained claims can be returned more than once (or read in more
+            // than one chunk). The deadline belongs to the FIRST delivery;
+            // moving it on every reply can keep an abandoned join alive forever.
+            // Late joined replies only retire their sign, never arm an idle join.
+            s64 empty = 0;
+            if (SessionState() == 0 &&
+                reply.find("\"UserId\"") != std::string_view::npos &&
+                claim_delivered_ms.compare_exchange_strong(empty, NowMs())) {
+                network_attempt_trace.Claim();
+                LOG_INFO(Mod, "Network attempt trace: delivered claim serial={}", network_attempt_trace.serial.load());
                 Core::Bloodborne::SetBbscNativeSignClaimPending(true);
                 LOG_INFO(Mod, "HTTP: a host's claim came with our sign ({} bytes) - waiting for the "
                               "join",
@@ -859,8 +880,29 @@ void InstallHttpWrappers() {
 }
 
 void MaintainSummonLifecycle() {
-    std::scoped_lock lock{summon_lifecycle_mutex};
+    std::unique_lock lock{summon_lifecycle_mutex};
     WatchSessionForStaleClaims();
+    const s32 state = SessionState();
+    // Preserve the original lifecycle policy: leave an unfinished native join
+    // alone. Only idle cleanup or retirement of a fully joined guest may delete.
+    if (state != 0 && !(state == 6 && joined_claim_cleanup_due)) return;
+    if (summon_cleanup_in_flight || stale_cleared || own_sign_url.empty() ||
+        NowMs() < cleanup_retry_ms) return;
+    const auto generation = summon_lifecycle_generation;
+    const auto url = own_sign_url, body = own_sign_body;
+    summon_cleanup_in_flight = true;
+    lock.unlock();
+    const bool ok = ClearStaleRecord(url, body);
+    lock.lock();
+    summon_cleanup_in_flight = false;
+    // A late create response or session transition may have dirtied this identity
+    // during I/O. Never mark that newer work clean with an older delete result.
+    if (generation != summon_lifecycle_generation) return;
+    stale_cleared = ok;
+    cleanup_retry_ms = ok ? 0 : NowMs() + 2'000;
+    if (ok && joined_claim_cleanup_due.exchange(false)) {
+        LOG_INFO(Mod, "HTTP: joined guest's sign retired; completed members cannot be summoned again");
+    }
 }
 
 // For an emulator that repeats the guest's sign post itself (the bbport launcher's emulator,
@@ -881,3 +923,8 @@ extern "C" __declspec(dllexport) u64 BbscRewriteSummonBody(const char* in, u64 i
 }
 
 } // namespace BbscMod
+
+// Optional native-port diagnostic bridge. No gameplay state is read on this call.
+extern "C" __declspec(dllexport) u64 BbscNetworkAttemptSerial() {
+    return network_attempt_trace.serial.load(std::memory_order_relaxed);
+}

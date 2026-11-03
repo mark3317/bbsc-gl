@@ -33,6 +33,7 @@
 #include "common/types.h"
 #include "core/bloodborne_re.h"
 #include "bbsc_register.h"
+#include "bbsc_relay_io.h"
 #include "core/libraries/np/np_signaling/np_signaling_bbsc.h"
 #include "core/libraries/np/np_signaling/np_signaling_helpers.h"
 
@@ -94,7 +95,11 @@ SOCKET relay = INVALID_SOCKET;
 // was stuck, and the game thread's 300 ms send timeout closed the link. Now the game thread only
 // queues; a full queue drops frames instead of the link. All under send_mutex.
 std::condition_variable send_cv;
-std::deque<std::vector<char>> send_queue;
+struct QueuedFrame { std::vector<char> bytes; u64 queued_at; };
+std::deque<QueuedFrame> send_queue;
+u64 tx_frames=0, tx_bytes=0, tx_waits=0, tx_high_water=0;
+u64 writing_since=0, writing_progress=0, writing_size=0;
+std::atomic<u64> last_rx_ms{0}, dispatch_since_ms{0};
 size_t send_queue_bytes = 0;
 constexpr size_t SendQueueLimit = 256 * 1024;
 SOCKET writing = INVALID_SOCKET; // the socket the writer is sending on right now
@@ -162,6 +167,10 @@ bool ReadAll(SOCKET s, void* data, int size) {
     auto* at = static_cast<char*>(data);
     while (size > 0) {
         const int got = recv(s, at, size, 0);
+        if (got < 0 && WSAGetLastError() == WSAEWOULDBLOCK) {
+            WSAPOLLFD descriptor{s, POLLRDNORM, 0};
+            if (WSAPoll(&descriptor, 1, 250) >= 0) continue;
+        }
         if (got <= 0) {
             last_read_result = got == 0 ? 0 : -WSAGetLastError();
             return false;
@@ -187,7 +196,6 @@ u32 SessionKey() {
 // Returns how many players it went to: the relay's count, or (no relay connected - public servers)
 // the players the P2P channel sent it to (bbsc_channel.cpp).
 u32 SendFrame(const void* data, u32 size) {
-    std::scoped_lock lock{send_mutex};
     const u32 key = SessionKey();
     const u32 wrapped = static_cast<u32>(EnvelopeSize) + size;
     std::vector<char> frame(4 + wrapped);
@@ -197,18 +205,23 @@ u32 SendFrame(const void* data, u32 size) {
     std::memcpy(frame.data() + 9, &own_id, 4);
     std::memcpy(frame.data() + 13, &key, 4);
     std::memcpy(frame.data() + 4 + EnvelopeSize, data, size);
+    std::unique_lock lock{send_mutex};
     if (relay == INVALID_SOCKET) {
+        lock.unlock(); // transport/game callbacks never run under the TCP queue lock
         return BbscMod::P2PChannelSend(frame.data() + 4, wrapped);
     }
     if (send_queue_bytes + frame.size() > SendQueueLimit) {
-        if (dropped_frames++ == 0) {
-            Log("the server is not taking our frames (" + std::to_string(send_queue_bytes) +
-                " bytes waiting) - dropping new ones until it does");
-        }
+        const bool first = dropped_frames++ == 0;
+        const auto bytes = send_queue_bytes;
+        const auto age = send_queue.empty() ? 0 : GetTickCount64() - send_queue.front().queued_at;
+        lock.unlock();
+        if (first) Log("queue full: bytes=" + std::to_string(bytes) + " oldest_ms=" +
+                       std::to_string(age) + " (new frame dropped)");
         return static_cast<u32>(peers.load());
     }
     send_queue_bytes += frame.size();
-    send_queue.push_back(std::move(frame));
+    tx_high_water = std::max<u64>(tx_high_water, send_queue_bytes);
+    send_queue.push_back({std::move(frame), GetTickCount64()});
     send_cv.notify_all();
     return static_cast<u32>(peers.load());
 }
@@ -221,41 +234,64 @@ std::string SocketError(const char* what) {
 // thread sees that in recv and reconnects.
 DWORD WINAPI WriterThread(void*) {
     for (;;) {
-        std::vector<char> frame;
+        QueuedFrame queued;
         SOCKET s = INVALID_SOCKET;
         {
             std::unique_lock lock{send_mutex};
-            send_cv.wait(lock, [] { return !send_queue.empty(); });
-            frame = std::move(send_queue.front());
+            send_cv.wait(lock, [] { return !send_queue.empty() && relay != INVALID_SOCKET && lost_reason.empty(); });
+            queued = std::move(send_queue.front());
             send_queue.pop_front();
-            send_queue_bytes -= frame.size();
+            send_queue_bytes -= queued.bytes.size();
             s = relay;
             if (s == INVALID_SOCKET) {
                 continue;
             }
             writing = s;
+            writing_since = writing_progress = GetTickCount64();
+            writing_size = queued.bytes.size();
         }
+        auto& frame = queued.bytes;
         std::string problem;
-        int left = static_cast<int>(frame.size());
-        const char* at = frame.data();
-        while (left > 0) {
-            const int sent = send(s, at, left, 0);
-            if (sent <= 0) {
-                problem = SocketError("send failed");
-                break;
-            }
-            at += sent;
-            left -= sent;
+        BbscMod::RelayIo::Result result{};
+        const auto age = GetTickCount64() - queued.queued_at;
+        if (age >= 10000) {
+            problem = "outgoing queue expired (oldest_ms=" + std::to_string(age) + ")";
+        } else {
+            result = BbscMod::RelayIo::SendFrame(frame.data(), frame.size(),
+                [] { return GetTickCount64(); },
+                [s](const char* at, int left) {
+                    const int sent = send(s, at, left, 0);
+                    const int error = sent < 0 ? WSAGetLastError() : 0;
+                    return BbscMod::RelayIo::Attempt{sent, error, error == WSAEWOULDBLOCK};
+                },
+                [s](int milliseconds) {
+                    WSAPOLLFD descriptor{s, POLLWRNORM, 0};
+                    const int status = WSAPoll(&descriptor, 1, milliseconds);
+                    { std::scoped_lock lock{send_mutex}; ++tx_waits; }
+                    return status < 0 ? WSAGetLastError() : 0;
+                },
+                [](int bytes) {
+                    std::scoped_lock lock{send_mutex};
+                    tx_bytes += bytes;
+                    writing_progress = GetTickCount64();
+                }, 10000 - age);
+            if (result.timeout) problem = "outgoing frame deadline (queue+send >=10000 ms, partial=" +
+                                         std::to_string(result.bytes) + ")";
+            else if (result.error || result.bytes != frame.size())
+                problem = "send failed (WSA error " + std::to_string(result.error) + ")";
         }
-        std::scoped_lock lock{send_mutex};
-        writing = INVALID_SOCKET;
-        if (!problem.empty() && relay == s) {
-            if (lost_reason.empty()) {
-                lost_reason = problem;
+        {
+            std::scoped_lock lock{send_mutex};
+            writing = INVALID_SOCKET;
+            writing_since = writing_size = 0;
+            if (problem.empty()) ++tx_frames;
+            if (!problem.empty() && relay == s) {
+                if (lost_reason.empty()) lost_reason = problem;
+                shutdown(s, SD_BOTH); // reader owns close/reconnect; queued bytes cannot leak to new TCP stream
             }
-            shutdown(s, SD_BOTH);
+            send_cv.notify_all();
         }
-        send_cv.notify_all();
+        if (!problem.empty()) Log(problem);
     }
 }
 
@@ -264,6 +300,9 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         u32 player = 0, session = 0;
         std::memcpy(&player, wrapped.data() + 1, 4);
         std::memcpy(&session, wrapped.data() + 5, 4);
+        Log("server PeerLeft: player=" + std::to_string(player) + " session=" +
+            std::to_string(session) + " current=" + std::to_string(SessionKey()) +
+            " accepted=" + std::to_string(session != 0 && session == SessionKey() && player != own_id));
         if (session != 0 && session == SessionKey() && player != own_id) {
             BbscMod::ForgetSessionRegister(player);
             Core::Bloodborne::OnBbscPeerLeft(player, player == session);
@@ -305,6 +344,8 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
     } else if (frame[4] == Core::Bloodborne::Protocol::RegisterKill && session != 0 && session == SessionKey()) {
         BbscMod::ReceiveRegisterKill(sender, session, frame.data(), static_cast<u32>(frame.size()));
     } else if (frame[4] == SessionLeaveType && frame.size() == 5 && session != 0 && session == SessionKey()) {
+        Log("explicit SessionLeave: player=" + std::to_string(sender) + " session=" +
+            std::to_string(session) + " host=" + std::to_string(from_our_host()));
         BbscMod::ForgetSessionRegister(sender);
         Core::Bloodborne::OnBbscExplicitSessionLeave(sender, from_our_host());
     } else if (frame[4] == FollowType && frame.size() >= 0x1E) {
@@ -382,6 +423,29 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
     }
 }
 
+DWORD WINAPI QueueMonitorThread(void*) {
+    for (;;) {
+        Sleep(5000);
+        std::ostringstream line;
+        {
+            std::scoped_lock lock{send_mutex};
+            if (relay == INVALID_SOCKET) continue;
+            const auto now = GetTickCount64();
+            const auto dispatch = dispatch_since_ms.load();
+            const auto rx = last_rx_ms.load();
+            line << "TCP queue: bytes=" << send_queue_bytes << " frames=" << send_queue.size()
+                 << " oldest_ms=" << (send_queue.empty() ? 0 : now-send_queue.front().queued_at)
+                 << " high_water=" << tx_high_water << " dropped=" << dropped_frames
+                 << " sent_frames=" << tx_frames << " sent_bytes=" << tx_bytes << " waits=" << tx_waits
+                 << " in_flight=" << writing_size << " send_ms=" << (writing_since ? now-writing_since : 0)
+                 << " progress_age_ms=" << (writing_progress ? now-writing_progress : 0)
+                 << " rx_age_ms=" << (now >= rx ? now-rx : 0)
+                 << " dispatch_ms=" << (dispatch && now >= dispatch ? now-dispatch : 0);
+        }
+        Log(line.str());
+    }
+}
+
 DWORD WINAPI RelayThread(void*) {
     WSADATA wsa{};
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -431,18 +495,28 @@ DWORD WINAPI RelayThread(void*) {
             continue;
         }
         BOOL on = TRUE;
-        setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof(on));
+        if (setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof(on)) != 0) {
+            Log(SocketError("TCP_NODELAY setup failed"));
+            closesocket(s);
+            Sleep(2000);
+            continue;
+        }
         setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on), sizeof(on));
-        // Only the writer thread sends now (2026-10-13), so a slow server no longer stalls the
-        // game; a send stuck 10 s means the link is dead.
-        const DWORD send_timeout_ms = 10'000;
-        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&send_timeout_ms),
-                   sizeof(send_timeout_ms));
+        // Nonblocking I/O makes the writer's absolute queue+send deadline enforceable.
+        u_long nonblocking = 1;
+        if (ioctlsocket(s, FIONBIO, &nonblocking) != 0) {
+            Log(SocketError("nonblocking setup failed"));
+            closesocket(s);
+            Sleep(2000);
+            continue;
+        }
         {
             std::scoped_lock lock{send_mutex};
             relay = s;
             lost_reason.clear();
             dropped_frames = 0;
+            tx_frames = tx_bytes = tx_waits = tx_high_water = 0;
+            last_rx_ms = GetTickCount64();
         }
         last_problem.clear();
         Log("connected to " + host + ":" + std::to_string(port));
@@ -463,8 +537,11 @@ DWORD WINAPI RelayThread(void*) {
                 break;
             }
             ++frames_in;
+            last_rx_ms = GetTickCount64();
             std::scoped_lock dispatch_lock{dispatch_mutex};
+            dispatch_since_ms = GetTickCount64();
             Dispatch(frame, true);
+            dispatch_since_ms = 0;
         }
         u32 dropped = 0;
         {
@@ -543,6 +620,9 @@ void StartRelay() {
             CloseHandle(thread);
         }
         if (HANDLE thread = CreateThread(nullptr, 0, WriterThread, nullptr, 0, nullptr)) {
+            CloseHandle(thread);
+        }
+        if (HANDLE thread = CreateThread(nullptr, 0, QueueMonitorThread, nullptr, 0, nullptr)) {
             CloseHandle(thread);
         }
     }

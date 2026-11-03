@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import queue
 import random
+import re
 import socket
 import socketserver
 import struct
@@ -48,6 +49,11 @@ def validate_invite(cfg):
     ids = [m['id'] for m in cfg['members']]
     if len(ids) != len(set(ids)) or not 1 <= len(ids) <= 5:
         raise ValueError('Invalid roster')
+    names=[m.get('name',m['id']) for m in cfg['members']]
+    if any(not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,16}',name) for name in names):
+        raise ValueError('Invalid native player name')
+    if len({name.casefold() for name in names})!=len(names):
+        raise ValueError('Players must use different names')
     endpoints = set()
     for m in cfg['members']:
         if not m['id'].isascii() or not m['id'].isalnum() or len(m['id']) > 16:
@@ -96,9 +102,11 @@ def transition(state, sender, seq, op):
         if sender != s['owner'] or target == sender or target not in s['roster'] or (s['room'] and s['room'].get('closing')):
             raise ValueError('Invalid claim')
         if target in s['pending'] or target in s['joined']: raise ValueError('Already joining')
-        s['pending'][target] = {'generation': s['generation'], 'claim': op['claim']}
+        s['pending'][target] = {'generation': s['generation'], 'ticket': s['revision']+1, 'claim': op['claim']}
     elif kind == 'admission_cancel':
         if sender not in s['pending']: raise ValueError('Only joining member may cancel')
+        if 'ticket' in op and op['ticket'] != s['pending'][sender].get('ticket',0):
+            raise ValueError('Stale admission withdrawal')
         del s['pending'][sender]
     elif kind == 'room_join':
         if s['room'] and s['room'].get('closing'): raise ValueError('Room is closing')

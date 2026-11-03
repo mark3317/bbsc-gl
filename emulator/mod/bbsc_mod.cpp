@@ -16,8 +16,8 @@
 // Session suspensions and the lamp role toggles come from bloodborne_re.cpp as in the emulator
 // build (SetPersistentSessionPatches / SetHostLampPatches below).
 //
-// Log: logs\bbsc-mod-<date>-<time>-<pid>.log next to the DLL (one per game window, so two
-// windows on one PC do not overwrite each other); capture files in captures\ next to it.
+// Text logs share the native stderr captured in last_run.log. Structured captures
+// remain in the profile data directory and require explicit diagnostic flags.
 
 #include <windows.h>
 
@@ -43,7 +43,8 @@
 #include "bbsc_party.h"
 
 // One line in this run's BBSC timeline (bloodborne_re.cpp, "Timeline").
-#define BBSC_TIMELINE(kind, ...) Core::Bloodborne::BbscTimelineEvent(kind, fmt::format(__VA_ARGS__))
+#define BBSC_TIMELINE(kind, ...) do { if (Core::Bloodborne::BbscTimelineActive()) \
+    Core::Bloodborne::BbscTimelineEvent(kind, fmt::format(__VA_ARGS__)); } while (false)
 #include "core/debugger.h"
 #include "core/libraries/np/np_matching2/np_matching2_mm.h"
 #include "core/memory.h"
@@ -92,14 +93,8 @@ void OpenLog() {
         mod_dir = std::filesystem::path{data_path};
     }
 
-    SYSTEMTIME now;
-    GetLocalTime(&now);
-    wchar_t name[96]{};
-    swprintf(name, 96, L"bbsc-mod-%04u%02u%02u-%02u%02u%02u-%lu.log", now.wYear, now.wMonth, now.wDay,
-             now.wHour, now.wMinute, now.wSecond, GetCurrentProcessId());
-    std::error_code ignored;
-    std::filesystem::create_directories(mod_dir / L"logs", ignored);
-    log_file = _wfopen((mod_dir / L"logs" / name).c_str(), L"w");
+    // One native output stream, already rotated/captured by the launcher.
+    log_file = stderr;
 }
 
 // ---- Byte patches --------------------------------------------------------------------------------
@@ -117,15 +112,23 @@ struct CachedRegion {
     u64 stamp_ms = 0;
 };
 constexpr u64 RegionCacheMs = 250;
-constexpr size_t RegionCacheSize = 16;
+// NPC event steps span more than sixteen regions. Preserve the same 250 ms
+// permission lifetime while avoiding cyclic eviction during each event pass.
+constexpr size_t RegionCacheSize = 128;
 
 bool QueryRegion(u64 address, CachedRegion& out) {
     thread_local std::array<CachedRegion, RegionCacheSize> cache{};
-    thread_local size_t next = 0;
+    thread_local size_t next = 0, recent = 0;
     const u64 now = GetTickCount64();
-    for (const CachedRegion& region : cache) {
-        if (address >= region.start && address < region.end &&
-            now - region.stamp_ms <= RegionCacheMs) {
+    const auto hit = [address, now](const CachedRegion& region) {
+        return address >= region.start && address < region.end &&
+               now - region.stamp_ms <= RegionCacheMs;
+    };
+    if (hit(cache[recent])) { out = cache[recent]; return true; }
+    for (size_t index = 0; index < cache.size(); ++index) {
+        const CachedRegion& region = cache[index];
+        if (hit(region)) {
+            recent = index;
             out = region;
             return true;
         }
@@ -134,6 +137,7 @@ bool QueryRegion(u64 address, CachedRegion& out) {
     if (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) == 0) {
         return false;
     }
+    recent = next;
     CachedRegion& slot = cache[next];
     next = (next + 1) % RegionCacheSize;
     slot.start = reinterpret_cast<u64>(info.BaseAddress);
@@ -453,25 +457,14 @@ void LogLine(char level, const char* category, const std::string& text) {
     }
     SYSTEMTIME now;
     GetLocalTime(&now);
-    std::fprintf(log_file, "[%02u:%02u:%02u.%03u] %c %s: %s\n", now.wHour, now.wMinute, now.wSecond,
-                 now.wMilliseconds, level, category, text.c_str());
-    // A flush per line was a disk write per line (docs/fixes/PERF.md): warnings and errors go out
-    // at once, the rest at most every 250 ms. SHADPS4_BBSC_LOG_FLUSH=1 flushes every line (to
-    // keep the last lines before a crash).
-    static const bool flush_every_line = [] {
-        const char* value = std::getenv("SHADPS4_BBSC_LOG_FLUSH");
-        return value != nullptr && value[0] == '1';
-    }();
-    static ULONGLONG last_flush_ms = 0;
-    const ULONGLONG now_ms = GetTickCount64();
-    if (flush_every_line || level == 'W' || level == 'E' || now_ms - last_flush_ms >= 250) {
-        std::fflush(log_file);
-        last_flush_ms = now_ms;
-    }
+    const auto record = fmt::format("[{:02}:{:02}:{:02}.{:03}] BBSC {} {}: {}\n",
+        now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, level, category, text);
+    std::fwrite(record.data(), 1, record.size(), log_file);
+
 }
 
 void LogPlain(const char* text) {
-    LogLine('I', "Mod", text);
+    if (ShouldLog('I')) LogLine('I', "Mod", text);
 }
 
 u64 EbootAddress() {

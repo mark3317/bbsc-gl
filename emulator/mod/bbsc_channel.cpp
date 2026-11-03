@@ -64,6 +64,7 @@ constexpr u64 SlotConnectionStatus = 0x053E52D0;
 // Do not keep a connection alive behind the game's back: that would hide the
 // failed native negotiation and leave its task/room/character states divergent.
 void PS4_SYSV_ABI TraceNativeDisconnect(u64 site,const Core::GuestRegisterSnapshot* r) {
+    if (!BbscMod::DiagnosticsEnabled()) return;
     static std::atomic<u32> count{0};
     if(!r || count.fetch_add(1)>=128) return;
     const bool unobserved=site==0xCC0DC3;
@@ -81,6 +82,7 @@ void PS4_SYSV_ABI TraceNativeDisconnect(u64 site,const Core::GuestRegisterSnapsh
 // Observe cancellation at entry, before generic teardown replaces the original
 // phase with task 13. Caller/parent are image-relative; no packet or account data.
 void PS4_SYSV_ABI TraceNativeCancel(u64 site, const Core::GuestRegisterSnapshot* r) {
+    if (!BbscMod::DiagnosticsEnabled()) return;
     static std::atomic<u32> count{0};
     if (!r) return;
     u64 caller = 0, parent = 0, object = r->rdi;
@@ -109,9 +111,34 @@ void PS4_SYSV_ABI TraceNativeCancel(u64 site, const Core::GuestRegisterSnapshot*
              static_cast<u32>(connection), static_cast<u32>(phase),
              site == 0xC8DD60 ? 0x8001000100000000ULL : r->rsi);
 }
+// Native exchange sends version/profile once (+88/+89), even if the remote
+// message channel is not registered yet. UDP ACKs only confirm transport receipt.
+// Receiving the peer's first valid version proves its exchange now exists: queue
+// our version/profile once more through the native sender, on its next update.
+// Native +90 remains the one-shot fence; never manufacture ready/accepted or
+// replay on duplicates (which would create a version echo loop).
+void ReplyToFirstNativeExchange(const Core::GuestRegisterSnapshot* r) {
+    if (!r || !r->rsi || !r->rdx) return;
+    u64 message=0, header=0, ready=0, version_owner=0, version=0, pending=0;
+    if (!BbscMod::ReadSlotSafely(r->rdx+8, &message) || !message ||
+        !BbscMod::ReadSlotSafely(message, &header) ||
+        (header & 0xFFFFFFFFull) != 0x00020000ull ||
+        ((header >> 32) & 0xFF) != 0x2D ||
+        !BbscMod::ReadSlotSafely(r->rsi+0x90, &ready) || (ready & 0xFF) != 0 ||
+        !BbscMod::ReadSlotSafely(BbscMod::EbootAddress()+0x0553B120, &version_owner) ||
+        !version_owner || !BbscMod::ReadSlotSafely(version_owner+0xC, &version) ||
+        ((header >> 40) & 0xFF) != (version & 0xFF) ||
+        !BbscMod::ReadSlotSafely(r->rsi+0x88, &pending)) return;
+    // Preserve padding and every other field; original callback still validates
+    // the message and writes +90/+91 after this hook returns.
+    BbscMod::WriteSlotSafely(r->rsi+0x88, (pending & ~0xFFFFull) | 0x0101ull);
+}
+
 // Observe the real application-level exchange callback, after UDP delivery.
 // Metadata only: channel/subtype/length and protocol version match, no payload.
 void PS4_SYSV_ABI TraceNativeExchangeReceive(u64, const Core::GuestRegisterSnapshot* r) {
+    ReplyToFirstNativeExchange(r);
+    if (!BbscMod::DiagnosticsEnabled()) return;
     static std::atomic<u32> count{0};
     if (!r || count.fetch_add(1) >= 128) return;
     u64 message=0, header=0;
@@ -123,19 +150,89 @@ void PS4_SYSV_ABI TraceNativeExchangeReceive(u64, const Core::GuestRegisterSnaps
              static_cast<u32>((header>>40)&0xff));
 }
 
+// This branch is reached before outer negotiation destroys its message channel
+// and overwrites the signaling result with the generic cancellation code.
+void PS4_SYSV_ABI TraceNativeNegotiationFailure(u64 site, const Core::GuestRegisterSnapshot* r) {
+    if (!BbscMod::DiagnosticsEnabled()) return;
+    static std::atomic<u32> count{0};
+    if (!r || count.fetch_add(1) >= 32) return;
+    u64 phase = 0, countdown = 0, channel = 0, task = 0;
+    u64 task_phase = 0, result = 0, exchange = 0, ready = 0;
+    BbscMod::ReadSlotSafely(r->rbx + 0x0C, &phase);
+    BbscMod::ReadSlotSafely(r->rbx + 0xE0, &countdown);
+    BbscMod::ReadSlotSafely(r->rbx + 0xD8, &channel);
+    BbscMod::ReadSlotSafely(r->rbx + 0x38, &task);
+    if (task) {
+        BbscMod::ReadSlotSafely(task + 0xB4, &task_phase);
+        BbscMod::ReadSlotSafely(task + 0x68, &result);
+    }
+    if (channel) BbscMod::ReadSlotSafely(channel + 0x20, &exchange);
+    if (exchange) BbscMod::ReadSlotSafely(exchange + 0x90, &ready);
+    LOG_INFO(Mod, "Native exchange timeout: outer={:#x} channel={:#x} exchange={:#x}", r->rbx, channel, exchange);
+    const u32 bits = static_cast<u32>(countdown);
+    float seconds = 0;
+    std::memcpy(&seconds, &bits, sizeof(seconds));
+    LOG_WARNING(Mod, "Native negotiation failure: site={:#x} phase={} wait_s={} task_phase={} result={:#x} channel={} exchange={} ready={} accepted={}",
+                site, static_cast<u32>(phase), seconds, static_cast<u32>(task_phase), result,
+                channel != 0, exchange != 0, (ready & 0xFF) != 0, (ready & 0xFF00) != 0);
+}
+// A failed native channel send can mean a missing logical route, not a lost
+// UDP datagram or missing acknowledgement. Observe the original destination
+// before the deferred-send fallback obscures it. Never retry or edit queues here.
+u64 NativeMemberTraceKey(u64 member) {
+    u64 vtable=0, identity=0;
+    if (!member || !BbscMod::ReadSlotSafely(member, &vtable) ||
+        vtable != BbscMod::EbootAddress()+0x052C5C00 ||
+        !BbscMod::ReadSlotSafely(member+0x30, &identity)) return 0;
+    return identity & 0x0000FFFFFFFFFFFFull; // room u32, member u16
+}
+void PS4_SYSV_ABI TraceNativeSendFailure(u64 site, const Core::GuestRegisterSnapshot* r) {
+    if (!BbscMod::DiagnosticsEnabled()) return;
+    static std::atomic<u32> count{0};
+    static std::atomic<u64> last_ms{0};
+    if (!r || count.load() >= 128) return;
+    const u64 now = GetTickCount64();
+    u64 previous = last_ms.load();
+    if ((previous && now - previous < 5000) || !last_ms.compare_exchange_strong(previous, now)) return;
+    if (count.fetch_add(1) >= 128) return;
+    u64 holder = 0, target = 0, kind = 0, size = 0;
+    BbscMod::ReadSlotSafely(r->rbp - 0x98, &holder);
+    if (holder) BbscMod::ReadSlotSafely(holder, &target);
+    BbscMod::ReadSlotSafely(r->rbp - 0x80, &kind);
+    BbscMod::ReadSlotSafely(r->rbp - 0x84, &size);
+    u64 world=0, player=0, self=0;
+    if (BbscMod::ReadSlotSafely(BbscMod::EbootAddress()+0x0553E878, &world) && world &&
+        BbscMod::ReadSlotSafely(world+0x60, &player) && player)
+        BbscMod::ReadSlotSafely(player+0x3D8, &self);
+    const u64 recipient=NativeMemberTraceKey(target), local=NativeMemberTraceKey(self);
+    LOG_WARNING(Mod, "Native send rejected: site={:#x} target={:#x} kind={} bytes={} target_room={} target_member={} self_room={} self_member={} (before deferred queue; not an ACK timeout)",
+                site, target, static_cast<u32>(kind), static_cast<u32>(size),
+                static_cast<u32>(recipient), static_cast<u32>(recipient>>32),
+                static_cast<u32>(local), static_cast<u32>(local>>32));
+}
 void InstallDisconnectTrace() {
+    // This callback also implements the once-only native exchange reply.
+    const std::array<u8,6> exchange_receive{0x55,0x48,0x89,0xE5,0x41,0x57};
+    bool ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0x1478130),
+                                        exchange_receive, 0x1478130, TraceNativeExchangeReceive);
+    if (!ok) LOG_ERROR(Mod, "Native exchange reply hook could not be installed");
+    if (!BbscMod::DiagnosticsEnabled()) return;
+
     const std::array<u8,8> orphan{0x41,0x8B,0x7F,0x78,0x41,0x8B,0x76,0x20};
     const std::array<u8,9> task{0x8B,0xBB,0xA8,0,0,0,0x8B,0x73,0x10};
-    bool ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0xCC0DC3),orphan,0xCC0DC3,TraceNativeDisconnect);
+    ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0xCC0DC3),orphan,0xCC0DC3,TraceNativeDisconnect);
     for(const u64 site:{0xCD8704ULL,0xCD8F29ULL,0xCDA162ULL})
         ok=Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+site),task,site,TraceNativeDisconnect)&&ok;
     const std::array<u8,6> cancel{0x55,0x48,0x89,0xE5,0x41,0x57};
     for (const u64 site : {0xC8DD60ULL, 0xCD89C0ULL})
         ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+site),
                                         cancel, site, TraceNativeCancel) && ok;
-    const std::array<u8,6> exchange_receive{0x55,0x48,0x89,0xE5,0x41,0x57};
-    ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0x1478130),
-                                    exchange_receive, 0x1478130, TraceNativeExchangeReceive) && ok;
+    const std::array<u8,7> failure{0xC6,0x83,0xD0,0,0,0,1};
+    ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0x1481AF9),
+                                    failure, 0x1481AF9, TraceNativeNegotiationFailure) && ok;
+    const std::array<u8,7> send_failure{0x48,0x8B,0x45,0x80,0x83,0xF8,0x07};
+    ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0x1789742),
+                                    send_failure, 0x1789742, TraceNativeSendFailure) && ok;
     LOG_INFO(Mod,"Native signaling close diagnostics installed={}",ok);
 }
 

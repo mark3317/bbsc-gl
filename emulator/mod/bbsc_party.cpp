@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <atomic>
+#include <charconv>
 #include <cstdlib>
 #include <string>
 #include "bbsc_party.h"
@@ -21,10 +22,12 @@ bool ExclusiveNative() {
 }
 std::atomic<unsigned> native{1u<<8};
 std::atomic<bool> can_beckon{false};
+std::atomic<std::uint64_t> bell_generation{0}, bell_released_generation{0};
 std::atomic<unsigned> cancel_sequence{0};
 std::atomic<ULONGLONG> refreshed{0}, leave_refreshed{0};
 std::atomic<unsigned> leave_confirmed{0};
 std::atomic<bool> title_pending{false};
+BbscMod::PartyAcquireMailbox acquire;
 std::string Call(const wchar_t* path, const std::string& body, int timeout) {
     const char* port_text=std::getenv("BBSC_PARTY_PORT");
     const char* token=std::getenv("BBSC_PARTY_TOKEN");
@@ -78,18 +81,27 @@ bool PartyEnabled() {
     static const bool enabled=[] { const char* text=std::getenv("BBSC_PARTY"); return text && std::string(text)=="1"; }();
     return enabled;
 }
-bool PartyAcquire() {
-    if(!PartyEnabled()) return true;
-    if(!ExclusiveNative()) return false;
-    const bool granted=Call(L"/party/acquire","{}",8500)=="1";
-    LOG_INFO(Mod,"Serverless party: actual Beckoning request {} before native item execution",
-             granted?"unanimously granted":"denied/unconfirmed");
-    return granted;
+std::uint64_t PartyRequestAcquire() {
+    return PartyEnabled() && ExclusiveNative() ? acquire.Request() : 0;
+}
+PartyAcquireMailbox::Result PartyAcquireResult(std::uint64_t ticket) {
+    return acquire.Poll(ticket);
+}
+void PartyFinishAcquire(std::uint64_t ticket) {
+    acquire.Finish(ticket);
 }
 bool PartyCanBeckon() {
     return !PartyEnabled() || (ExclusiveNative() && can_beckon.load() && GetTickCount64()-refreshed.load()<1500);
 }
-void PartyCancel() { if(PartyEnabled()) { ++cancel_sequence; title_pending=false; leave_confirmed=0; } }
+std::uint64_t PartyBellGeneration() {
+    return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
+        ? bell_generation.load() : 0;
+}
+std::uint64_t PartyBellReleasedGeneration() {
+    return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
+        ? bell_released_generation.load() : 0;
+}
+void PartyCancel() { if(PartyEnabled()) { acquire.Cancel(); ++cancel_sequence; title_pending=false; leave_confirmed=0; } }
 void PartyEndTitleWait() { title_pending=false; leave_confirmed=0; }
 bool PartyTitleReady() {
     if(!PartyEnabled()) return true;
@@ -112,15 +124,40 @@ void PartyMaintain() {
     const std::string body="{\"state\":"+std::to_string(value&255)+",\"loading\":"+
         ((value&256)?"true":"false")+",\"bell\":"+((value&512)?"true":"false")+
         ",\"cancel_seq\":"+std::to_string(cancel)+",\"await_title\":"+(awaiting?"true":"false")+"}";
-    const std::string result=Call(L"/party/tick",body,300);
-    const size_t separator=result.find(' ');
+    const std::string result=Call(L"/party/tick",body.substr(0,body.size()-1)+",\"bell_notice\":true,\"bell_release\":true}",300);
+    // Accept old two-field runners, but only an explicit generation can notify.
+    const size_t generation_separator=result.find(' ',result.find(' ')+1);
+    const std::string status=result.substr(0,generation_separator);
+    std::uint64_t generation=0, released=0;
+    if(generation_separator!=std::string::npos) {
+        const char* first=result.data()+generation_separator+1;
+        const char* end=result.data()+result.size();
+        const auto parsed=std::from_chars(first,end,generation);
+        if(parsed.ec!=std::errc{}) generation=0;
+        else if(parsed.ptr!=end) {
+            if(*parsed.ptr==' ') {
+                const auto tail=std::from_chars(parsed.ptr+1,end,released);
+                if(tail.ec!=std::errc{} || tail.ptr!=end) { generation=0; released=0; }
+            } else generation=0;
+        }
+    }
+    const size_t separator=status.find(' ');
     const std::string expected=std::to_string(cancel);
-    const bool valid=separator!=std::string::npos && (result.substr(0,separator)=="0" || result.substr(0,separator)=="1") &&
-                     (result.substr(separator+1)=="0" || result.substr(separator+1)==expected);
-    can_beckon=valid && result[0]=='1'; refreshed=GetTickCount64();
-    const bool ready=valid && awaiting && cancel && result.substr(separator+1)==expected;
+    const bool valid=separator!=std::string::npos && (status.substr(0,separator)=="0" || status.substr(0,separator)=="1") &&
+                     (status.substr(separator+1)=="0" || status.substr(separator+1)==expected);
+    can_beckon=valid && status[0]=='1'; bell_generation=valid?generation:0; bell_released_generation=valid?released:0; refreshed=GetTickCount64();
+    const bool ready=valid && awaiting && cancel && status.substr(separator+1)==expected;
     if(cancel_sequence.load()==cancel) {
         leave_confirmed=ready?cancel:0; leave_refreshed=GetTickCount64();
+    }
+    // This is the maintenance worker, never the native item/frame callback.
+    // A cancelled generation is discarded even when its HTTP response arrives late.
+    if (const auto ticket=acquire.Take()) {
+        const auto started=GetTickCount64();
+        const bool granted=Call(L"/party/acquire","{}",8500)=="1";
+        const bool accepted=acquire.Complete(ticket,granted);
+        LOG_INFO(Mod,"Serverless party: asynchronous Beckoning request ticket={} granted={} current={} duration_ms={}",
+                 ticket,granted,accepted,GetTickCount64()-started);
     }
 }
 }

@@ -29,7 +29,6 @@ dispatch = SOURCE.split("const auto& site = Sites[tag];", 1)[1].split(
 policy = function("bool BbscFunctionalTraceSite(const TraceSite& site)")
 required = set(re.findall(r"site.offset == ([A-Za-z0-9_]+)", dispatch))
 selected = set(re.findall(r"site.offset == ([A-Za-z0-9_]+)", policy))
-assert required <= selected, required - selected
 assert 'site.name.starts_with("BBSC.Remo.")' in policy
 assert "TraceKind::ActionFlags" not in policy
 # Inventory probes reused the leave-decision enum; they must not survive the production filter.
@@ -44,6 +43,10 @@ production = [(name, value, kind) for name, value, kind in sites
               or kind in ("EnginePanic", "LuaSessionEvent")
               or (kind == "MatchingLeaveDecision" and not name.startswith("BBSC.Items."))]
 assert not any(name.startswith("BBSC.Items.") for name, _, _ in production)
+# Diagnostic mode additionally accepts essential observation sites.
+# StopRequest is functional and must survive with diagnostics disabled.
+installed = selected
+assert required <= installed, required - installed
 print(f"trace selection: {len(production)}/{len(sites)} ({len(sites)-len(production)} diagnostic hooks omitted)")
 
 

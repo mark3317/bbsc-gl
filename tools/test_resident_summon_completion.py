@@ -8,6 +8,9 @@ s = (ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 a = s.index('void CompleteBbscResidentSummons(')
 b = s.index('\n}', a)+2
 policy = s[a:b]
+a = s.index('void RefreshBbscLocalOnlineIdentity(')
+b = s.index('\n}', a)+2
+policy = s[a:b]+'\n'+policy
 NATIVE = "554889e5415741564155415453504989fe488d051834cc03488b004c8b60084d85e47407413974241074524c8b601031c96666666666662e0f1f8400000000004d85e4740741397424107431ffc14981c4a006000083f9047ce6488b402031c94c8b24c84d85e474074139742410740d48ffc183f9287ce8e920010000498b8424c0050000488b004885c074038b400c498b86c00100004c8b384939c70f84fa00000031c94c8d2da459cc03498b9424880600004c89fb660f1f8400000000004c8b7b1049395758750e498b7760493bb424900600007418488b1b4839c375e0e99e00000066662e0f1f840000000000490fbe4f08c5f857c04883f921770b48c1e107c4c17a10440d20c4c17a1186100200004d85ff74234c89ffe800398000488b084889c74c89feff517048c7431000000000498b86c00100004c8b3b4839c37430488b43084c8938488b03488b4b0848894808498bbed0010000488b074889deff507049ff8ec8010000498b9ec0010000b1014889d84939df0f852bffffffeb0484c974164c89f74883c4085b415c415d415e415f5de943f9ffff4883c4085b415c415d415e415f5dc3"
 GATE = "488b8d10f9ffff4883b9c8010000007574c5fa108110020000c5f057c9c5f82ec17762"
 fixture = r'''
@@ -30,6 +33,9 @@ bool enabled=true,quit=false,title=false,valid_member=true;int hp=100,type=1,rol
 template<class T>T ReadValue(u64 p,size_t n){T v;memcpy(&v,(void*)(p+n),sizeof(v));return v;}
 template<class T>void put(u64 p,size_t n,T v){memcpy((void*)(p+n),&v,sizeof(v));}
 bool ReadablePointer(u64 p,size_t n){return p>=image_base&&n<=0x5600000&&p-image_base<=0x5600000-n;}
+enum class MemoryProt {CpuWrite};bool writable=true;
+bool HasMemoryAccess(u64 p,size_t n,MemoryProt){return writable&&ReadablePointer(p,n);}
+template<class T>void WriteValue(u64 p,size_t n,T v){put(p,n,v);}
 bool BbscHuntersEnabled(){return enabled;}bool BbscQuitInProgress(){return quit;}bool BbscReturningToTitle(){return title;}
 u64 GetMatchingState(){return session;}u64 GetGlobalState(){return global;}u64 GetLocalPlayerCharacter(){return local;}
 int GetCharacterHp(u64 p){return p==local?hp:remote_hp;}int GetCharacterType(u64){return type;}
@@ -67,7 +73,7 @@ int main(){
  put(data,0x10,s32{10001});put(data,0x5c0,image_base+0x25000);
  put(data,0x688,u64{123456});put(data,0x690,u64{987654});
  auto reset=[&]{
-  enabled=true;quit=title=false;hp=remote_hp=100;type=slot_type=1;role=7;valid_member=true;free_calls=updates=0;
+  put(data,0x688,u64{123456});enabled=true;quit=title=false;hp=remote_hp=100;type=slot_type=1;role=7;valid_member=true;free_calls=updates=0;
   put(session,0x124,s32{3});put(global,8,u8{0});put(global,0x1592,u8{1});
   put(task,0xe8,s32{1});put(task,0x50,s32{6});put(task,0x54,s32{6});put(task,0xed,u8{12});
   put(player,0x3d8,u64{42});put(status,0x1c0,head);put(status,0x1c8,u64{1});put(status,0x210,0.0f);
@@ -107,9 +113,17 @@ int main(){
    case 11:type=2;break;case 12:slot_type=2;break;case 13:role=8;break;
    case 14:valid_member=false;break;case 15:put(player,0x3d8,u64{99});break;
    case 16:put(req,0x58,u64{111});break;case 17:put(req,0x60,u64{111});break;
-   case 18:put(req,8,u8{8});break;case 19:put(status,0x1c8,u64{5});break;
+   case 18:put(data,0x688,u64{0});break;case 19:put(status,0x1c8,u64{5});break;
   }
   CompleteBbscResidentSummons(status);assert(free_calls==0&&updates==0&&ready(status)==0);
+ }
+ // Request roles are selection metadata, not resident identity. Native drains
+ // the same user/character even when insertion normalized its role to 7.
+ for(int request_role:{7,21,22,23,24}){
+  reset();put(req,8,u8(request_role));
+  put(image_base+0x553d750+request_role*0x80,0x20,0.5f);
+  CompleteBbscResidentSummons(status);
+  assert(free_calls==2&&updates==1&&ReadValue<float>(status,0x210)==0.5f);
  }
  for(int coop_role:{7,21,22,23,24}){
   reset();role=coop_role;put(req,8,u8(coop_role));put(image_base+0x553d750+coop_role*0x80,0x20,0.25f);
@@ -122,6 +136,27 @@ int main(){
  assert(free_calls==2&&updates==1&&ReadValue<u64>(status,0x1c8)==1);
  assert(ReadValue<u64>(head,0)==other_node&&ReadValue<u64>(other_node,8)==head&&ReadValue<u64>(other_node,0x10)==other_req);
  put(status,0x210,0.0f);assert(ready(status)==0); // another unfinished request still blocks admission
+ // Reproduce actual run: positive legacy actor ID vs current summon login.
+ u64 server=image_base+0x29000,own_data=image_base+0x2a000;
+ put(image_base+0x5540288,0,server);put(server,0x60,s32{520383427});put(slots,8,own_data);
+ reset();put(req,0x58,u64{520383427});put(data,0x688,u64{4215});
+ CompleteBbscResidentSummons(status);assert(free_calls==0);
+ put(own_data,0x688,u64{4215});put(own_data,0x690,u64{987654});
+ RefreshBbscLocalOnlineIdentity();assert(ReadValue<u64>(own_data,0x688)==520383427);
+ assert(ReadValue<u64>(own_data,0x690)==987654 && ReadValue<u64>(data,0x688)==4215);
+ // Native replication transports the repaired local identity to the host.
+ put(data,0x688,ReadValue<u64>(own_data,0x688));
+ CompleteBbscResidentSummons(status);assert(free_calls==2&&updates==1);
+ for(s32 invalid:{0,-1}){
+  put(own_data,0x688,u64{4215});put(server,0x60,invalid);
+  RefreshBbscLocalOnlineIdentity();assert(ReadValue<u64>(own_data,0x688)==4215);
+ }
+ put(server,0x60,s32{520383427});writable=false;
+ RefreshBbscLocalOnlineIdentity();assert(ReadValue<u64>(own_data,0x688)==4215);writable=true;
+ quit=true;RefreshBbscLocalOnlineIdentity();assert(ReadValue<u64>(own_data,0x688)==4215);quit=false;
+ // A new character slot after another load must be refreshed too (no ID-only cache).
+ put(slots,8,image_base+0x2b000);put(image_base+0x2b000,0x688,u64{1704});
+ RefreshBbscLocalOnlineIdentity();assert(ReadValue<u64>(image_base+0x2b000,0x688)==520383427);
  // A native signature mismatch cannot call a different function.
  reset();put(image_base+0x1877d00,0,u8{0x90});CompleteBbscResidentSummons(status);assert(free_calls==0);
  puts("PASS: production policy + exact native identity-bound completion/unlink/free/backoff and queue/ready gate; five roles, unrelated pending retained, 21 rejection cases");

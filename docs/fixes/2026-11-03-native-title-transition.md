@@ -1,5 +1,10 @@
 # 03.11.2026 — native transition for confirmed title exit (source only)
 
+> Superseded by [host title world reload](2026-11-03-host-title-world-reload.md).
+> The StageTransition call introduced here arms a competing world reload.
+> The title-before-transition fixture modeled the wrong native contract.
+> Source now submits OnReturnTitle without StageTransition; build deferred.
+
 User: host still walks during dd47b2c menu exit. User rejected manual input
 blocking and requested native SendPhantomHome-like lifecycle, no game build.
 Review: parent out/coop-dev/runs/quit-input-review-20261103-091609. Host confirmed

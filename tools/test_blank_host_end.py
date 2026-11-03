@@ -22,6 +22,7 @@ fixture = r'''
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <atomic>
 using u64=uint64_t;using u32=uint32_t;using u8=uint8_t;using s32=int32_t;using s64=int64_t;
 #define BBSC_MOD
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
@@ -30,6 +31,7 @@ using u64=uint64_t;using u32=uint32_t;using u8=uint8_t;using s32=int32_t;using s
 constexpr u64 MatchingStatePointerOffset=0x5540290,CandidateLocalStatePointerOffset=0x553e878;
 constexpr u64 MultiPlayStopRequestOffset=0x1ed07a0;
 u64 image_base=0,world=0,global=0,player=0,entries=0,manager=0,lua=0;
+std::atomic<bool> bbsc_beckoning_silenced{false};
 s64 now_ms=1000,bbsc_host_blank_requested_ms=0;
 s32 session=3,hp=100,stops=0,cleanups=0,leaves=0,cancels=0;
 bool quit=false,foreign=false,erase_ok=true,bell=true,blank_effect=false,bbsc_duel_bell_ready=true;
@@ -90,6 +92,14 @@ int main(){
  // Runtime item state is also sufficient, without a generic item hook or effect.
  WriteValue<u32>(player,0x1c0,111);WriteValue<u32>(player,0x490,3);TickBbscHostBlank();
  WriteValue<u32>(player,0x490,0);now_ms+=3001;TickBbscHostBlank();assert(stops==4);
+ // Confirmed silence with no room (the runtime item hooks never ran).
+ session=0;bell=true;bbsc_beckoning_silenced=true;const int before=cancels;
+ TickBbscHostBlank();assert(!bell&&cancels>before&&!bbsc_beckoning_silenced);
+ // An existing guest stays; owner release waits for actual native drain.
+ session=3;bell=true;WriteValue<s32>(world,0x30,2);WriteValue<u64>(entries,0x38,image_base+0x9000);
+ bbsc_beckoning_silenced=true;TickBbscHostBlank();now_ms+=4000;TickBbscHostBlank();
+ assert(!bell&&stops==4&&session==3);
+ WriteValue<s32>(world,0x30,1);TickBbscHostBlank();assert(stops==5&&session==7);
  VirtualFree((void*)image_base,0,MEM_RELEASE);
 }
 '''

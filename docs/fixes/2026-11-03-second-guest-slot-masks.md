@@ -48,3 +48,5 @@ Changed full game translation unit, BBSC_MOD syntax check: PASS.
 Source corrected; no new product build/deployment/launch in this review.
 Live second-guest confirmation remains pending. No saves/settings/journals
 were edited; game binary was read only for disassembly. Unrelated changes kept.
+
+Delivery update: DLL build0/native incremental0, six-file deployment0 with backup second-guest-masks-20261103-174410. Three-profile coordinator32512 launched17:44:10MSK; gameplay validation still pending. See parent out/coop-dev/runs/second-guest-masks-20261103.

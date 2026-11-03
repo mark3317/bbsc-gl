@@ -44,7 +44,7 @@ enum class Group : u8 {
     SolidNpcs,   // a guest sees the host world's NPCs as they are, not as grey wandering ghosts
     Scaling,     // vanilla's boss co-op buff (Lua_MultiDoping) off - BBSC enemy scaling instead
     KitBells,    // the BBSC kit's Hunt Bell gets the Beckoning Bell's special checks (Dream use)
-    SendBacklog, // one member that never answers does not end the session for everyone
+    SendBacklog, // retired: native reliable-send bound must remain intact
     Hunters,     // the host keeps looking for co-op signs past vanilla's two guests
 };
 
@@ -296,7 +296,7 @@ struct WideEdit {
     Group group;
 };
 
-constexpr std::array<WideEdit, 13> WideEdits{{
+constexpr std::array<WideEdit, 12> WideEdits{{
     // Every blood echo reward the local player receives is computed by 0x01335400 and left in a
     // float at [[0x0553B130]+8]+0xF8. Halfway through:
     //     MOV EAX, dword ptr [R15 + 0x78]    ; the local player's character type
@@ -360,16 +360,9 @@ constexpr std::array<WideEdit, 13> WideEdits{{
     // (The Kin Bell already works in the Dream through the general path - left as it is.)
     {"KitBells.HuntBellChecks", 0x0157F857, {0xC8, 0x00, 0x00, 0x00}, {0xB0, 0x0F, 0x00, 0x00},
      Group::KitBells},
-    // Three players, 2026-10-08 (host hardwater, guest cls_amg; abood's game had crashed but his
-    // sign was still listed): the host summoned the dead sign and sat in CreateWait for 6 minutes,
-    // then its own game raised "OnIrregularLeaveSession" (0x017897DA) and ended the session for the
-    // guest too. That is the reliable-packet send 0x017894E0: a packet it cannot deliver to a member
-    // is queued (list [SprjSessionManager]+0x188, counts at +0x30, plus +0x1B0), and once
-    //     CMP EAX, 0x3E9                      <- 0x017897AD (3D E9 03 00 00)
-    // 1001 are waiting it leaves. A member that never connects fills it at ~3 a second. The limit
-    // goes to 30000 (~2-3 hours); "BBSC send backlog:" lines log a queue that keeps growing.
-    {"SendBacklog.Limit", 0x017897AE, {0xE9, 0x03, 0x00, 0x00}, {0x30, 0x75, 0x00, 0x00},
-     Group::SendBacklog},
+    // Keep the native reliable-send limit of 1001 packets at 0x017897AD.
+    // Raising it to 30000 hid broken recipients for hours and allowed their
+    // retransmission queues to grow until explicit session teardown.
     // Five hunters, part 2 (test 2026-10-08 on mod 37: with Hunters.KeepSearchingCoop the host's
     // sign lists DID hold a third co-op sign - 3 signs, 2742-2745 bytes - but no summon was ever
     // built for it). After the search, the same slot table decides which sign types may be taken:
@@ -444,7 +437,7 @@ inline bool GroupEnabled(Group group) {
     case Group::KitBells:
         return true; // the kit is always given (bloodborne_re.cpp, PrepareBbscKitRows)
     case Group::SendBacklog:
-        return true;
+        return false; // never weaken the native reliable-send bound
     case Group::Hunters:
         return EnvFlag("SHADPS4_BBSC_FIVE_HUNTERS");
     }

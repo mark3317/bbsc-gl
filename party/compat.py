@@ -20,6 +20,16 @@ def game_user_map(members):
         raise ValueError('Game UserId collision in invitation; use distinct member IDs')
     return result
 
+def native_name_map(members):
+    # Stable party IDs own durable state; native NP handles are the chosen names.
+    names={who:m.get('name',who) for who,m in members.items()}
+    if any(not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,16}',name)
+           for name in names.values()):
+        raise ValueError('Invalid native player name')
+    if len({name.casefold() for name in names.values()})!=len(names):
+        raise ValueError('Players must use different names')
+    return names
+
 def json_bins(bins):
     return [dict(x,data=base64.b64encode(x.get('data',b'')).decode()) for x in bins]
 def merge_bins(old,new):
@@ -75,6 +85,8 @@ def relay_recipients(raw,state,sender):
 class Compatibility:
     def __init__(self,engine):
         self.game_ids=game_user_map(engine.members)
+        self.native_names=native_name_map(engine.members)
+        self.native_members={name:who for who,name in self.native_names.items()}
         self.e=engine; self.token=secrets.token_hex(24); self.ctx=0; self.np=None; self.np_generation=0
         self.np_lock=threading.Lock(); self.np_operation_lock=threading.Lock(); self.relay_lock=threading.Lock(); self.relay_sock=None; self.relay_generation=0
         self.native={'state':0,'loading':True,'bell':False}; self.observed=False
@@ -83,7 +95,9 @@ class Compatibility:
         self.native_fresh=False; self.recovery_pending=bool(engine.state['owner']==engine.id or engine.id in engine.state['joined'] or engine.id in engine.state['pending'])
         self.release_intent=False; self.latest_cancel=0; self.cancel_floor=0; self.session_id=uuid.uuid4().hex
         self.local_status={'sign':None}
+        self.delivered_admission=None
         self.search_diagnostic=None
+        self.diagnostics=os.environ.get('BB_PARTY_DIAGNOSTICS',os.environ.get('BB_DIAGNOSTICS','0'))=='1'
         self.logfile=engine.profile/'party-events.jsonl'; self.log_lock=threading.Lock()
         outer=self
         class NP(socketserver.BaseRequestHandler):
@@ -114,7 +128,7 @@ class Compatibility:
                                 with outer.np_lock:
                                     if authenticated and (not outer.np or outer.np[1]!=generation): return
                                 if cmd==0:
-                                    if req.get('npid')!=engine.id or req.get('password')!=outer.token: raise ValueError('Wrong local identity')
+                                    if req.get('npid')!=outer.native_names[engine.id] or req.get('password')!=outer.token: raise ValueError('Wrong local identity')
                                     authenticated=True
                                     with outer.np_lock: outer.np=(self.request,generation)
                                 reply=outer.np_command(cmd,req)
@@ -199,10 +213,10 @@ class Compatibility:
         self.relay_port=self.relay_server.server_address[1]
     def relay_targets(self,raw):
         with self.e.lock:return relay_recipients(raw,self.e.state,self.e.id)
-    def maintain_command(self,kind):
+    def maintain_command(self,kind,**kw):
         with self.e.lock:
             if self.maintenance_seq is None and not self.e.pending_local:
-                self.maintenance_seq=self.e.request({'kind':kind})
+                self.maintenance_seq=self.e.request(dict(kw,kind=kind))
     def relay_loop(self):
         while not self.closed:
             try:sender,raw,binding=self.e.relay_in.get(timeout=.05)
@@ -224,6 +238,7 @@ class Compatibility:
                     try:self.relay_sock.sendall(blob(raw))
                     except OSError:pass
     def log(self,event,**fields):
+        if not self.diagnostics:return
         with self.log_lock:
             with self.logfile.open('a',encoding='utf-8') as f:
                 f.write(json.dumps(dict(fields,event=event,id=self.e.id,time=time.time(),generation=self.e.state['generation']))+'\n')
@@ -242,10 +257,19 @@ class Compatibility:
     def state(self):
         with self.e.lock:return copy.deepcopy(self.e.state)
     def command(self,kind,**kw):
-        seq=self.e.request(dict(kw,kind=kind)); return self.e.wait(seq,8)
+        seq=self.e.request(dict(kw,kind=kind))
+        try:
+            return self.e.wait(seq,8)
+        except TimeoutError:
+            if kind!='claim': raise
+            # A timeout does not cancel the transaction. Check the same ticket
+            # again before returning an error that triggers native retry cooldown.
+            # Never submit a second consuming claim; bound recovery to one wait.
+            self.log('claim_confirmation_retry',sequence=seq)
+            return self.e.wait(seq,8)
     def member_data(self,who,m):
         cfg=self.e.members[who]
-        return {'npid':who,'member_id':m['slot'],'is_owner':who==self.e.state['owner'],
+        return {'npid':self.native_names[who],'member_id':m['slot'],'is_owner':who==self.e.state['owner'],
                 'join_date':(self.e.state['generation']<<32)|m.get('incarnation',m['slot']),'nat_type':2,'addr':cfg['host'],
                 'port':cfg['p2p'],'account_id':account(who),'platform':2,'bin_attrs_internal':native_bins(m.get('bins',[]))}
     def room_details(self,s):
@@ -260,25 +284,25 @@ class Compatibility:
     def external(self,s):
         r=s['room']; return {'max_slot':r['max_slots'],'cur_members':len(r['members']),'flags':r['flags'],
             'server_id':1,'world_id':r['world'],'room_id':r['id'],'public_slots':r['max_slots'],
-            'open_public_slots':r['max_slots']-len(r['members']),'owner_npid':s['owner'],
+            'open_public_slots':r['max_slots']-len(r['members']),'owner_npid':self.native_names[s['owner']],
             'owner_account_id':account(s['owner']),'owner_platform':2}
     def np_command(self,cmd,r):
         s=self.state(); who=self.e.id
-        if cmd==0: return {'user_id':account(who),'friends':[{'npid':p,'online':True} for p in s['roster'] if p!=who]}
+        if cmd==0: return {'user_id':account(who),'friends':[{'npid':self.native_names[p],'online':True} for p in s['roster'] if p!=who]}
         if cmd==12: return {'matching2_enabled':True}
-        if cmd==39: return {'user_id':account(who),'npid':who,'token':self.token}
+        if cmd==39: return {'user_id':account(who),'npid':self.native_names[who],'token':self.token}
         if cmd==41:
-            target=r['npid']
+            target=self.native_members.get(r['npid'])
             if target not in s['roster']: raise ValueError('Unknown party member')
-            return {'account_id':account(target),'npid':target}
+            return {'account_id':account(target),'npid':self.native_names[target]}
         if cmd==100: self.ctx=r['ctx_id']; return {}
         if cmd==106: return {}
         if cmd==111: return {'worlds':[{'world_id':1,'rooms_num':int(s['room'] is not None),'room_members_num':len(s['joined'])}]}
         if cmd==105:
-            target=r['target_npid']
+            target=self.native_members.get(r['target_npid'])
             if target not in s['roster']: raise ValueError('Unknown signaling target')
             m=self.e.members[target]
-            return {'target_npid':target,'target_ip':m['host'],'target_port':m['p2p'],
+            return {'target_npid':self.native_names[target],'target_ip':m['host'],'target_port':m['p2p'],
                     'target_member_id':s['room']['members'].get(target,{}).get('slot',0) if s['room'] else 0}
         if cmd==101:
             if s['owner']!=who or not self.e.finalized(s): raise ValueError('Bell role not finalized')
@@ -306,7 +330,8 @@ class Compatibility:
         if cmd in (104,112):
             rooms=[self.external(s)] if s['room'] else []
             return {'rooms':rooms,**({'range_start':1,'range_total':len(rooms),'range_result':len(rooms)} if cmd==104 else {})}
-        if cmd==113: return {'users':[{'npid':p,'account_id':account(p),'platform':2} for p in r.get('npids',[]) if p in s['roster']]}
+        if cmd==113: return {'users':[{'npid':name,'account_id':account(self.native_members[name]),'platform':2}
+                                    for name in r.get('npids',[]) if name in self.native_members]}
         if cmd==114:
             if not s['room'] or s['room']['id']!=r['room_id']: return {'members':[]}
             return {'members':[dict(self.member_data(p,m),role=int(p==s['owner'])) for p,m in s['room']['members'].items()]}
@@ -358,7 +383,20 @@ class Compatibility:
         if path=='/party/tick':
             self.control('/party/native',body)
             ready=self.control('/party/leave_ready',body) if body.get('await_title') else 0
-            return f"{self.control('/party/can_beckon',{})} {int(body.get('cancel_seq',0)) if ready else 0}"
+            # Opt-in extension: older DLLs retain the two-field reply. Read the
+            # owner and availability from one finalized snapshot so a temporary
+            # fail-closed gate cannot masquerade as a new bell.
+            with self.e.lock:
+                s=self.e.state; final=self.e.finalized(s)
+                available=int(self.e.id in s['roster'] and s['owner'] in (None,self.e.id) and final)
+                answer=f"{available} {int(body.get('cancel_seq',0)) if ready else 0}"
+                if body.get('bell_notice'):
+                    generation=s['generation'] if final and s['owner'] not in (None,self.e.id) else 0
+                    answer+=f" {generation}"
+                    if body.get('bell_release'):
+                        released=s['generation'] if final and s['owner'] is None and available else 0
+                        answer+=f" {released}"
+                return answer
         if path=='/party/acquire':
             with self.gate_lock:
                 s=self.state()
@@ -410,34 +448,41 @@ class Compatibility:
             if kind=='create':
                 self.local_status['sign']=body; self.publish()
                 pending=s['pending'].get(who)
-                if pending and not (s['room'] and s['room'].get('closing')): result.update({k:v for k,v in pending['claim'].items() if k not in ('MessageId','ResKind')})
+                if pending and not (s['room'] and s['room'].get('closing')):
+                    result.update({k:v for k,v in pending['claim'].items() if k not in ('MessageId','ResKind')})
+                    if self.delivered_admission!=pending.get('ticket',0):
+                        self.log('admission_delivered',ticket=pending.get('ticket',0),generation=s['generation'])
+                    self.delivered_admission=pending.get('ticket',0)
             elif kind=='get':
                 result['SummonDataList']=[]
                 diagnostic=[]
                 if s['owner']==who and self.e.finalized(s):
                     with self.e.lock: signs=copy.deepcopy(self.e.signs)
-                    diagnostic.extend((peer,'not_received') for peer in s['roster'] if peer!=who and peer not in signs)
+                    if self.diagnostics:diagnostic.extend((peer,'not_received') for peer in s['roster'] if peer!=who and peer not in signs)
                     for peer,entry in signs.items():
                         sign=entry['body'].get('sign')
                         reason=('self' if peer==who else 'outside_roster' if peer not in s['roster'] else
                                 'pending' if peer in s['pending'] else 'joined' if peer in s['joined'] else
                                 'no_sign' if not sign else 'stale' if time.monotonic()-entry['at']>12 else None)
                         if reason:
-                            diagnostic.append((peer,reason)); continue
+                            if self.diagnostics:diagnostic.append((peer,reason))
+                            continue
                         sign=dict(sign)
                         try:
                             data=bytearray(base64.b64decode(sign.get('SummonData','')))
                             if len(data)==224: data[0x79]=max(1,data[0x79]); sign['SummonData']=base64.b64encode(data).decode()
                         except ValueError:
-                            diagnostic.append((peer,'invalid_base64')); continue
-                        diagnostic.append((peer,'returned',sign.get('AreaId'),len(data),
+                            if self.diagnostics:diagnostic.append((peer,'invalid_base64'))
+                            continue
+                        if self.diagnostics:diagnostic.append((peer,'returned',sign.get('AreaId'),len(data),
                                            list(data[0x78:0x7b]) if len(data)==224 else []))
                         sign.pop('MessageId',None); result['SummonDataList'].append(sign)
-                snapshot=(s['owner'],self.e.finalized(s),diagnostic)
-                if snapshot!=self.search_diagnostic:
-                    self.search_diagnostic=copy.deepcopy(snapshot)
-                    self.log('sign_search',owner=s['owner'],finalized=snapshot[1],
-                             candidates=diagnostic,returned=len(result['SummonDataList']))
+                if self.diagnostics:
+                    snapshot=(s['owner'],self.e.finalized(s),diagnostic)
+                    if snapshot!=self.search_diagnostic:
+                        self.search_diagnostic=copy.deepcopy(snapshot)
+                        self.log('sign_search',owner=s['owner'],finalized=snapshot[1],
+                                 candidates=diagnostic,returned=len(result['SummonDataList']))
             elif kind=='request':
                 target=next((p for p in s['roster'] if self.game_ids[p]==int(body['TargetUserId'])),None)
                 if target is None: raise ValueError('Unknown claim target')
@@ -445,8 +490,18 @@ class Compatibility:
                     self.command('claim',target=target,claim=body)
             elif kind=='delete':
                 self.local_status['sign']=None; self.publish()
-                # Only explicit local native idle can cancel an unfinished admission.
-                # Maintenance polls the native bridge; HTTP deletion alone is not leave.
+                # Force is the mod's explicit withdrawal of its failed invitation.
+                # Ordinary sign refresh/deletion must not withdraw an admission,
+                # and a joined/loading native guest must still leave via Matching2.
+                # Keeping pending here returned the same failed claim forever and
+                # hid the sign from the new owner's search after host rotation.
+                n=self.native
+                if (body.get('Force') is True and who in s['pending'] and
+                    self.delivered_admission==s['pending'][who].get('ticket',0) and
+                    self.native_fresh and not n.get('loading',True) and n.get('state') in (0,2,5)):
+                    self.command('admission_cancel',ticket=self.delivered_admission)
+                    self.delivered_admission=None
+                    self.log('failed_admission_withdrawn',revision=self.state()['revision'])
             return result
         lists=['PublishCharacterIdList','BloodMessList','BloodMessEvaluationList','LostBloodMessIdList','ChairMessList','WanderingGhostList','ChannelList','ChannelInfoList','LostChannelIdList','TombMessList','NoticeList','Agreements']
         result={k:[] for k in lists}; result.update(ResKind=0,MessageId='UnknownResponse')
@@ -463,7 +518,7 @@ class Compatibility:
         while not self.closed:
             try:
                 raw,addr=self.stun.recvfrom(2048)
-                if len(raw)==25 and raw[:5]==b'\xff\xff\xff\xff\x01' and raw[5:21].rstrip(b'\0').decode()==self.e.id:
+                if len(raw)==25 and raw[:5]==b'\xff\xff\xff\xff\x01' and raw[5:21].rstrip(b'\0').decode()==self.native_names[self.e.id]:
                     echo=b'\xff'*4+socket.inet_aton(self.e.member['host'])+struct.pack('!H',self.e.member['p2p'])
                     self.stun.sendto(echo,addr)
             except (OSError,UnicodeError): pass
@@ -511,7 +566,7 @@ class Compatibility:
                                 if src:
                                     obj={'ctx_id':self.ctx,'room_id':room['id'],'src_member_id':src['slot'],
                                          'event':0x2102,'cast_type':message['cast_type'],'dst_member_ids':message['targets'],
-                                         'src_npid':source,'src_account_id':account(source),'src_platform':2,'msg':base64.b64decode(message['data'])}
+                                         'src_npid':self.native_names[source],'src_account_id':account(source),'src_platform':2,'msg':base64.b64decode(message['data'])}
                                     with self.np_lock:
                                         if self.np:
                                             try: self.np[0].sendall(packet(2,11,0,blob(encode('NotifyRoomMessage',obj))))
@@ -532,8 +587,8 @@ class Compatibility:
                     continue
                 if (self.observed or recovery or self.e.id in s['pending']) and (self.release_intent or (s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{})))) and self.native_leave_idle(n) and not self.e.pending_local:
                     if self.e.id in s['pending']:
-                        self.maintain_command('admission_cancel')
-                    elif self.e.id in s['joined'] and s['room'] and (s['room'].get('closing') or self.e.id in s['room'].get('departing',{}) or recovery):
+                        self.maintain_command('admission_cancel',ticket=s['pending'][self.e.id].get('ticket',0))
+                    elif self.e.id in s['joined'] and s['room'] and (self.release_intent or s['room'].get('closing') or self.e.id in s['room'].get('departing',{}) or recovery):
                         self.maintain_command('room_leave')
                     elif s['owner']==self.e.id and not s['joined'] and not s['pending']:
                         if s['room']: self.maintain_command('room_leave')
@@ -553,7 +608,7 @@ def start_from_environment(env,port):
     overrides.write_text(json.dumps({'https://ss4.scej-network.jp:20443':f'http://127.0.0.1:{compat.http_port}'}),encoding='utf-8')
     env.update(BBSC_PARTY='1',BBSC_PARTY_INSTANCE=cfg['group']+'-'+member,BBSC_PARTY_PORT=str(compat.http_port),BBSC_PARTY_TOKEN=compat.token,
         BBSC_RELAY=f'127.0.0.1:{compat.relay_port}',BB_SHADNET_SERVER=f'127.0.0.1:{compat.np_port}',
-        BB_SHADNET_WEBAPI=f'http://127.0.0.1:{compat.http_port}',BB_SHADNET_NPID=member,BB_SHADNET_PASSWORD=compat.token,
+        BB_SHADNET_WEBAPI=f'http://127.0.0.1:{compat.http_port}',BB_SHADNET_NPID=compat.native_names[member],BB_SHADNET_PASSWORD=compat.token,
         BB_HOST_OVERRIDES=str(overrides),BB_P2P_PORT=str(engine.member['p2p']),BB_P2P_RELAY='off',
         BB_ONLINE='1',BB_COOP='1',BB_UPNP='0',BB_PROBE=str(native),BBSC_EMULATOR=str(probe),BBSC_DATA_DIR=str(profile/'coop/bbsc'))
     for key in ('BB_NET_BACKEND','BB_THD_TOKEN','BB_THD_SERVER'): env.pop(key,None)

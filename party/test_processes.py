@@ -34,11 +34,12 @@ class Tests(unittest.TestCase):
         for c in self.cs:
             if c.p.poll() is None: c.kill()
         self.tmp.cleanup()
-    def group(self,n,fault=None,compat=False):
+    def group(self,n,fault=None,compat=False,names=None):
         members=[]
         for i in range(n):
             with socket.socket() as s: s.bind(('127.0.0.1',0)); port=s.getsockname()[1]
             members.append({'id':chr(65+i),'host':'127.0.0.1','port':port,'p2p':3658+i})
+            if names is not None:members[-1]['name']=names[i]
         self.file=self.root/'invite.json'; self.file.write_text(json.dumps(invite(members)))
         for m in members: self.start(m['id'],fault,compat)
         return self.cs[:]
