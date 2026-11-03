@@ -5,7 +5,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 from engine import initial, invite, transition
 from compat import Compatibility
-from test_compat import CompatibilityTests
+import test_compat
 
 
 class NativeMemberIdsTests(unittest.TestCase):
@@ -67,7 +67,7 @@ class NativeMemberIdsTests(unittest.TestCase):
         self.assertIsNone(state['owner'])
 
     def test_three_real_native_api_clients_receive_correct_ids_and_slot_mask(self):
-        probe = CompatibilityTests('runTest')
+        probe = test_compat.CompatibilityTests('runTest')
         probe.setUp()
         try:
             a, b, c = probe.group(3, compat=True)
@@ -89,7 +89,7 @@ class NativeMemberIdsTests(unittest.TestCase):
             probe.tearDown()
 
     def test_host_blank_requires_real_native_idle_before_another_beckoner(self):
-        probe = CompatibilityTests('runTest')
+        probe = test_compat.CompatibilityTests('runTest')
         probe.setUp()
         try:
             a, b, c = probe.group(3, compat=True)
