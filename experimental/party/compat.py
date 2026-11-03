@@ -10,6 +10,11 @@ def packet(kind,cmd,ident,raw): return struct.pack('<BHIQ',kind,cmd,15+len(raw),
 def account(who): return int.from_bytes(hashlib.sha256(who.encode()).digest()[:7],'little')+1000
 def json_bins(bins):
     return [dict(x,data=base64.b64encode(x.get('data',b'')).decode()) for x in bins]
+def merge_bins(old,new):
+    merged={x['attr_id']:x for x in old}
+    merged.update({x['attr_id']:x for x in new})
+    return [merged[key] for key in sorted(merged)]
+
 def native_bins(bins):
     return [dict(x,data=base64.b64decode(x.get('data',''))) for x in bins]
 
@@ -243,8 +248,13 @@ class Compatibility:
         if cmd==107: return {}
         if cmd in (108,109,116):
             if not s['room'] or s['room']['id']!=r['room_id']: raise ValueError('Stale room update')
-            if cmd==108: self.command('room_update',bins=json_bins(r.get('bin_attrs',[])),flags=r.get('flag_attr',s['room']['flags']))
-            elif cmd==116: self.command('member_update',bins=json_bins(r.get('bin_attrs',[])))
+            if cmd==108:
+                mask=r.get('flag_filter',0)
+                flags=(s['room']['flags'] & ~mask) | (r.get('flag_attr',0) & mask)
+                self.command('room_update',bins=merge_bins(s['room']['bins'],json_bins(r.get('bin_attrs',[]))),flags=flags)
+            elif cmd==116:
+                old=s['room']['members'][who].get('bins',[])
+                self.command('member_update',bins=merge_bins(old,json_bins(r.get('bin_attrs',[]))))
             # External attributes are not used for private direct room admission.
             return {'room_id':r['room_id']}
         raise ValueError('Unsupported private operation')

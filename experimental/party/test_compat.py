@@ -34,8 +34,10 @@ class CompatibilityTests(ProcessTests):
             self.assertEqual(self.http(a,'/party/acquire',control=True),b'1')
             self.assertEqual(self.http(b,'/party/can_beckon',control=True),b'0')
             self.assertEqual(self.http(b,'/party/acquire',control=True),b'0')
-            room=self.np_call(sa,101,'CreateRoomRequest',{'max_slots':5,'world_id':1,'internal_bin_attrs':[{'attr_id':1,'data':b'host-key'}]},'CreateRoomReply')
+            room=self.np_call(sa,101,'CreateRoomRequest',{'max_slots':5,'world_id':1,'flags':4,'internal_bin_attrs':[{'attr_id':1,'data':b'host-key'}]},'CreateRoomReply')
             room_id=room['room_id']; self.assertEqual(room['details']['room_data']['room_id'],room_id)
+            self.np_call(sa,108,'SetRoomDataInternalRequest',{'room_id':room_id,'flag_filter':2,'flag_attr':2,'bin_attrs':[{'attr_id':2,'data':b'updated-only-this-attribute'}]},'SetRoomDataInternalReply')
+            self.assertEqual(a.state()['state']['room']['flags'],6)
             end=time.monotonic()+3
             while time.monotonic()<end:
                 found=json.loads(self.http(a,'/summon_messenger/get',{}))['SummonDataList']
@@ -48,6 +50,8 @@ class CompatibilityTests(ProcessTests):
             delivered=json.loads(self.http(b,'/summon_messenger/create',sign)); self.assertEqual(delivered['HostData'],'native-opaque')
             joined=self.np_call(sb,102,'JoinRoomRequest',{'room_id':room_id},'JoinRoomReply')
             self.assertEqual(len(joined['details']['members']),2)
+            attrs=joined['details']['room_data']['bin_attrs_internal']
+            self.assertEqual({x['attr_id']:x['data'] for x in attrs},{1:b'host-key',2:b'updated-only-this-attribute'})
             endpoint=self.np_call(sa,105,'RequestSignalingInfosRequest',{'target_npid':'B'},'RequestSignalingInfosReply')
             self.assertEqual((endpoint['target_ip'],endpoint['target_port']),('127.0.0.1',3659))
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as udp:
