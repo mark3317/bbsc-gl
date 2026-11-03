@@ -31,6 +31,7 @@ using s32=int32_t; using s64=int64_t;
 #define PS4_SYSV_ABI
 #define LOG_INFO(...)
 #define LOG_ERROR(...)
+#define BBSC_TIMELINE(...)
 #define BBSC_MOD
 namespace BbscMod {
 bool party_ready=true;
@@ -48,6 +49,9 @@ std::vector<int> events; // journal=1, save=2, notify=3, suspend=4, stop=5
 constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
+bool bbsc_duel_bell_ready=true, blank_active=true;
+std::vector<int> bbsc_blank_effect_rows{1};
+bool BbscLocalEffectActive(const std::vector<int>&) { return blank_active; }
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 std::atomic<u64> bbsc_world_load_pending{0};
 std::atomic<bool> bbsc_reload_finish_pending{false};
@@ -107,10 +111,12 @@ state=state.replace('constexpr u64 BbscQuitCloseMenusOffset = 0x0176A900;', 'u64
 functions = '\n'.join(function(signature) for signature in (
     'void CleanupBbscDepartingRemotes()',
     'void PrepareBbscQuitToTitle()',
+    'void HoldBbscHostQuitInput(const BbscPendingQuit& pending)',
     'void CancelBbscPendingQuit(std::string_view why)',
     'void PS4_SYSV_ABI BbscNativeQuitConfirmHook(u64, const GuestRegisterSnapshot* registers)',
     'void PS4_SYSV_ABI BbscQuitSaveResultHook(u64, const GuestRegisterSnapshot* registers)',
     'void TickBbscPendingQuit()',
+    'void TickBbscHostBlank()',
     'void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global)',
     'void TickBbscLoadState()',
 ))
@@ -165,6 +171,8 @@ int main() {
     reset(0); bbsc_world_load_pending=0;
     for (s32 role : {1,3,4,6}) {
         reset(role); confirm();
+        const int host_lock=(role==1 || role==3) ? 1 : 0;
+        assert(memory[menu+0x2DC]==host_lock && memory[0x600000+0x8D]==host_lock);
         assert(BbscQuitInProgress() && bbsc_quit_defer_store==1);
         assert(memory[menu+0x250]==0 && !stopped());
         confirm(); assert(events.size()==1 && closed==0); // duplicate preserves the pending save
@@ -184,7 +192,7 @@ int main() {
         session=0; BbscMod::party_ready=false;
         TickBbscPendingQuit(); TickBbscPendingQuit();
         assert(closed==0 && memory[world+8]==0 && memory[request_address]==0);
-        assert(memory[0xb00111]==0 && memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
+        assert(memory[0xb00111]==0 && memory[menu+0x2DC]==host_lock && memory[0x600000+0x8D]==host_lock);
         BbscMod::party_ready=true; memory[world+8]=1;
         TickBbscPendingQuit(); assert(closed==0 && memory[request_address]==0);
         memory[world+8]=0; TickBbscPendingQuit();
@@ -212,6 +220,27 @@ int main() {
 
     assert(closed==0 && memory[world+8]==1); // unrelated native load is preserved
     reset(3); confirm(); session=6; TickBbscPendingQuit(); assert_cancelled();
+    // Host lock persists across native Stop and consensus wait, which can reset
+    // Lua/menu restrictions. Cancelling restores the captured native values.
+    reset(3); confirm(); memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
+    TickBbscPendingQuit();
+    assert(memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
+    result(9); memory[world+0x1554]=0; TickBbscPendingQuit(); assert_cancelled();
+    reset(3); memory[menu+0x2DC]=9; memory[0x600000+0x8D]=3;
+    confirm(); now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && memory[menu+0x2DC]==9 && memory[0x600000+0x8D]==3);
+    // An unrelated native load owns reset; cancellation must not clear its locks.
+    reset(3); confirm(); memory[world+8]=1; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && memory[menu+0x2DC]==1 && memory[0x600000+0x8D]==1);
+    reset(3); confirm(); memory[image_base+MenuManPointerOffset]=0x310000;
+    TickBbscPendingQuit(); assert(!BbscQuitInProgress() && memory[0x310000+0x2DC]==0);
+    reset(3); confirm(); memory[0x600100+8]=0x610000;
+    now+=BbscQuitSaveTimeoutMs; TickBbscPendingQuit();
+    assert(!BbscQuitInProgress() && memory[0x610000+0x8D]==0);
+    // An earlier host Blank must not release this later title exit's wait.
+    reset(3); memory[image_base+0x0553B0C8]=0x600100;
+    TickBbscHostBlank(); confirm(); session=0; memory[world+0x1592]=1;
+    TickBbscHostBlank(); assert(memory[0x600000+0x8D]==1);
     reset(); confirm(); memory[world+0x1490]=3; TickBbscPendingQuit(); assert_cancelled();
     reset(); memory[world+0x1490]=static_cast<u64>(-1); confirm();
     TickBbscPendingQuit(); assert_cancelled();
