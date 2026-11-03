@@ -340,8 +340,14 @@ constexpr std::array<u8, 5> ActiveBellAreaFlagResult{0x88, 0xC3, 0x80, 0xF3, 0x0
 constexpr std::array<u8, 5> ActiveBellAllowedAreaFlagResult{0xB3, 0x01, 0x90, 0x90, 0x90};
 constexpr u64 ResponderSearchAreaRangeResultOffset = 0x0191A8C3;
 constexpr std::array<u8, 6> ResponderSearchAreaRangeResult{0x18, 0xC9, 0x20, 0xC1, 0xEB, 0x02};
-constexpr std::array<u8, 6> ResponderSearchSignedAreaRangeResult{0x7D, 0x04, 0x88,
-                                                                 0xC1, 0xEB, 0x02};
+// Native 0191A750 is used both for the active bell icon and for publishing
+// responder signs. AL still contains !area_disable_flag (e.g. Cathedral Ward
+// 2405) here. Copying AL kept that gate even though goods use/SosStatus already
+// allowed the area, leaving a crossed bell with no /create after role changes.
+// Keep the signed area bound and the separate player-common eligibility check;
+// lift only this geographical/event gate, as Beckoning already does.
+constexpr std::array<u8, 6> ResponderSearchSignedAreaRangeResult{0x7D, 0x04, 0xB1,
+                                                                 0x01, 0xEB, 0x02};
 constexpr u64 SosStatusAreaRestrictionOffset = 0x018700D3;
 constexpr std::array<u8, 16> SosStatusAreaRestriction{
     0x84, 0xC0, 0x41, 0xBD, 0xFF, 0xFF, 0xFF, 0xFF, 0x44, 0x0F, 0x44, 0xEB, 0x41, 0xC1, 0xED, 0x1F,
@@ -19515,6 +19521,36 @@ void TickBbscNativeSignPolling() {
     }
 }
 
+// Record why a live bell has a crossed/non-searching icon, including before
+// the very first native /create (which cannot arm the sign-poll diagnostics).
+// Read-only and rate-limited; never force a native player/common validity result.
+void TickBbscBellSearchDiagnostic() {
+    static s64 next_ms = 0;
+    static std::string previous;
+    const s64 now = SteadyNowMs();
+    if (now < next_ms) return;
+    next_ms = now + 1'000;
+    const bool host = BbscLocalEffectNode(9000) != 0;
+    const bool responder = BbscLocalEffectNode(9005) != 0;
+    if (!host && !responder) { previous.clear(); return; }
+    const u64 player = GetLocalPlayerCharacter();
+    const u64 global = GetGlobalState();
+    const bool loaded = ReadablePointer(global, 0x1598) && ReadValue<u8>(global, 8) == 0;
+    if (!loaded || !ReadablePointer(player, 0x280)) return;
+    const s32 primary = ReadValue<s32>(player, 0x278);
+    const s32 alternate = ReadValue<s32>(player, 0x27C);
+    const std::string current = fmt::format(
+        "state={} areas={}/{} host={} responder={} host_icon={}/{} responder_icon={}/{} sign_requests={} claim_pending={} published={}",
+        GetSessionState(), primary, alternate, host, responder,
+        BbscLocalEffectNode(9003) != 0, BbscLocalEffectNode(9004) != 0,
+        BbscLocalEffectNode(9008) != 0, BbscLocalEffectNode(9009) != 0,
+        bbsc_native_sign_pending.load(), bbsc_native_sign_claim_pending.load(),
+        bbsc_native_sign_sent_ms.load() != 0);
+    if (current == previous) return;
+    previous = current;
+    LOG_INFO(Debug, "BBSC bell search: {}", current);
+}
+
 // Erasing the Beckoning effect silences matchmaking through the native bell path;
 // unlike Silencing Blank it does not dismiss hunters already in the host's room.
 void TickBbscHostSearchLimit() {
@@ -20936,6 +20972,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
                 BbscLocalEffectNode(9000) != 0);
         }
 #endif
+        TickBbscBellSearchDiagnostic();
         TickBbscPerfReport();
         const u32 pending_work = TakeBbscWork();
         bbsc_tick_map.store(GetCurrentPackedMap(), std::memory_order_release);
