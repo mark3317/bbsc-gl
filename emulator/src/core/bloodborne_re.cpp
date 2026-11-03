@@ -6329,7 +6329,6 @@ struct BbscWorldSnapshot {
 
 std::mutex bbsc_world_mutex;
 BbscWorldSnapshot bbsc_world_assembling; // guest: the snapshot being received
-BbscWorldSnapshot bbsc_world_ready;      // guest: the newest complete one
 // Guest: the newest complete snapshot of every block of the host's area (2026-09-28). The blocks of
 // one area join without a load (Central Yharnam 0x18000000 / Cathedral Ward 0x18010000 / ...), so a
 // guest who joined in one block and walked into the next had that block in its OWN state: the
@@ -6348,10 +6347,16 @@ void ClearBbscHostWorldSnapshots() {
     }
     std::scoped_lock lock{bbsc_world_mutex};
     bbsc_world_assembling = {};
-    bbsc_world_ready = {};
     bbsc_world_blocks.clear();
     bbsc_dream_assembling = {};
     bbsc_dream_ready = {};
+}
+
+// Party v5/v6 omit diagnostic-only kind-5 groups; legacy retains its format.
+bool BbscCompactWorldSnapshots() {
+    static const bool party = std::getenv("BBSC_PARTY") != nullptr;
+    const char* diagnostics = std::getenv("BBSC_WORLD_DIAGNOSTICS");
+    return party && !(diagnostics && std::string_view{diagnostics} == "1");
 }
 
 // Host side: one snapshot of `count` groups (group n = key_of(map, n)) in chunks of 8. Returns the
@@ -6360,6 +6365,13 @@ u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,
                          u32 (*key_of)(u32 map, size_t index), u64& present) {
     const auto mount = Chalice::IsMap(map) ? BbscHostChaliceMount() : Chalice::Mount{};
     if (Chalice::IsMap(map) && (!Chalice::ValidMount(mount) || mount.map != map)) return 0;
+    const bool compact = version == 1 && count == BbscWorldGroupCount && BbscCompactWorldSnapshots();
+    if (compact) { count = 30; version = 5; } // kinds 1/6/7 only
+    static bool compact_logged = false;
+    if (compact && !compact_logged) {
+        compact_logged = true;
+        LOG_INFO(Debug, "BBSC world state: compact snapshots enabled (30 groups / 4 chunks)");
+    }
     const size_t chunks = (count + BbscWorldChunkGroups - 1) / BbscWorldChunkGroups;
     u32 sent = 0;
     for (size_t chunk = 0; chunk < chunks; ++chunk) {
@@ -6383,7 +6395,7 @@ u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,
             present |= u64{1} << (first + i);
         }
         if (Chalice::IsMap(map)) {
-            packet.version = 4;
+            packet.version = compact ? 6 : 4;
             std::array<u8, sizeof(packet) + sizeof(mount.key) + sizeof(mount.revision)> scoped{};
             std::memcpy(scoped.data(), &packet, sizeof(packet));
             std::memcpy(scoped.data() + sizeof(packet), &mount.key, sizeof(mount.key));
@@ -22558,13 +22570,14 @@ void OnBbscWorldFlagsPacket(const void* data, std::uint32_t size) {
     SignalingBbscWorldFlags packet;
     std::memcpy(&packet, data, sizeof(packet));
     Chalice::Key dungeon{};
-    const bool chalice = packet.version == 3 || packet.version == 4;
+    const bool compact = packet.version == 5 || packet.version == 6;
+    const bool chalice = packet.version == 3 || packet.version == 4 || packet.version == 6;
     u64 dungeon_revision = 0;
     if (chalice) {
-        const size_t tail = sizeof(dungeon) + (packet.version == 4 ? sizeof(dungeon_revision) : 0);
+        const size_t tail = sizeof(dungeon) + ((packet.version == 4 || packet.version == 6) ? sizeof(dungeon_revision) : 0);
         if (size != sizeof(packet) + tail || !Chalice::IsMap(packet.packed_map)) return;
         std::memcpy(&dungeon, static_cast<const u8*>(data) + sizeof(packet), sizeof(dungeon));
-        if (packet.version == 4) {
+        if (packet.version == 4 || packet.version == 6) {
             std::memcpy(&dungeon_revision, static_cast<const u8*>(data) + sizeof(packet) + sizeof(dungeon), sizeof(dungeon_revision));
             if (dungeon_revision == 0) return;
         }
@@ -22574,9 +22587,9 @@ void OnBbscWorldFlagsPacket(const void* data, std::uint32_t size) {
     }
     // v1: ordinary maps; v2: Dream; v3: dungeon map plus immutable channel/FormData key.
     const bool dream = packet.version == 2;
-    const size_t group_total = dream ? BbscDreamGroupCount : BbscWorldGroupCount;
-    const size_t chunk_total = dream ? BbscDreamChunkCount : BbscWorldChunkCount;
-    if ((packet.version != 1 && !dream && !chalice) || packet.chunk_count != chunk_total ||
+    const size_t group_total = dream ? BbscDreamGroupCount : compact ? 30 : BbscWorldGroupCount;
+    const size_t chunk_total = (group_total + BbscWorldChunkGroups - 1) / BbscWorldChunkGroups;
+    if ((packet.version != 1 && !dream && !chalice && !compact) || packet.chunk_count != chunk_total ||
         packet.chunk >= chunk_total || !IsUsablePackedMap(packet.packed_map)) {
         return;
     }
@@ -22590,7 +22603,7 @@ void OnBbscWorldFlagsPacket(const void* data, std::uint32_t size) {
     {
         std::scoped_lock lock{bbsc_world_mutex};
         BbscWorldSnapshot& snap = dream ? bbsc_dream_assembling : bbsc_world_assembling;
-        BbscWorldSnapshot& ready = dream ? bbsc_dream_ready : bbsc_world_ready;
+        BbscWorldSnapshot& ready = bbsc_dream_ready;
         if (snap.map != packet.packed_map || snap.snapshot != packet.snapshot || snap.dungeon != dungeon ||
             snap.dungeon_revision != dungeon_revision) {
             snap = BbscWorldSnapshot{};
@@ -22615,7 +22628,7 @@ void OnBbscWorldFlagsPacket(const void* data, std::uint32_t size) {
                 first_for_map = !bbsc_world_blocks.contains(snap.map);
                 bbsc_world_blocks[snap.map] = snap;
             }
-            ready = snap;
+            if (dream) ready = snap;
         }
     }
     if (first_for_map) {

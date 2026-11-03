@@ -98,6 +98,7 @@ u32 GetCurrentPackedMap() { return current; }
 bool IsUsablePackedMap(u32 m) { return m && m!=0xffffffff; }
 constexpr size_t BbscWorldGroupBytes=125, BbscWorldChunkGroups=8;
 constexpr size_t BbscWorldGroupCount=40, BbscDreamGroupCount=57;
+bool compact_world=false; bool BbscCompactWorldSnapshots(){return compact_world;}
 constexpr size_t BbscWorldChunkCount=5, BbscDreamChunkCount=8, BbscSnapshotMaxGroups=57;
 constexpr s64 BbscWorldFlagsFreshMs=6000;
 std::vector<std::vector<u8>> sent;
@@ -113,7 +114,7 @@ u32 key_of(u32,size_t n) { return static_cast<u32>(12900+n); }
 
 start = SOURCE.index("struct BbscWorldSnapshot {")
 end = SOURCE.index("// Host side: one snapshot", start)
-snapshots = SOURCE[start:end]
+snapshots = SOURCE[start:end].replace(function("bool BbscCompactWorldSnapshots()"), "")
 start = SOURCE.index("struct BbscFollowMessage {")
 end = SOURCE.index("BbscFollowMessage bbsc_follow_latest{};", start) + len("BbscFollowMessage bbsc_follow_latest{};")
 follow = SOURCE[start:end]
@@ -170,6 +171,33 @@ int main() {
     assert(!BbscChaliceLoadReady(current));
     OnBbscWorldFlagsPacket(sent[0].data(),sent[0].size());
     assert(BbscChaliceLoadReady(current));
+
+    // Production compact sender and receiver: keep all30 gameplay groups,
+    // no diagnostic kind5, and don't declare completion before the final part.
+    compact_world=true; sent.clear(); ClearBbscHostWorldSnapshots();
+    OnBbscChaliceMountPacket(descriptor.data(),descriptor.size());
+    present=0; SendBbscFlagSnapshot(1,current,77,40,key_of,present);
+    assert(sent.size()==4 && sent[0][5]==6);
+    assert(present==((u64{1}<<30)-1));
+    for(int i=3;i>0;--i) OnBbscWorldFlagsPacket(sent[i].data(),sent[i].size());
+    assert(!BbscChaliceLoadReady(current));
+    OnBbscWorldFlagsPacket(sent[0].data(),sent[0].size());
+    assert(BbscChaliceLoadReady(current));
+    assert(bbsc_world_blocks.at(current).groups[29][0]==0x80);
+    assert(bbsc_world_blocks.at(current).groups[30][0]==0);
+    const auto compact_dungeon=sent;
+    sent.clear(); SendBbscFlagSnapshot(1,0x18010000,78,40,key_of,present);
+    assert(sent.size()==4 && sent[0][5]==5);
+    for(const auto& p:sent) OnBbscWorldFlagsPacket(p.data(),p.size());
+    assert(bbsc_world_blocks.contains(0x18010000));
+    assert(bbsc_world_blocks.at(0x18010000).present==((u64{1}<<30)-1));
+    // A compact header cannot trick the parser into accepting a legacy shape.
+    ClearBbscHostWorldSnapshots(); auto malformed=sent[0]; malformed[15]=5;
+    OnBbscWorldFlagsPacket(malformed.data(),malformed.size());
+    assert(bbsc_world_blocks.empty());
+    OnBbscChaliceMountPacket(descriptor.data(),descriptor.size());
+    for(const auto& p:compact_dungeon) OnBbscWorldFlagsPacket(p.data(),p.size());
+    compact_world=false;
 
     // Direct summon to a host already in a dungeon: native entry has no BBSC warp prepare.
     // Even all three native map candidates can still be the guest's old/invalid map.
