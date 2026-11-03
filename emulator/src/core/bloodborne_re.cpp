@@ -10062,6 +10062,9 @@ void RestoreBbscQuitControls(const BbscPendingQuit& pending) {
 }
 
 void CancelBbscPendingQuit(std::string_view why) {
+#ifdef BBSC_MOD
+    BbscMod::PartyEndTitleWait();
+#endif
     const auto pending = bbsc_pending_quit;
     RestoreBbscQuitControls(pending);
     bbsc_pending_quit = {};
@@ -21014,10 +21017,12 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     }
     if (site.offset == BbscGameTickOffset) {
 #ifdef BBSC_MOD
-        const u64 party_global = GetGlobalState();
-        BbscMod::PartyObserve(GetSessionState(),
-            !ReadablePointer(party_global, 0x10) || ReadValue<u8>(party_global, 8) != 0,
-            BbscLocalEffectNode(9000) != 0);
+        if (BbscMod::PartyEnabled()) {
+            const u64 party_global = GetGlobalState();
+            BbscMod::PartyObserve(GetSessionState(),
+                !ReadablePointer(party_global, 0x10) || ReadValue<u8>(party_global, 8) != 0,
+                BbscLocalEffectNode(9000) != 0);
+        }
 #endif
         TickBbscPerfReport();
         const u32 pending_work = TakeBbscWork();

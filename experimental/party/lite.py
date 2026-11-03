@@ -17,7 +17,8 @@ def command(r):
 try:
     for line in sys.stdin:
         r=json.loads(line); c=r['cmd']; t=r['token']
-        if c=='status': emit({'token':t,'signs':e.signs,'tx':e.status_tx})
+        if c=='status':
+            with e.lock:emit({'token':t,'signs':e.signs,'tx':e.status_tx})
         elif c=='state': emit(dict(e.snapshot(),token=t))
         elif c=='command': threading.Thread(target=command,args=(r,),daemon=True).start()
         elif c=='block':
@@ -27,7 +28,8 @@ try:
             with e.lock: e.fault=r['value']
             emit({'token':t,'ok':True})
         elif c=='inject': e.send(r['target'],r['message']); emit({'token':t,'ok':True})
-        elif c=='relay': e.relay(r['data'].encode()); emit({'token':t,'ok':True})
+        elif c=='reset_relay': e.reset_relay(); emit({'token':t,'ok':True})
+        elif c=='relay': e.relay(r['data'].encode(),recipients=r.get('recipients')); emit({'token':t,'ok':True})
         elif c=='received':
             frames=[]
             while not e.relay_in.empty(): frames.append(e.relay_in.get_nowait()[1].decode())
