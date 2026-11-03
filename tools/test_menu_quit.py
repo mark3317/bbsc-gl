@@ -52,12 +52,18 @@ s32 session=6; s64 now=1000; bool accept_save=true;
 bool bbsc_duel_bell_ready=true, blank_active=true;
 std::vector<int> bbsc_blank_effect_rows{1};
 bool BbscLocalEffectActive(const std::vector<int>&) { return blank_active; }
+s64 bbsc_host_blank_requested_ms=0;
+bool CloseBbscEmptyBlankHost(s64){return false;} // completion has its own production fixture
+u64 BbscLocalEffectNode(int){return 0;}
+bool BbscEraseLocalEffect(int){return true;}
+
 std::atomic<bool> bbsc_recover_session_cleanup{false};
 std::atomic<u64> bbsc_world_load_pending{0};
 std::atomic<bool> bbsc_reload_finish_pending{false};
 std::atomic<u32> bbsc_load_generation{0};
 u64 character=0x800000;
 u64 GetLocalPlayerCharacter() { return character; }
+s32 GetCharacterHp(u64){return 100;}
 bool BbscReturningToTitle() { return memory[request_address]==2; }
 template<class T> T ReadValue(u64 p, size_t off) { return static_cast<T>(memory[p+off]); }
 template<class T> bool WriteValue(u64 p, size_t off, T value) { memory[p+off]=value; return true; }

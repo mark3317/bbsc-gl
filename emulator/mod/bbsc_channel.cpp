@@ -109,6 +109,20 @@ void PS4_SYSV_ABI TraceNativeCancel(u64 site, const Core::GuestRegisterSnapshot*
              static_cast<u32>(connection), static_cast<u32>(phase),
              site == 0xC8DD60 ? 0x8001000100000000ULL : r->rsi);
 }
+// Observe the real application-level exchange callback, after UDP delivery.
+// Metadata only: channel/subtype/length and protocol version match, no payload.
+void PS4_SYSV_ABI TraceNativeExchangeReceive(u64, const Core::GuestRegisterSnapshot* r) {
+    static std::atomic<u32> count{0};
+    if (!r || count.fetch_add(1) >= 128) return;
+    u64 message=0, header=0;
+    if (r->rdx) BbscMod::ReadSlotSafely(r->rdx+8, &message);
+    if (message) BbscMod::ReadSlotSafely(message, &header);
+    LOG_INFO(Mod, "Native exchange receive: exchange={:#x} channel={} subtype={} bytes={} version_tag={} version={}",
+             r->rsi, static_cast<u32>(header&0xff), static_cast<u32>((header>>8)&0xff),
+             static_cast<u32>((header>>16)&0xffff), static_cast<u32>((header>>32)&0xff),
+             static_cast<u32>((header>>40)&0xff));
+}
+
 void InstallDisconnectTrace() {
     const std::array<u8,8> orphan{0x41,0x8B,0x7F,0x78,0x41,0x8B,0x76,0x20};
     const std::array<u8,9> task{0x8B,0xBB,0xA8,0,0,0,0x8B,0x73,0x10};
@@ -119,6 +133,9 @@ void InstallDisconnectTrace() {
     for (const u64 site : {0xC8DD60ULL, 0xCD89C0ULL})
         ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+site),
                                         cancel, site, TraceNativeCancel) && ok;
+    const std::array<u8,6> exchange_receive{0x55,0x48,0x89,0xE5,0x41,0x57};
+    ok = Core::InstallGuestCodeHook(reinterpret_cast<void*>(BbscMod::EbootAddress()+0x1478130),
+                                    exchange_receive, 0x1478130, TraceNativeExchangeReceive) && ok;
     LOG_INFO(Mod,"Native signaling close diagnostics installed={}",ok);
 }
 
