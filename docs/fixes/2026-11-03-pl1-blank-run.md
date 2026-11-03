@@ -72,3 +72,28 @@ from a different exchange/subtype reaching the callback.
 
 Build/deployment/startup and gameplay confirmation are recorded separately in
 HANDOFF and the parent run directory. Saves/settings/game files are untouched.
+
+## Additional reproduced native member-ID defect
+
+The local compatibility allocator encoded `(incarnation << 4) | place` and
+assigned owner ID 1. The actual packaged shadNet allocator (also exercised by
+parent `tests/test_matching2_slot_allocator.cpp`) uses `(place << 4) | generation`:
+initial owner/guests 17/34/51. The native place is `member_id >> 4`. With the
+previous format, later rejoins can name places beyond room capacity, while
+the advertised joined-slot mask was calculated from a different nibble.
+
+New rooms now use the shadNet format, reuse the actual free place, and retain
+the full monotonic incarnation separately in join_date. Thus low-nibble native
+generation wrap cannot make a late callback current. Existing live legacy
+rooms retain their identities and may drain; new admission requires a new
+room. No persisted journal is rewritten/reset and idle groups need no migration.
+
+The new production regression failed before the fix (owner 1 instead of 17),
+then passed: five occupied places, 100 non-last departures/rejoins across
+generation wrap, unchanged remaining identities, correct masks and unique
+join dates. Three independent real socket clients receive 17/34/51 with mask 7.
+Legacy drain, existing admission/rejoin and guest menu cancellation cases pass
+(5 focused tests). This is a confirmed format defect; P1's recorded failure
+precedes JoinRoom, so its causal contribution to that failed exchange is not
+established. The party engine is embedded on the three clients; no VPS service
+uses this private room allocator.

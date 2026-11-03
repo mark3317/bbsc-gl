@@ -87,8 +87,9 @@ def transition(state, sender, seq, op):
         if serial >= 1 << 24: raise ValueError('Native room identity exhausted')
         s['room_serial'] = serial
         room['id'] = (s['generation'] << 24) | serial
-        room['next_incarnation'] = 1
-        room['members'] = {sender: {'slot': 1, 'bins': room.pop('member_bins', [])}}
+        room['member_id_layout'] = 2
+        room['next_incarnation'] = 2
+        room['members'] = {sender: {'slot': 17, 'incarnation': 1, 'bins': room.pop('member_bins', [])}}
         s['room'] = room; result = room['id']
     elif kind == 'claim':
         target = op['target']
@@ -103,15 +104,18 @@ def transition(state, sender, seq, op):
         if s['room'] and s['room'].get('closing'): raise ValueError('Room is closing')
         if not s['room'] or sender not in s['pending'] or op['room_id'] != s['room']['id']:
             raise ValueError('No current admission')
-        slots = {m['slot'] & 15 for m in s['room']['members'].values()}
+        if s['room'].get('member_id_layout') != 2:
+            raise ValueError('Legacy native room must drain before new admission')
+        slots = {m['slot'] >> 4 for m in s['room']['members'].values()}
         slot = next((i for i in range(2, 6) if i not in slots), None)
         if slot is None or len(slots) >= s['room']['max_slots']: raise ValueError('Room full')
-        # Incarnation bits prevent a late event from resurrecting a reused slot.
+        # Match stock shadNet: upper bits are the place, low nibble is generation.
+        # Keep the full incarnation separately for callbacks after generation wrap.
         incarnation = s['room']['next_incarnation']
         if incarnation > 4095: raise ValueError('Recreate native room before incarnation wrap')
-        member_id = (incarnation << 4) | slot
+        member_id = (slot << 4) | (incarnation & 15)
         s['room']['next_incarnation'] += 1
-        s['room']['members'][sender] = {'slot': member_id, 'bins': op.get('bins', [])}
+        s['room']['members'][sender] = {'slot': member_id, 'incarnation': incarnation, 'bins': op.get('bins', [])}
         s['joined'][sender] = s['generation']; del s['pending'][sender]
         result = member_id
     elif kind == 'room_close':
