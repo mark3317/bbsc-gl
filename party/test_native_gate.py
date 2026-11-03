@@ -1,7 +1,7 @@
 """Production gate dispatch + actual Windows trampoline and exact item entry bytes."""
 from pathlib import Path
 import os,subprocess,tempfile
-root=Path(__file__).resolve().parents[2]
+root=Path(__file__).resolve().parents[1]
 s=(root/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 start=s.index('    // Native entry, before goods effects')
 body=s[start:s.index('#endif',start)]

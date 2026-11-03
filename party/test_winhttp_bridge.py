@@ -2,7 +2,7 @@
 import os,subprocess,tempfile,time,unittest,uuid
 from pathlib import Path
 from test_processes import Tests as ProcessTests
-ROOT=Path(__file__).resolve().parents[2]
+ROOT=Path(__file__).resolve().parents[1]
 SOURCE=r'''
 #include <windows.h>
 #include <cstdio>

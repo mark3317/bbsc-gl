@@ -1,4 +1,4 @@
-"""Serverless party protocol. Standard library; embedded in the launcher and lite clients.
+"""Serverless party protocol. Standard library; embedded in the launcher and protocol test clients.
 See PROTOCOL.md. No native gameplay datagrams enter this transport.
 """
 from __future__ import annotations
