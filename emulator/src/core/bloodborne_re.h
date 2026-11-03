@@ -66,6 +66,8 @@ std::uint32_t GetBbscRelayHost();
 // host's packets before it can match the host's position (busy servers). Relay thread.
 void NoteBbscHostRangOurSign(std::uint32_t sender);
 std::int32_t GetBbscRelaySessionState();
+// Published by confirmed quit; cleared before the native title menu takes input.
+bool BbscQuitInputBlocked();
 void InstallSeamlessCoopPatches();
 void InstallReverseEngineeringTrace();
 
