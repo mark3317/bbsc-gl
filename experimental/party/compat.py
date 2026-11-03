@@ -1,6 +1,6 @@
 """In-client, loopback-only native APIs. No old server implementation is launched/imported."""
 from __future__ import annotations
-import base64,copy,datetime,hashlib,http.server,json,os,queue,re,secrets,socket,socketserver,struct,threading,time,uuid
+import base64,copy,datetime,hashlib,http.server,json,os,queue,re,secrets,select,socket,socketserver,struct,threading,time,uuid
 from pathlib import Path
 from engine import Engine,canonical
 from protobuf import encode,decode
@@ -18,11 +18,21 @@ def merge_bins(old,new):
 def native_bins(bins):
     return [dict(x,data=base64.b64decode(x.get('data',''))) for x in bins]
 
-def recv_exact(sock,size):
+def recv_exact(sock,size,*,idle=False,deadline=None,budget=10,stopped=None):
+    # A healthy idle session has no frame in progress. Once the first byte arrives,
+    # one absolute deadline covers the entire header AND body, even with slow drip.
+    clock=deadline if deadline is not None else [None if idle else time.monotonic()+budget]
     out=bytearray()
     while len(out)<size:
+        if stopped and stopped(): raise EOFError()
+        now=time.monotonic()
+        if clock[0] is not None and now>=clock[0]: raise TimeoutError('Incomplete native frame deadline')
+        wait=.25 if clock[0] is None else min(.25,max(0,clock[0]-now))
+        ready,_,_=select.select([sock],[],[],wait)
+        if not ready: continue
         part=sock.recv(size-len(out))
         if not part: raise EOFError()
+        if clock[0] is None: clock[0]=time.monotonic()+budget
         out.extend(part)
     return bytes(out)
 
@@ -50,16 +60,18 @@ class Compatibility:
         outer=self
         class NP(socketserver.BaseRequestHandler):
             def handle(self):
-                self.request.settimeout(20)
+                self.request.settimeout(10) # send timeout; receive deadlines are per-frame
                 with outer.np_lock:
                     outer.np_generation+=1; generation=outer.np_generation
                 try:
                     self.request.sendall(packet(3,0,0,struct.pack('<I',1)))
                     authenticated=False
+                    handshake_deadline=time.monotonic()+10
                     while not outer.closed:
-                        kind,cmd,size,ident=struct.unpack('<BHIQ',recv_exact(self.request,15))
+                        frame=[None if authenticated else handshake_deadline]
+                        kind,cmd,size,ident=struct.unpack('<BHIQ',recv_exact(self.request,15,idle=authenticated,deadline=frame,stopped=lambda:outer.closed))
                         if kind!=0 or size<15 or size>262144: return
-                        raw=recv_exact(self.request,size-15); spec=COMMANDS.get(cmd)
+                        raw=recv_exact(self.request,size-15,deadline=frame,stopped=lambda:outer.closed); spec=COMMANDS.get(cmd)
                         if spec is None:
                             self.request.sendall(packet(1,cmd,ident,b'\x21')); continue
                         try:
@@ -127,7 +139,7 @@ class Compatibility:
         self.http_port=self.http.server_address[1]
         class Relay(socketserver.BaseRequestHandler):
             def handle(self):
-                self.request.settimeout(15)
+                self.request.settimeout(10) # healthy native relay may remain idle indefinitely
                 with outer.relay_lock:
                     outer.relay_generation+=1; gen=outer.relay_generation
                     old=outer.relay_sock; outer.relay_sock=self.request
@@ -138,9 +150,10 @@ class Compatibility:
                 try:
                     self.request.sendall(blob(bytes((127,max(0,len(engine.state['roster'])-1)))))
                     while not outer.closed:
-                        size,=struct.unpack('<I',recv_exact(self.request,4))
+                        frame=[None]
+                        size,=struct.unpack('<I',recv_exact(self.request,4,idle=True,deadline=frame,stopped=lambda:outer.closed))
                         if not 18<=size<=65536: return
-                        raw=recv_exact(self.request,size)
+                        raw=recv_exact(self.request,size,deadline=frame,stopped=lambda:outer.closed)
                         with outer.relay_lock:
                             if gen!=outer.relay_generation: return
                             if raw[:5]!=b'SHAD\x40': return
