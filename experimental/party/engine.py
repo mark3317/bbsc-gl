@@ -81,7 +81,10 @@ def transition(state, sender, seq, op):
         if sender != s['owner'] or s['room']: raise ValueError('Not sole owner')
         # Native room identity is distinct from world generation.
         room = copy.deepcopy(op['room'])
-        room['id'] = (s['generation'] << 24) | 1
+        serial = s.get('room_serial', 1) + 1
+        if serial >= 1 << 24: raise ValueError('Native room identity exhausted')
+        s['room_serial'] = serial
+        room['id'] = (s['generation'] << 24) | serial
         room['next_incarnation'] = 1
         room['members'] = {sender: {'slot': 1, 'bins': room.pop('member_bins', [])}}
         s['room'] = room; result = room['id']
