@@ -11,7 +11,7 @@
 | `bbport_launcher_backend.py` | QML-бэкенд: настройки (`settings.json`, `bbport.ini`), слоты `coopSetup`/`coopInstallZip`/старт коопа (`be:1416-1520`) |
 | `bbport_launcher_qml.py`, `qml/*.qml` | UI: Main, HomePage, SettingsWorkspace, SetupWizard, Rail… |
 | `bbport_pkg_setup.py`, `bbport_readiness.py`, `bbport_vulkan.py`, `bbport_steam.py` | мастер установки игры, проверки готовности, GPU, Steam |
-| `packaging/windows/build-coop-package.sh` | пакет для друзей: bb-probe (с BBSC relay) + лаунчер + `coop-server.json` (сервер по умолчанию, `COOP_INVITE`) + `coop/bbsc/` (наша сборка из `../BBSC/build/mod`) → `dist/bbport-coop-windows.zip` |
+| `packaging/windows/build-coop-package.sh` | пакет для друзей: bb-probe (с BBSC relay) + лаунчер + `coop-server.json` (сервер по умолчанию, `COOP_INVITE`) + `coop/bbsc/` (наша сборка из `mods-src/BBSC/build/mod`) → `dist/bbport-coop-windows.zip` |
 
 ## 2. Пакеты BBSC
 - Официальные релизы `CLSAMG22/BBSC` качаются по запросу, проверяются по опубликованному SHA-256, распаковываются с защитой от path traversal в `%LOCALAPPDATA%\bbport-coop\bbsc-client|bbsc-server` (старые имена `BBSC-0.0.1-BBport/-Server` поддерживаются, на этом ПК — ещё старое) (`coop:161-250`, `coop:87-93`).

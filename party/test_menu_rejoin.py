@@ -2,6 +2,12 @@
 import json,time,unittest
 from test_compat import CompatibilityTests
 class MenuRejoinTests(CompatibilityTests):
+    def setUp(self):
+        from unittest.mock import patch
+        import os
+        mode=patch.dict(os.environ,BB_PARTY_DIAGNOSTICS='1')
+        mode.start();self.addCleanup(mode.stop)
+        super().setUp()
     def test_cancel_retired_after_guest_idle_and_final_leave(self):
         a,b=self.group(2,compat=True)
         def native(state,loading,cancel):

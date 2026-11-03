@@ -1,3 +1,27 @@
+# Актуальное состояние — 04.11.2026
+
+Основной кооп использует локальный Party внутри run.py, private-network discovery
+и native UDP; отдельный VPS/shadNet/gameserver для этого пути не нужен.
+Старые серверные инструкции ниже — история, не текущая схема запуска.
+Имена игроков, повтор ожидания того же claim и квестовые guards добавлены в исходники;
+их игровое подтверждение ещё требуется. Второй гость и выход хоста остаются открыты.
+Overlap-admission эксперимент отменён, используется последовательный native admission.
+Для обычного деплоя — BB_FAST_DEPLOY=1, delta изменённых компонентов, без повторного
+verify-release/хэширования. Код, сборка, установка и игровой результат различаются.
+Текущее состояние см. в HANDOFF и отчёте docs/fixes/2026-11-04-project-cleanup.md
+родительского репозитория; исторические пути/версии ниже не применять автоматически.
+
+# Актуальные правила — 03.11.2026
+
+Единственный источник мода — этот подмодуль `bloodborne_pc/mods-src/BBSC`.
+Перед работой читать AGENTS.md, docs/HANDOFF.md и docs/BACKLOG.md здесь,
+а также ../../AGENTS.md и ../../docs/TESTING.md родительского репозитория.
+Правки и сборку мода выполнять только здесь; текущие пользовательские изменения сохранить.
+Основная установка: D:/Games/Bloodborne/Bloodborne Game Launcher.
+Для эксперимента serverless-party разрешены отдельные тестовые установки на ПК и ноутбуке;
+лёгкие сетевые клиенты проверяем на ПК. Исторические адреса и установки ниже
+проверять перед использованием. Офлайн / Кооп остаются режимами запуска.
+
 # Current naming (2026-10-31)
 
 BBGL = Bloodborne Game Launcher; GitHub: mark3317/bbgl. Mod: BBSC-GL, mark3317/bbsc-gl. Release folder: `Bloodborne Game Launcher`; profile: `%LOCALAPPDATA%\bbgl`. Source checkout folder names below remain local paths. Historical test paths refer to the installation at the time.
@@ -13,7 +37,7 @@ BBGL = Bloodborne Game Launcher; GitHub: mark3317/bbgl. Mod: BBSC-GL, mark3317/b
 ## Рабочие папки (mark-pc, Windows)
 | Путь | Что |
 |---|---|
-| `C:\Users\markn\CLionProjects\BBSC` | этот репо: мод BBSC |
+| `C:\Users\markn\CLionProjects\bloodborne_pc\mods-src\BBSC` | этот репо: мод BBSC |
 | `C:\Users\markn\CLionProjects\bloodborne_pc` | форк bbport (Windows-порт + Qt/QML-лаунчер), в его пакет кладётся наша сборка BBSC |
 | `D:\Games\Bloodborne\bbport-coop` | установленный лаунчер, в котором реально играем на этом ПК |
 | `D:\Games\Bloodborne\game` | файлы игры CUSA03173 v1.09 (только чтение!) |
@@ -40,7 +64,7 @@ VPS `remote_server` (77.73.67.175, Ubuntu 24, ssh `root`) — там игров�
   `git submodule update --init emulator/externals/fmt emulator/externals/xbyak`.
 - Эмулятор shadPS4 (редко нужен): `build/build-shadp2p.cmd`.
 - После сборки мода — пакет лаунчера собирается в `bloodborne_pc` (`packaging/windows/build-coop-package.sh`,
-  берёт `../BBSC/build/mod` по умолчанию), см. CLAUDE.md там.
+  берёт `mods-src/BBSC/build/mod` по умолчанию), см. CLAUDE.md там.
 
 ## Цикл разработки и теста (tools/coop-dev в bloodborne_pc)
 `bloodborne_pc/tools/coop-dev/coopdev.sh` (из Linux-VM Claude, по ssh) + `coopdev.ps1` (Windows-сторона):

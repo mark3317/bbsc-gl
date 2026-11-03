@@ -10,6 +10,7 @@ Original goods retain the game's Russian names.
 import os
 import re
 import sys
+from notice_text import notice_text, ORIGINAL_NOTICES_RU
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORE = os.path.join(HERE, '..', '..', 'emulator', 'src', 'core')
@@ -17,6 +18,7 @@ SOURCE = os.path.join(CORE, 'bbsc_messages.inc')
 OUT = os.path.join(CORE, 'bbsc_messages_ru.inc')
 
 RU = {
+    '<?leaveName?> disconnected from the game.': '<?leaveName?> отключился от игры.',
     'Call other players into your game. No Insight cost.': 'Позовите игроков в свою игру. Не тратит Озарение.',
     "Join another player's game. No Insight cost.": 'Присоединитесь к чужой игре. Не тратит Озарение.',
     "Invade another player's world. No Insight cost.": 'Вторгнитесь в чужой мир. Не тратит Озарение.',
@@ -41,16 +43,16 @@ RU = {
     "Invader <?leaveName?> left\nand went back to their world.":
         "Захватчик <?leaveName?> ушёл\nв свой мир.",
     "You invaded <?hostName?>'s world.": "Вы вторглись в мир <?hostName?>.",
-    "A player answered your bell.\nJoining...": "Игрок откликнулся на ваш колокол.\nПодключение...",
-    "Found a host.\nJoining their game...": "Хост найден.\nПодключение к его игре...",
+    "A player answered your bell.\nJoining...": "Найден звон Малого звонкого колокола",
+    "Found a host.\nJoining their game...": "Найден звон Зовущего колокола",
     "Ring the Beckoning Bell\nto call other players?": "Позвонить в Зовущий Колокол,\nчтобы позвать других игроков?",
     "Stop the Beckoning Bell": "Заглушить Зовущий Колокол",
     "Stop the Small Resonant Bell": "Заглушить Малый звонкий колокол",
     "Stop the Sinister Resonant Bell": "Заглушить Зловещий звонкий колокол",
     "Beckoning Bell rung.\nWaiting for players to join...":
-        "Зовущий Колокол звонит.\nОжидание игроков...",
+        "Поиск звона Малого звонкого колокола...",
     "Small Resonant Bell rung.\nLooking for a host to join...":
-        "Малый звонкий колокол звонит.\nПоиск хоста...",
+        "Поиск звона Зовущего колокола",
     "Sinister Resonant Bell rung.\nLooking for a world to invade...":
         "Зловещий звонкий колокол звонит.\nПоиск мира для вторжения...",
     "Nobody found.\nRing the bell again to keep looking.":
@@ -58,9 +60,9 @@ RU = {
     "Someone is about to invade your world.": "Кто-то готовится вторгнуться в ваш мир.",
     "Found a world to invade.\nEntering...": "Найден мир для вторжения.\nВход...",
     "Beckoning Bell rung (password).\nWaiting for players to join...":
-        "Зовущий Колокол звонит (пароль).\nОжидание игроков...",
+        "Поиск звона Малого звонкого\nколокола с совпадающим паролем.",
     "Small Resonant Bell rung (password).\nLooking for a host to join...":
-        "Малый звонкий колокол звонит (пароль).\nПоиск хоста...",
+        "Поиск звона Зовущего колокола\nс совпадающим паролем.",
     "Found a host,\nbut the beckoner is an Executioner, and thus an adversary.":
         "Хост найден, но он Палач,\nа значит, ваш соперник.",
     "Found a host,\nbut the beckoner is a Vileblood, and thus an adversary.":
@@ -92,13 +94,16 @@ RU = {
     "You are in the host's Hunter's Dream.": "Вы во Сне Охотника хоста.",
 }
 
-BATTLE = re.compile(r'^The host started the battle against\n(<\?npcNameId@\d+\?>)\.$')
-DEFEATED = re.compile(r'^(<\?npcNameId@\d+\?>) defeated\.$')
+BATTLE = re.compile(r'^The host started the battle against\n(<\?npcNameId@\d+\?>)\.?$')
+DEFEATED = re.compile(r'^(<\?npcNameId@\d+\?>) defeated\.?$')
 
 
 def russian(text):
     if text in RU:
         return RU[text]
+    # English screen notices are emitted without a single sentence's full stop.
+    if text + '.' in RU:
+        return RU[text + '.']
     if m := BATTLE.match(text):
         return 'Хост начал битву с боссом:\n' + m[1] + '.'
     if m := DEFEATED.match(text):
@@ -126,7 +131,13 @@ def main():
         if not m:
             continue
         english = m[3].replace('\\n', '\n').replace('\\"', '"').replace("\\'", "'").replace('\\\\', '\\')
-        out.append('{%s, %s, u"%s"}, // %s' % (m[1], m[2], cpp(russian(english)),
+        category, msg_id = int(m[1]), int(m[2])
+        translated = ORIGINAL_NOTICES_RU.get((category, msg_id))
+        if translated is None:
+            translated = russian(english)
+        if category == 30 or (category == 204 and msg_id >= 302200):
+            translated = notice_text(translated)
+        out.append('{%s, %s, u"%s"}, // %s' % (m[1], m[2], cpp(translated),
                                               cpp(english)[:90].rstrip('\\')))
         count += 1
     with open(OUT, 'w', encoding='utf-8', newline='\n') as f:

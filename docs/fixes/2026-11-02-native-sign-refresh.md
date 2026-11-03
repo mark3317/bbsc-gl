@@ -65,3 +65,13 @@ origin observer will distinguish a remaining cancellation from delayed claims.
 
 No server or protocol change; no VPS update required. No saves/settings/game
 files changed. Build, deployment and live validation are recorded separately.
+
+## Build / installation, 23:23 MSK
+
+Standalone 824a72c, bundled 151e24c, BBGL pin commit 572e066. Prior unrelated
+working-tree source changes retained; this is a local development build.
+Bundled build-mod-bbport.cmd exit=0, four existing warnings. Three targeted
+fixtures PASS. Five-file DLL delta deployment exit=0 to the shared PC install;
+backup D:/Games/Bloodborne/coop-dev/backups/native-sign-refresh-20261102-232304.
+No processes terminated, no game launches, settings/saves/game data unchanged.
+No server/protocol changes or VPS update. Live first-join validation pending.

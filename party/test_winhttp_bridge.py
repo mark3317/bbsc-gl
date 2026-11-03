@@ -1,5 +1,6 @@
 """Real production Windows WinHTTP bridge against independent party clients, no game."""
-import os,subprocess,tempfile,time,unittest,uuid
+import os,subprocess,tempfile,time,unittest,uuid,threading
+from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from test_processes import Tests as ProcessTests
 ROOT=Path(__file__).resolve().parents[1]
@@ -7,9 +8,32 @@ SOURCE=r'''
 #include <windows.h>
 #include <cstdio>
 #include <string>
+#include <future>
 #include "bbsc_party.h"
 namespace BbscMod { void LogLine(char,const char*,const std::string&){} }
 int main(int argc,char** argv){
+ if(argc>1 && std::string(argv[1])=="notices"){
+  const unsigned long long expected[][2]={{7,0},{0,7},{0,0},{8,0},{0,0},{0,0}};
+  for(const auto& pair:expected){
+   BbscMod::PartyMaintain();
+   if(BbscMod::PartyBellGeneration()!=pair[0] || BbscMod::PartyBellReleasedGeneration()!=pair[1])return 30;
+   Sleep(260);
+  }
+  return 0;
+ }
+
+ if(argc>1 && std::string(argv[1])=="async-cancel"){
+  const auto ticket=BbscMod::PartyRequestAcquire();
+  if(!ticket)return 20;
+  auto network=std::async(std::launch::async,[]{BbscMod::PartyMaintain();});
+  std::puts("frame-thread-ready");std::fflush(stdout);
+  if(std::getchar()==EOF)return 21;
+  BbscMod::PartyCancel();
+  std::puts("cancelled-with-network-blocked");std::fflush(stdout);
+  network.get();
+  if(BbscMod::PartyAcquireResult(ticket)!=BbscMod::PartyAcquireMailbox::Stale)return 22;
+  std::puts("late-grant-discarded");return 0;
+ }
  if(argc>1 && std::string(argv[1])=="idle"){
   BbscMod::PartyObserve(3,false,true); BbscMod::PartyMaintain(); Sleep(300);
   BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain(); return 0;
@@ -32,10 +56,64 @@ int main(int argc,char** argv){
  if(argc>1 && std::string(argv[1])=="hold"){
   BbscMod::PartyMaintain(); std::puts("ready"); std::fflush(stdout); Sleep(10000); return 0;
  }
- std::puts(BbscMod::PartyAcquire()?"granted":"denied");
+ const auto ticket=BbscMod::PartyRequestAcquire();
+ const auto end=GetTickCount64()+12000;
+ auto result=BbscMod::PartyAcquireMailbox::Stale;
+ do {
+  BbscMod::PartyMaintain();result=BbscMod::PartyAcquireResult(ticket);
+  if(result!=BbscMod::PartyAcquireMailbox::Queued && result!=BbscMod::PartyAcquireMailbox::Working)break;
+  Sleep(10);
+ } while(GetTickCount64()<end);
+ std::puts(result==BbscMod::PartyAcquireMailbox::Granted?"granted":"denied");
 }
 '''
 class BridgeTests(ProcessTests):
+ def test_notice_reply_versions_and_malformed_release(self):
+  replies=iter([b'0 0 7 0',b'1 0 0 7',b'1 0',b'0 0 8',b'1 0 0 invalid',b'garbage'])
+  class Handler(BaseHTTPRequestHandler):
+   def log_message(self,*args):pass
+   def do_POST(self):
+    self.rfile.read(int(self.headers.get('Content-Length',0)))
+    body=next(replies);self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+  server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+  thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+  cpp=self.root/'notice.cpp';exe=self.root/'notice.exe';cpp.write_text(SOURCE)
+  subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-DFMT_HEADER_ONLY',
+   '-I',str(ROOT/'emulator/mod'),'-I',str(ROOT/'emulator/mod/shim'),'-I',str(ROOT/'emulator/externals/fmt/include'),
+   str(cpp),str(ROOT/'emulator/mod/bbsc_party.cpp'),'-lwinhttp','-o',str(exe)],check=True)
+  env=dict(os.environ,BBSC_PARTY='1',BBSC_PARTY_PORT=str(server.server_port),BBSC_PARTY_TOKEN='fixture',BBSC_PARTY_INSTANCE=uuid.uuid4().hex)
+  try:subprocess.run([str(exe),'notices'],env=env,check=True,timeout=10)
+  finally:server.shutdown();server.server_close();thread.join()
+ def test_blocked_http_does_not_block_cancel_or_revive_grant(self):
+  entered,release=threading.Event(),threading.Event()
+  class Handler(BaseHTTPRequestHandler):
+   def log_message(self,*args):pass
+   def do_POST(self):
+    self.rfile.read(int(self.headers.get('Content-Length',0)))
+    if self.path=='/party/acquire':entered.set();release.wait(8);body=b'1'
+    else:body=b'1 0'
+    self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+  server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+  thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+  cpp=self.root/'async.cpp';exe=self.root/'async.exe';cpp.write_text(SOURCE)
+  subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-DFMT_HEADER_ONLY',
+   '-I',str(ROOT/'emulator/mod'),'-I',str(ROOT/'emulator/mod/shim'),'-I',str(ROOT/'emulator/externals/fmt/include'),
+   str(cpp),str(ROOT/'emulator/mod/bbsc_party.cpp'),'-lwinhttp','-o',str(exe)],check=True)
+  env=dict(os.environ,BBSC_PARTY='1',BBSC_PARTY_PORT=str(server.server_port),BBSC_PARTY_TOKEN='fixture',BBSC_PARTY_INSTANCE=uuid.uuid4().hex)
+  proc=subprocess.Popen([str(exe),'async-cancel'],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+  try:
+   self.assertEqual(proc.stdout.readline().strip(),'frame-thread-ready')
+   self.assertTrue(entered.wait(3))
+   proc.stdin.write('\n');proc.stdin.flush()
+   # A blocked production WinHTTP call is still outstanding at this point.
+   self.assertEqual(proc.stdout.readline().strip(),'cancelled-with-network-blocked')
+   self.assertIsNone(proc.poll());release.set()
+   out,_=proc.communicate(timeout=5)
+   self.assertEqual(proc.returncode,0);self.assertIn('late-grant-discarded',out)
+  finally:
+   release.set()
+   if proc.poll() is None:proc.kill();proc.wait()
+   proc.stdin.close();proc.stdout.close();server.shutdown();server.server_close();thread.join()
  def test_native_title_waits_for_unanimous_leave(self):
   a,b=self.group(2,compat=True)
   self.assertNotIn('error',a.op('acquire'))

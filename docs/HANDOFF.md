@@ -1,3 +1,345 @@
+## 04.11.2026 — current architecture and cleanup review
+
+Mainline uses embedded Party; external server/VPS is not required. Removed
+unreachable launcher ZIP/vendor installation helpers, retained native compatibility
+and save paths. Targeted cleanup checks PASS; no product build/deploy/gameplay.
+Second guest admission and host menu exit remain OPEN. Names/claim recheck/quest
+guards retain their source-only status below. Full state committed at user request.
+Review: [../../../docs/fixes/2026-11-04-project-cleanup.md](../../../docs/fixes/2026-11-04-project-cleanup.md).
+
+## 04.11.2026 — quest reward prerequisites corrected; gameplay pending
+
+Shared NPC death could advance a guest's separate personal quest before its
+actor was eligible. Original native predicate accepts fake dead actor in1240;
+production guard/trampoline now rejects it and retains1246/1245/native outcomes.
+Generated ordered/parameter-resolved gates cover28 NPC actors and24 receipt/source
+links; death worker, automatic drop, force treasure, native visibility and award
+paths guarded. Missing personal phase flags completed. White ribbon/chest hide
+regressions, native gate/trampoline and full BBSC_MOD syntax PASS; generators
+check against original data. No product build/deploy/gameplay or save rollback.
+Old run's exact chronology remains unrecorded (diagnostics off); replicated-state
+mismatch is reproduced in isolated native fixture, not claimed as a live retest.
+See fixes/2026-11-04-quest-reward-prerequisites.md; it supersedes the earlier
+source-only audit as implementation status. Host menu-exit issue remains OPEN.
+
+## 04.11.2026 — Clawmark source audit; guest-only origin still possible
+
+User clarifies host had also been guest: both observations do not prove a host
+award path. Correct window source: entity2410781/NPC109100 -> lot29010,
+GemGen100502/flag50001300.12410761 guest-enabled death event sets1245;
+12410760 force-drops the NPC treasure in1245 branch. Own-NPC protection covers
+1240..1245 but omits transformed phase1246 (confirmed coverage gap). Guest
+native death delivery has no separate quest-phase check; native caller is trusted.
+White-ribbon old blanket-enable bug is already absent; adding12410760 to local
+allowlist is not established as sufficient. Data/source assertions PASS, no
+runtime cause proven and no production changes/build/deploy/save changes.
+See fixes/2026-11-04-early-rune-host-exit-review.md (latest section supersedes
+prior role inference and name-only NPC candidates).
+
+## 04.11.2026 — early rune / host exit report reviewed, OPEN
+
+Main PC00:30–00:56 co-op log has diagnostics off; preceding rotated file is
+startup WinError32. Separate D:/Games/Bloodborne/twin run ends00:58. No item gate
+or clinic coordinates captured. Older local23:23/23:43 Player2 traces show title
+requests followed by own-world character construction, already WITHOUT extra
+StageTransition; cannot prove Continue vs automatic load. User reports automatic
+clinic spawn, so exit remains OPEN. User confirms early Clawmark visible to BOTH host and guest; actual lot/source unrecorded;
+current guest item pass already preserves native disabled availability.
+Read-only review; no save/settings/code/build/deploy changes. See
+fixes/2026-11-04-early-rune-host-exit-review.md; parent run
+out/coop-dev/runs/early-rune-host-exit-review-20261104.
+
+## 04.11.2026 — chosen player names restored at native Party boundary
+
+Latest laptop log00:42–43 shows technical P94a/P3f66 handles; PC coop_name=twin,
+user confirms ID displayed in game. Launcher config dropped discovery name.
+Now config preserves name; native login/room/lookup/signaling/user-info/events/
+STUN use chosen name, translated to stable IDs internally. Account/game UserId,
+journals/group remain stable. Duplicate/invalid names rejected before startup;
+legacy nameless configs retain ID handles. Source only; no deployment/gameplay.
+Named two-process native contract + legacy contract,6 discovery and7 local/start
+checks PASS. Evidence: parent out/coop-dev/runs/player-name-review-20261104/review.md.
+Preserve prior bounded claim recheck in compat.py when packaging.
+
+## 04.11.2026 — bounded claim confirmation recheck in source
+
+Compatibility.command now waits on the SAME claim sequence once more after its
+first8s confirmation timeout, before returning HTTP409/native retry cooldown.
+No second Engine.request, no replay of consuming POST, no retry of ValueError or
+other operations; total confirmation budget16s. Does not fix underlying missing
+confirmation or accelerate cases where confirmation remains absent beyond16s.
+Actual two-process HTTP test blocks peer until9s: request succeeds, revision+1,
+one pending guest. Two limit/rejection tests PASS. Gameplay/deploy pending;
+installed/running PC+laptop unchanged. Files: party/compat.py, party/test_rpc.py.
+
+## 04.11.2026 — slow connection review, running PC + laptop
+
+Laptop first summon request00:35:15.372 -> HTTP409 at00:35:23.388 (8.016s).
+Retry00:36:04.268 ->200 in0.540s; native ESTABLISHED in0.949s afterward.
+Main observed delay is failed admission +48.896s request retry gap;8s matches
+Party confirmation deadline, but exact409 reason/absent confirmation unproven.
+PC revision6 snapshot has guest joined/pending empty; world arrival not established.
+PC release diagnostics absent; laptop HTTP trace available, Party events absent.
+Read-only snapshots while games active; no settings/save/code/deploy changes.
+Evidence: parent out/coop-dev/runs/slow-connect-review-20261104-003746/review.md.
+
+## 04.11.2026 — log ownership WinError32 hotfix installed on both devices
+
+Both new launcher runs failed before native startup: the launcher owns last_run.log,
+while Party tried a second rotation. run.py/party/run_log.py now inherit the launcher
+pipe (single writer) and preserve standalone rotation. stdout/stderr/exit footer
+share the pipe; failed logging setup closes Party. Regression with real locked
+Windows log and actual subprocess/runner launch statements PASS; direct rotation
+and no-secret checks PASS. Two-file delta copied with launchers stopped, backups
+in each coop-dev/backups/log-owner-fix-20261104-002858 (PC) / -002917 (laptop).
+Launchers reopened PID2548/PID13700, visible/responding; gameplay retry pending.
+No settings/save/native/protocol changes. Full ZIP not regenerated; staging updated.
+Evidence: parent out/coop-dev/runs/log-owner-fix-20261104-002858.
+
+## 04.11.2026 — current package installed PC + laptop; Tailscale launchers open
+
+Full BB_FAST_DEPLOY package build exit0; changed source inputs stable during build.
+Includes release logging defaults, sequential admission rollback and latest notices.
+PC copy5145 / laptop copy5152 exit0; backups under each device coop-dev/backups/
+tailscale-release-20261104-20261104-001814 (PC) and -002212 (laptop).
+Main profiles keep original saves: PC twin; laptop C:/Games/Bloodborne/test.
+Selected Tailscale (PC100.126.220.38 / laptop100.86.230.51), opposite peer hint,
+coop mode and diagnostics off; settings backed up in each existing profile.
+Both launcher windows confirmed Responding=True in interactive session1:
+PC PID10808; laptop PID14880 at00:23:16MSK. Laptop one-shot task exit0, removed.
+No game started; gameplay connection not claimed. No VPS component required for
+embedded Party/Tailscale. Run record: parent out/coop-dev/runs/tailscale-release-20261104-001336.
+
+## 04.11.2026 — release logging is opt-in for diagnostics
+
+GPU/network default Error; BBSC DLL filters before fmt (default Error). DLL,
+GPU/network and optional timeline share native stderr/last_run.log, without
+separate automatic text files. BB_DIAGNOSTICS=1 (launcher diagnostic_logs toggle)
+enables verbose logs, timeline, packet samples/attempt tracing and PERF/PACING;
+individual switches remain available. Party event JSONL and search diagnostics
+are also opt-in. Functional exchange reply and StopRequest hooks remain active.
+No save/protocol changes. Targeted GPU/DLL/native UDP/relay/policy/party tests PASS;
+DLL build exit0, changed GPU source objects compiled. No deployment/gameplay run.
+See ../../../docs/LOGGING.md (parent repo); detailed limits there.
+
+## 03.11.2026 — user-requested sequential admission restored in source
+
+Removed overlap readiness override and candidate consumption/retry experiment.
+Native sequencing restored; preserved current-login identity, exact resident
+completion, role cooldown guard and confirmed Blank release/notice changes.
+Cooldown + resident-completion native regressions PASS. Experimental source/tests
+archived outside active tree. Source only: installed DLL still23:41:30.
+See fixes/2026-11-03-restore-sequential-admission.md.
+
+## 03.11.2026 — 23:43 run FAIL: second guest still receives no claim
+
+Latest DLL23:41:30 present in all3. P2host/P1guest/P3waiting, then
+P3host/P1guest/P2waiting. Second sign reaches each host; no second admission,
+no three-actor world. First request drains in both rounds; overlap hook runs.
+No new native-rejection retry diagnostic; exact blocking path remains unknown.
+Candidate transaction fixture PASS is not gameplay success. All3 native exit0;
+launchers remain. Stable9-file review: parent out/coop-dev/runs/candidate-2343-review.
+See fixes/2026-11-03-candidate-run-2343.md. Analysis only, no deployment.
+
+## 03.11.2026 — candidate transaction DLL installed; three launching23:42
+
+DLL build exit0;992 source inputs unchanged. Five-file delta copy0; backup
+D:/Games/Bloodborne/coop-dev/backups/candidate-transaction-20261103-20261103-234222.
+Coordinator960 launched23:42:29MSK. Three targeted native fixtures PASS;
+actual simultaneous guest admission still needs gameplay confirmation.
+See fixes/2026-11-03-candidate-transaction.md. No protocol/VPS/save changes.
+
+## 03.11.2026 — candidate consumption transaction; build pending
+
+Second candidate can be consumed before prepared data exists or native builder
+accepts it. Matched hook now defers state1 until successful native return, before
+QueueInsert. Null preparation/mode0 refusal retain eligibility; native blacklist
+and mode1 destruction remain final. Keeps original capacities/guards and existing
+overlap readiness;250ms bounded retries. Native scan->control-refusal->return
+fixture reproduces baseline permanent loss and patched once-only queueing.
+Overlap/cooldown direct regressions PASS. See fixes/2026-11-03-candidate-transaction.md.
+Previous run's exact refusing predicate was not logged; this is a proven native
+failure mode, gameplay confirmation remains pending. No protocol/VPS/save edits.
+Parent out/coop-dev/runs/candidate-transaction-20261103.
+
+## 03.11.2026 — 23:23 run: second sign unclaimed; silence rotation confirmed
+
+P1host/P2guest/P3 waiting; then P3host/P1guest/P2 waiting. In both rounds,
+second sign reaches host but no claim is created, even after first native request
+completes (queue0/readyffffffff). Overlap hook executes; simultaneous3 not fixed.
+P1 confirmed silence23:25:39.396 releases owner23:25:40.267; P3 stop notice
+23:25:40.668, new host23:25:51.940. All3 exit0; stable logs collected.
+See fixes/2026-11-03-second-sign-run-2323.md. Review only, no build/deploy.
+
+## 03.11.2026 — confirmed Blank silence installed; three-profile launch23:23
+
+Fixed missed native confirmed menu action302110: exact store01BC6BE7 now latches
+silence to game tick, erases9000 and cancels ownership after existing native drain.
+Old23:05 evidence: room gone23:07:17, owner retained until title23:09:03.
+Added explicit finalized-release notice; exact Russian strings approved by user,
+no ellipsis. See fixes/2026-11-03-confirmed-bell-silence.md.
+Targeted native/trampoline/banner/WinHTTP/three-process tests PASS. Build exit0;
+1017 inputs unchanged. Six-file delta (DLL + local compat.py), backup
+D:/Games/Bloodborne/coop-dev/backups/blank-silence-20261103-20261103-232257.
+Coordinator27320 launched23:23:08MSK; gameplay confirmation pending.
+No VPS/shared protocol/save changes. Parent out/coop-dev/runs/blank-silence-20261103.
+
+## 03.11.2026 — overlapping-admission DLL installed; three started23:05
+
+Build23:03:22 exit0;912 inputs unchanged. Five-file delta copy0; backup
+D:/Games/Bloodborne/coop-dev/backups/overlapping-admission-20261103-20261103-230426.
+Coordinator29160 started23:04:32MSK. Fresh logs23:05:00–01 confirm new DLL
+for P1native10332, P2native26776, P3native31624. Gameplay overlap pending.
+Three native regression fixtures PASS. Command submission remains serialized
+while owned; guest insertion/loading no longer by itself blocks next candidate.
+See fixes/2026-11-03-overlapping-admissions.md; parent run
+out/coop-dev/runs/overlapping-admission-20261103. No protocol/VPS/save changes.
+
+## 03.11.2026 — overlapping admission selection implemented; gameplay pending
+
+User requests independent simultaneous guest connection/loading. Existing scan
+hook now restores only eligible cooperator readiness while prior insertion is
+unfinished, once native dispatcher/result and broker command are idle. Keeps
+per-guest request IDs/reservations, identity-bound completion and original
+builder total/role caps; no queue resets or fabricated accept/arrival. Checks
+capacity before candidate consumption; original role delay mask remains.
+Native command buffer is still serialized; guest loading need not be.
+Exact-native scan/trampoline regression plus cooldown and completion PASS.
+See fixes/2026-11-03-overlapping-admissions.md. Parent run
+out/coop-dev/runs/overlapping-admission-20261103; DLL build in progress.
+Prior22:52 success confirms sequential admissions only, not this new overlap.
+
+## 03.11.2026 — 22:52 run PASS: second guest joins while first stays
+
+Current-login refresh observed for all3. P3host/P2first/P1second. Host native
+completion queued1->0 at22:54:42.200 and22:54:59.242. All3 clients report3
+actors22:54:59; no first-guest departure required. Remain together until P1
+explicit menu confirmation22:55:15.560 (~16s). P2 stays afterward, later menu
+exit22:55:33; host22:55:47. All3 runners exit0, no native negotiation failures.
+Final collection9files/0warnings/stable: parent
+out/coop-dev/runs/login-identity-2252-review/final-pc. Initial pc superseded.
+Second-guest admission is gameplay-confirmed for this local3 run; long-session,
+remote-network/rejoin/host-rotation coverage not implied. See
+fixes/2026-11-03-three-guests-run-2252.md. Analysis only, no code/deploy/save edits.
+
+## 03.11.2026 — current-login identity correction installed; three started22:52
+
+DLL build22:51:30 exit0;912 inputs unchanged. Delta copy0, backup
+D:/Games/Bloodborne/coop-dev/backups/login-identity-20261103-20261103-225219.
+Coordinator28972 started22:52:24MSK. Fresh mod logs22:52:54–56 confirm
+P1native28944, P2native28636, P3native28852 all load new DLL. Startup only;
+second-guest simultaneous residency still requires gameplay confirmation.
+Prior22:43 run has0 native negotiation failures but confirmed legacy user-ID
+mismatch; report fixes/2026-11-03-current-login-identity.md. Parent run
+out/coop-dev/runs/login-identity-20261103. No direct save/protocol/VPS changes.
+
+## 03.11.2026 — second guest root identified: legacy replicated user vs current login
+
+22:43 run fails again. Exact host log: P2resident4215/request520383427;
+P3resident1704/request830650577, role7 and character sentinel match. Queue1
+blocks until resident leaves. Native01C43DE0 only refreshes negative user IDs;
+positive legacy identity survives character loading after login. Add game-thread
+local slot identity refresh from current ServerInfo+60 before party/bell work;
+never modify remote slots or relax identity checks. Exact-native completion
+fixture reproduces failure, then succeeds after local refresh/replication;
+invalid IDs/writeability/quit/replaced-slot cases PASS. DLL build in progress.
+See fixes/2026-11-03-current-login-identity.md. Gameplay remains pending.
+
+## 03.11.2026 — admission corrections installed; three games started22:43
+
+Final DLL build22:41:37 exit0;912 recorded inputs unchanged. Five-file delta
+copied successfully; backup D:/Games/Bloodborne/coop-dev/backups/admission-exchange-20261103-20261103-224253.
+Coordinator32036 started22:43:01MSK; fresh logs22:43:28 confirm P1native1132,
+P2native28564, P3native31932 load new DLL and exchange hook installed=true.
+Gameplay still pending: test second guest while first remains at host.
+No claim that all admission failures are solved; old mismatch was ambiguous.
+See fixes/2026-11-03-admission-exchange-audit.md and parent run
+out/coop-dev/runs/admission-exchange-20261103. No protocol/VPS/save changes.
+
+## 03.11.2026 — admission exchange/role audit; fresh build pending gameplay
+
+22:20 failure traced across both endpoints: all13 host->guest and9 guest->host
+native vport40 datagrams delivered by matching hashes; P3 never dispatches
+initial version, P1 receives it. Add one native version/profile reply after
+first valid peer version (+88/+89), native+90 duplicate fence; no forced
+ready/accept or deadline change. Remove resident-vs-request role equality
+absent from native1877D00; full user/character and insertion/actor guards stay.
+Old logs cannot prove role rather than identity mismatch; new throttled log
+separates both and captures paired identities/roles. Exact-native completion
+and full exchange callback/trampoline tests PASS. Still no live3-player proof.
+See fixes/2026-11-03-admission-exchange-audit.md; parent run
+out/coop-dev/runs/admission-exchange-20261103. DLL-only, no protocol/VPS/saves.
+
+## 03.11.2026 — 22:20 run FAILED second-guest admission; identity guard isolated
+
+P1 hosts; P2 joins22:22:46 and is resident22:22:59/23:00. P3 sign remains
+available but no second claim/JoinRoom before P2 menu exit22:23:44. Never3 actors.
+Host completed-task/actor/slot checks pass; cleanup repeatedly stops at
+`queued role or identity mismatch`22:23:01–42, queued1/ready0. Thus87a1186 is
+not gameplay-confirmed; its HP correction is insufficient. Which of queued
+role/user/character differs is not distinguished. Earlier P3 claim22:21:48
+never became JoinRoom and expired20s later, a separate initial-admission issue.
+All3 runners exit0; final-pc collection9 files/warnings0/all stable. Party
+events in pc; first snapshot had3 changed records, superseded by final-pc.
+Parent out/coop-dev/runs/resident-slot-completion-20261103-review/pc;
+fixes/2026-11-03-second-guest-run-2220.md. No code/build/deploy/save changes.
+Supersedes previous gameplay-pending status; second-guest bug remains open.
+
+## 03.11.2026 — resident slot/HP correction installed; local three started22:20
+
+87a1186 DLL build exit0;1040 recorded build inputs unchanged. Native inputs
+unchanged since preceding delivery; related chats finished. Five-file delta
+copy0 with backup D:/Games/Bloodborne/coop-dev/backups/resident-slot-completion-20261103-20261103-221929.
+Coordinator31116 launched22:19:29MSK; current local-three group and profiles.
+Fresh mod logs22:20:06/07 confirm P1 native31464, P2 native9340, P3 native10172,
+DLL build22:18:18. No VPS/protocol/save/settings changes. Startup confirmed;
+second-guest gameplay remains pending. Keep first guest present while admitting
+second. See fixes/2026-11-03-resident-completion-slot-hp.md and parent run
+out/coop-dev/runs/resident-slot-completion-20261103. Source/build-pending entry
+below is historical; last18:08 failure still not retroactively explained.
+
+## 03.11.2026 — resident admission completion corrected for zero remote HP
+
+87a1186 removes remote HP as a predicate for completing an already arrived6/6
+identity-matched cooperator; host/load/leave/role/member/full request identity
+fences remain. Resolves native remote PlayerGameData by insertion slot0..3;
+adds throttled pending-reason diagnostics. Exact-native fixture reproduces old
+failure for arrived zero-HP actor, corrected PASS; loading zero-HP task and
+foreign identities remain rejected. Four slots/missing table checks PASS;
+full game TU syntax exit0. Exact guard from18:08 logs remains unproven.
+Build/deploy/three-player confirmation pending. See
+fixes/2026-11-03-resident-completion-slot-hp.md. Run record in parent
+out/coop-dev/runs/resident-slot-completion-20261103. No VPS/protocol changes.
+
+## 03.11.2026 — 18:08 run: resident completion fix NOT confirmed; second guest blocked
+
+Reviewed all three profiles, build18:07:19, PIDs41568/15820/40872.
+P3 host; P2 joins18:10:24 and is resident18:10:37. P1 sign returned by host
+search and continually refreshed, but no claim/JoinRoom through exit18:12:07/08.
+Host selection18:10:37: coop2/2, maskFFFFFFFF, ready0, queued1; remote task6/6,
+flags0xC, role7. SosStatus.Update runs, no resident-completion success logged.
+Last delivery's gameplay-pending status is superseded by this failed run;
+source fixture success does not establish the completion policy's real guards.
+Exact rejecting guard/native completion outcome not exposed by existing logs.
+Collection: parent out/coop-dev/runs/second-guest-1808-review/pc, 9 standard
+files/warnings0/stable copies plus party events and explicit last_run copies.
+All runners exit0. No code/build/deploy/save/settings changes. See
+fixes/2026-11-03-second-guest-run-1808.md. Bug remains open.
+
+## 03.11.2026 — resident summon completion delivered; local-three launched18:08
+
+Related menu-lock and notification source work completed. DLL build exit0;
+2446 recorded source input size/mtime unchanged through build, related chats
+idle. Six-file delta copy0, backup
+D:/Games/Bloodborne/coop-dev/backups/resident-summon-completion-20261103-180809.
+Includes current party/compat owner-excluded bell notice and host menu lock.
+Native port/VPS/wire protocol unchanged. Coordinator41392 launched18:08:10MSK,
+15:08:10UTC, three existing profiles. Fresh mod logs18:08:38/39 confirm
+Player1 native41568, Player2 native15820, Player3 native40872, built18:07:19. Gameplay confirmation pending: second
+guest should enter while first remains, without the180-game-second wait.
+Build record: parent out/coop-dev/runs/resident-summon-completion-20261103.
+Earlier source-only/ready-for-build status below is historical.
+
 ## 03.11.2026 — resident summon queue completion; ready for build
 
 Latest17:44 run still blocks next guest despite open role mask. P2/P3/P1 finally
@@ -12,6 +354,61 @@ Production policy + exact native completion and gate fixture PASS, five roles,
 unrelated pending retained,21 rejection cases; full game TU syntax PASS.
 Build/deploy/gameplay pending. See fixes/2026-11-03-resident-summon-request.md.
 
+## 03.11.2026 — host menu lock retained through asynchronous title handoff
+
+User reports System can reopen after a delay during active-host exit. Source
+had an unguarded interval: TickBbscPendingQuit returned immediately after
+bbsc_title_quit was populated, although OnReturnTitle only queues intent.
+Host LoadWait/menu brake now remain asserted after final leave and CloseMenus
+until native loading or world/menu replacement is observed. Handoff is latched
+so reused singleton addresses cannot reapply the restriction at title/Continue.
+Guest behavior and native save/Stop/final-leave ordering are retained.
+
+Production menu fixture first reproduced the gap on old code, then PASS:
+60s deferred title, reset by CloseMenus/native updates, host vs guest, loading,
+context replacement/reuse, Continue and cancellation. Full BBSC_MOD translation
+unit syntax PASS (existing getenv deprecation warnings). Source only; no product
+build/deploy/game launch; live confirmation remains pending coordinated build.
+See fixes/2026-11-03-host-quit-input.md. No save/settings changes.
+
+## 03.11.2026 — host bell banner reproduced: installed pre-exclusion code
+
+User reported the notification on the beckoner. Collection:
+parent out/coop-dev/runs/bell-host-notice-review-20261103/pc (9 files,
+warnings0; live files, some ChangedDuringCopy, not a final stopped-run snapshot).
+P1 grant17:46:59.762 -> notice17:47:00.274 -> native host17:47:26.631.
+P2 grant17:51:06.226 -> notice17:51:06.749 -> native host17:51:14.442.
+All three logs identify DLL build17:43:21 and startup17:44:41/42.
+Read-only inspection of installed coop/party/compat.py line370 confirms the
+old condition `owner is not None`, including the owner in bell notices.
+Source host exclusion was modified17:49:22; final wording17:53:52, after
+this build/startup. Current source excludes `owner in (None,self.e.id)`;
+this run cannot validate that revision. No additional code change needed
+for this finding; source exclusion/text still await a coordinated build,
+party compatibility file deployment and fresh runner/game startup.
+No build/deploy/restart/save/settings changes during this investigation.
+
+## 03.11.2026 — Beckoning notification wording and audience updated
+
+Supersedes the notification wording/audience entry below: "В мире раздаётся звон
+Зовущего колокола…" / "The chime of a beckoning bell resonates across the world...".
+Only other party clients receive the notice; the world owner receives zero
+notification generation. Repeat polling and owner rotation covered by the
+updated three-client RPC test; production notice-tick fixture PASS.
+Source only; no product build/deploy/gameplay confirmation.
+
+## 03.11.2026 — second-guest masks built/installed; local-three launched17:44
+
+Both related chats finished. DLL build exit0; native incremental exit0/no work;
+recorded build input size/mtime unchanged. Six-file delta installed with backup
+D:/Games/Bloodborne/coop-dev/backups/second-guest-masks-20261103-174410, including
+party/compat bell-notice extension from the completed parallel work. No VPS or
+wire-protocol changes. Coordinator32512 launched17:44:10MSK/14:44:10UTC; three
+existing separate-profile runners started. Fresh mod logs17:44:41/42 confirm
+Player1 native20260, Player2 native11760, Player3 native38820, built17:43:21. Gameplay remains pending: keep the
+first guest in host world while admitting the second. Earlier source-only status
+below is historical. Run: parent out/coop-dev/runs/second-guest-masks-20261103.
+
 ## 03.11.2026 — 17:16 second guest review: residual native co-op masks
 
 Individual joins and Blank host release confirmed in the new run, but a waiting
@@ -24,6 +421,355 @@ these fields, so contribution to the live block is not yet proven. Capacity,
 readiness and cooldown retained. Targeted mask/cooldown/matchmaking tests and
 full BBSC_MOD TU syntax PASS. Source only; no new build/deploy/launch.
 See docs/fixes/2026-11-03-second-guest-slot-masks.md. Three-player entry remains open.
+
+## 03.11.2026 — Beckoning Bell notification, source only
+
+All party clients, including the beckoner, now show "Игрок начал звонить в
+колокол призыва." (English equivalent for English UI) once per finalized
+world reservation generation, at the same authority transition that locks
+other clients' Beckoning Bells. Opt-in third `/party/tick` response field;
+old DLLs keep two fields and new DLLs accept old runners without a notice.
+No notification from cached availability failures/network loss. Game-thread
+banner retries while its table is unavailable; loading/title/quit are fenced;
+repeat polling/reconnect within the same process does not repeat a generation.
+Targeted 3-process RPC, legacy title ticket RPC, production native notice-tick
+fixture, real WinHTTP/process fence and full changed game TU syntax PASS.
+No product build, deployment or game launch; live banner appearance pending.
+
+## 03.11.2026 — 17:16 performance run reviewed; targeted waits removed, FPS/stutters still open
+
+Fresh9 stable files/warnings0: parent out/coop-dev/runs/perf-review-20261103-1716.
+All3 mod logs built17:14:37;94 valid pacing windows/PID,report_async1,
+tail_precise1,reports_dropped0. Actual background bell grants438/672/422ms;
+no matching frame-long wait, each player subsequently hosted. Initial sign
+cleanup/retry allowed real joins. Ready-queue menu~59.97–59.99FPS.
+Stable gameplay still~47.6–55.2FPS, systemCPU92.5–95.9% with3 games. P2host
+has100 frames>50ms in~70s at47.54FPS. P1post-load358ms is primarily late-ready;
+CPU/GPU producer ownership unmeasured. Report capture/submit wall time reaches
+10.559ms, not the old synchronous-print metric. No matched single-game A/B;
+no percentage FPS gain claimed. Pairs rotate, no hunters3; second guest remains
+open. Analysis only, no source/build/deploy/launch/save/settings edits.
+See parent docs/fixes/2026-11-03-pacing-run-1716.md for metrics and boundaries.
+
+## 03.11.2026 — 17:16 final Blank/native IDs/performance batch deployed; three native games launched
+
+Related performance chat completed before final build. Parent d588b23 / BBSC
+528fe6a plus recorded working changes. DLL build0/native incremental build0,
+source input metadata stable throughout; 8-file delta copy0 on stopped PC.
+Backup D:/Games/Bloodborne/coop-dev/backups/blank-native-ids-perf-final-20261103-171607.
+Run parent out/coop-dev/runs/blank-host-exchange-20261103-164554;
+coordinator20488 launched17:16:08MSK/14:16:08UTC via existing local-three mode.
+Includes host Blank/search-end empty-room completion, canonical native member
+IDs/slot mask/full callback incarnation, bounded application-exchange observer,
+asynchronous authority-preserving bell/HTTP cleanup and diagnostic reporting,
+transport formatting outside lock and checked current-map memory lookup reduction.
+Targeted tests pass (own native Blank/menu/exchange +6 focused party cases;
+performance validation recorded in frame-thread-stalls). No save/settings/journal
+reset; all3 existing journals were final88/idle before launch. No VPS update:
+changed runtime allocator is embedded in clients; public wire format unchanged.
+Gameplay remains pending: Blank role transfer and native deferred bell, PL1
+exchange/second guest, plus performance. The recorded PL1 pre-JoinRoom failure
+is not declared solved by an API fixture or successful build/startup.
+Startup confirmed: P1/P2/P3 native30272/13872/38964; fresh mod logs17:16:36/37
+all built17:14:37, local coordinator run20261103-141608. Games left running.
+Successful startup is not confirmation of JoinRoom, role transfer or FPS improvement.
+
+## 03.11.2026 — frame-thread stall fixes implemented; gameplay pending
+
+Party acquire now runs on the maintenance worker. Native item callbacks enqueue
+without network waits; the game tick resumes one confirmed action with actor/map/
+load-generation/cancel/death/title fences. Nested item entries share one grant;
+late replies cannot revive cancelled generations. Stale-sign HTTP cleanup also
+runs outside lifecycle mutex on the worker; native create uses nonblocking retry,
+with in-flight/version fences and delete-before-create preserved. Unfinished
+native joins are not cleaned. Parent transport formats diagnostic snapshots after
+unlock; pacing and legacy Perf output use bounded asynchronous writers.
+DLL memory checks avoid duplicate region lookup; current-map reader uses4 live
+span checks instead of8, preserving bounds/permissions and no inter-call cache.
+Targeted production fixtures,3 real WinHTTP bridge tests, native trampoline,
+540 real UDP deliveries/current transport, async pacing/backpressure and relevant
+hot-path regressions PASS. Full changed module TU MSVC/clang-cl syntax and native
+driver syntax PASS. No product build/deploy/launch/settings/save/VPS change;
+FPS benefit and native deferred-bell/initial-sign retry behavior await gameplay.
+See [implementation and validation](fixes/2026-11-03-frame-thread-stalls.md).
+
+## 03.11.2026 — 16:23 pacing run investigated; remaining stalls not fixed
+
+Fresh stable 9-file collection/warnings0: parent
+out/coop-dev/runs/perf-review-20261103-1623. All three PIDs tail_precise1;
+ready-queue menu windows now59.73–60.02FPS vs historical57.1–57.4.
+Gameplay47–55FPS, systemCPU95–98%, late-ready dominates; no matched
+single-game baseline. P3 505.6ms frame aligns with474.9ms synchronous
+PartyAcquire inside native item hook. P1 435.8ms frame aligns with stale
+claim cleanup; HTTP/lifecycle-lock causality still unmeasured. Pacing
+report overhead max18.827ms; packet batch formatting holds transport
+mutex despite logging after unlock. BBSC hot-hook wall times include
+preemption and nested ticks, not pure CPU or measured DLL FPS penalty.
+Priorities: asynchronous authority-preserving party gate, measure/move
+lifecycle I/O and diagnostic formatting, reduce observer overhead, then
+matched one-vs-three CPU/GPU/worker-count comparison. Analysis only;
+no product edits/build/deploy/launch or save/settings changes. See parent
+docs/fixes/2026-11-03-pacing-run-1623.md for evidence and limits.
+
+## 03.11.2026 — host Blank empty-room completion fixed in source; PL1 still open
+
+16:23 run collected: 9 stable files/warnings0, plus three party journals.
+P3 host/P2 guest; P1 receives a real claim16:26:01.963 but native exchange
+phase11 expires08.586 before JoinRoom, ready=false. Recorded P1/P3 encoded UDP
+sends all match intended receives; no proven UDP/capacity/identity cause.
+Host Blank/search end now latches runtime item/search-effect end as well as
+SpEffect7 and stops only a loaded, living, demonstrably empty native host room;
+native idle/final party drain still own release. Three production fixtures PASS.
+Additional bounded application-exchange callback observation for P1; **P1 is
+not yet fixed**. No gameplay confirmation. See fixes/2026-11-03-pl1-blank-run.md.
+Build/deploy/startup pending below until explicitly recorded.
+
+## 03.11.2026 — all-current changes built/deployed; three local games launched
+
+User requested waiting for current parallel fixes, then build/install/launch3.
+Related chats completed before build; source input size/mtime and HEAD stable
+through build. Parent d588b23 / BBSC ac5e70b plus inherited working changes.
+Includes second-guest cooldown consumption fix, host title reload correction,
+host quit input wait, accelerated initial guest placement and precise vblank tail.
+DLL build0 + native incremental build0; explicit6-file delta copy0, no repeated
+tests/file verification/full package. Backup:
+D:/Games/Bloodborne/coop-dev/backups/all-current-three-20261103-20261103-162312.
+Run out/coop-dev/runs/all-current-three-20261103-162200; coordinator27708,
+local20261103-132331, UTC13:23:31. Three native PIDs12068/30784/26556 observed.
+Existing local-three group/profiles and service-lifetime coordinator retained;
+no save/settings/journal resets. Latest changes are client DLL/native pacing;
+no VPS/server protocol change in this batch, laptop unchanged. Games left running.
+Gameplay pending: second guest joins, host reaches title without reload and
+input lock retains camera, guest teleport visibility and FPS/stutters. Build and
+startup do not close these bugs. Earlier source-only statuses describe pre-build.
+
+## 03.11.2026 — source-only second-guest cooldown consumption fix
+
+Native018732DD marks pending.state1 BEFORE SummonBuild's enabled/positive role
+cooldown guard can returnnull. Same-generation node stays consumed forever.
+Production ApplyBbscSummonRoleDelayMask at signature-checked Scan01873269 defers
+roles7/21/22/23/24 before consumption, preserving node/timer/counters/native
+capacity/identity/readiness. Hook selected with research off; change-only mask
+log. Exact native scan+builder-guard/production trampoline fixture reproduces
+baseline and fixes delayed retry/renewed nodes; existing matchmaking fixture PASS.
+Historical node/countdown not logged: causal fit, not proof of every live failure.
+User no build: source only; only temporary regression harness compiled, no product
+build/deploy/launch/save/settings/journal changes. Gameplay pending. See
+ docs/fixes/2026-11-03-second-guest-cooldown.md.
+
+## 03.11.2026 — host menu automatic reload corrected in source; NOT built
+
+Confirmed exit called OnReturnTitle then StageTransition. Native commands run
+on fake memory prove title alone leaves loading0/request2, while the second
+call arms world loading1 despite request2. Removed the competing StageTransition;
+native title request, save/Stop/final gate and existing host input wait retained.
+Production menu regression FAIL before/PASS after; complete native command-body
+regression PASS. Diagnostic no longer infers a Continue button press from a
+constructed character. No production build/deploy/launch for this fix, per user.
+Gameplay title arrival pending. See fixes/2026-11-03-host-title-world-reload.md.
+
+## 03.11.2026 — host title exit input lock implemented, gameplay pending
+
+Code ac5e70b: confirmed host System exit holds native guest-departure SetLoadWait
+and menu brake through save/Stop/final party wait, without camera filtering.
+Cancel restores original restrictions in the same non-loading context; native
+transition owns reset. Earlier host Blank cleanup cannot release the quit wait.
+Production menu-quit fixture PASS; native movement/camera/menu behavior pending.
+Separate host automatic reload issue remains OPEN. See
+[host quit input](fixes/2026-11-03-host-quit-input.md).
+
+DLL build exit=0 (three existing unused warnings); five-file delta installed
+on the stopped main PC, copy exit=0. Backup:
+D:/Games/Bloodborne/coop-dev/backups/host-quit-input-20261103-20261103-161436.
+All three Player profiles use this installation. No game launched; gameplay
+pending. Saves/settings, laptop and VPS unchanged; no push or parent pin update.
+
+## 03.11.2026 — initial guest teleport accelerated, source only
+
+Removed the 2s join-position settle and 250ms polling. Once the destination
+world, living guest and actual host transform are ready, the native in-map
+warp runs after one fade update. A zero-duration black fade covers placement;
+100ms later it reveals over 150ms. No arbitrary living partner fallback.
+Placement is marked complete only after the native warp; bad vtable retries.
+Cover expires after 500ms if readiness is lost; native load/title, death curtain,
+quit and replacement actor take fade ownership without a synthetic reveal.
+Production-tick fixture and destination/map/mount/freshness fixture PASS.
+No DLL/game build, deploy or game launch by user request. Visual result and
+native fade timing await gameplay; do not claim animation removal confirmed.
+See [implementation note](fixes/2026-11-03-join-teleport.md).
+
+## 03.11.2026 — correction: host menu exit reloads gameplay
+
+User confirms P2 automatically loaded back into gameplay after menu exit.
+16:02:36.966 confirm ->16:02:40.011 title request/StageTransition ->16:02:49.548
+own character creation. The old "Continue" interpretation below is historical:
+that diagnostic observes construction, not a button press or visible title.
+Final79/Stop succeeded; actual host title arrival did not. Direct StageTransition
+after OnReturnTitle is a suspect, not a proven native cause; menu fixture stubs
+both functions and cannot validate real StageFlow interaction. Analysis only,
+no code/build/deploy. See parent docs/fixes/2026-11-03-second-guest-run-1603.md.
+
+## 03.11.2026 — 16:03 run: signs returned, second guest never claimed; clean final79
+
+Collected9 stable logs/warnings0 +3 party events +coordinator metadata:
+parent out/coop-dev/runs/review-20261103-1603/pc. P1->P3, P1->P2, P3->P2 native
+state6/two hunters confirmed. P3 native host->guest works after role termination,
+not menu/Continue. At P3+P1, P2 sign returned but no claim. At P2+P1, P3 returned
+but only claimed after P1 leaves and room recreated. P1 after guest menu/Continue
+returned to P2+P3 but never claimed. Thus second-guest blocker narrowed to native
+candidate/request path; exact predicate unknown, no proven UDP/capacity cause.
+No3-player session, no crossed responder icon. P1 guest title0.673s/P2host3.045s.
+Final79 unanimous owner/roomnull, joined/pendingempty, tx/acceptedabsent;
+all native exits0, coordinatorparty_drainedtrue. Owner released BEFORE native
+processes closed: missing-ACK early-close reproduction not exercised. No code,
+build/deploy/launch/save/settings edits. See parent
+ docs/fixes/2026-11-03-second-guest-run-1603.md.
+
+## 03.11.2026 — 16:03 pacing run reviewed; precise-tail fix SOURCE ONLY
+
+Fresh9 stable mod/native/bbnet files,warnings0: parent out/coop-dev/runs/perf-review-20261103-1603.
+New telemetry ran in the user-authorized15:56 build. Before world load, fully
+ready request queues show57.10–57.42FPS with~0.76–0.86ms tail-wake/dispatch;
+cap_waits0. Gameplay systemCPU95–98%, three games~10/12 logical cores;
+late-ready dominates many50–150ms frames, not tail wait. Source now uses
+existing PreciseSleepUntil for strict-cap vblank tail; deadlines unchanged,
+tail_precise marker added. This NEW fix not built/installed; improvement pending.
+Report overhead up to14ms/5s noted. See parent docs/fixes/2026-11-03-pacing-run-1603.md.
+
+## 03.11.2026 — 15:56 user-authorized all-current build and local-three launch
+
+After the initial no-build request, user explicitly requested launch with all
+latest changes. BBSC5351ecd / parentd588b23 plus inherited working changes:
+full fast build0 (DLL/native/launcher), PC copy0/5145 files, backup
+local-party-lifetime-20261103-20261103-155517. Coordinator22972;
+run local-party-lifetime-20261103-155615, local20261103-125615. No journal reset,
+save/settings changes or VPS update. Gameplay pending. The service lifetime
+fix is implemented/tested; former-host native admission remains open.
+
+## 03.11.2026 — source-only local exit lifetime fix; former-host admission remains open
+
+P1/P2 native exits previously immediately closed their consensus nodes before
+P3 final release. Local-three coordinator now keeps early-exit services alive
+until all native games exit and unanimous idle is durable; missing coordinator
+or 30s unresolved drain stops services without forced ACK/release/journal reset.
+Real 3-peer lifetime regression and former-host sign/admission socket fixture
+PASS; timeout/profile checks PASS. Compatibility sign_search diagnostics expose
+returned/excluded/missing peers without payloads/secrets. No native search bypass;
+actual P1 guest recovery remains open. User said no build: source only, no build,
+deploy, game launch or save/settings edits. See parent
+ docs/fixes/2026-11-03-local-party-service-lifetime.md.
+
+## 03.11.2026 — pacing diagnostics added to parent source, NOT built
+
+User requested limiter vs three-game measurement, explicitly no build. Parent
+VideoOut now records request readiness/deadline/dispatch, prepare/flip/swap,
+cap/tail wake lateness vs already-overrun tail, PID/window CPU cores/system busy.
+Bounded8 slow records per5s window; no pacing policy/settings changes. Separate
+Python summary and4 analysis tests PASS; C++ compilation/runtime NOT checked.
+No build/install/game launch. See parent docs/fixes/2026-11-03-pacing-instrumentation.md.
+
+## 03.11.2026 — latest local-three performance reviewed, regression cause open
+
+Collected27 stable files/warnings0: parent out/coop-dev/runs/perf-review-20261103-latest.
+15:31:50–15:34:20 gameplay selection: P1host53.69/P2guest52.94/P3alone55.29FPS;
+>50ms frames/min16.25/7.84/4.13. All3 games ran concurrently on PC, not matched
+against historical single-PC+laptop/uncapped90 baseline. BBSC wall-time~5.0/4.9/3.7ms
+per game tick includes native traced work/preemption. Scaling hundreds-ms not
+reproduced. Prior serverless backlog/worker/HTTP optimizations already present.
+Strict relative cap can accumulate wake lateness (0.877ms ->57FPS mathematically),
+actual lateness not instrumented; limiter unchanged since old perf baseline.
+Next: pacing/scheduler separation, IsValidSos/PartyObserve sub-timing and Python
+queue/fsync telemetry. Analysis only; no runtime/build/deploy/settings/save changes.
+See fixes/2026-11-03-perf-local-three-review.md; bug remains open.
+
+## 03.11.2026 — 15:38 run: P2->P1 works; former-host P1 publishes but is never claimed
+
+Collected9 stable mod/native logs +3 event logs, warnings0; parent
+out/coop-dev/runs/review-20261103-responder-area/pc. DLL15:28:11. P2 publishes in
+Cathedral240000 and joins P1 state6/two hunters. P1 active title exit2.662s and
+Continue observed. P3 later becomes native host (room created); P2 joins state6.
+P1 after Continue has normal responder icon, publishes sign15:35:17, but NO claim/
+JoinRoom/state4/6. Crossed-area gate/publication improved; former-host guest entry
+NOT confirmed/fixed. P3 earlier pre-room attempt toP1 phase11 ready=false times
+out15:34:31; exact cause open. No3-player session or quit-during-Join exercised.
+P2 guest menu/title1.110s+Continue works. Final all3 rev56 retains ownerP3 with
+room=null/joined/pending empty. Last P3 title waits for release: persistent tx
+prepare release seq18 ACK onlyP3; P1/P2 processes closed BEFORE P3 quit request.
+No unilateral release/journal reset performed. P1 last idle title transition
+also unconfirmed. Analysis only; no build/deploy/settings/save changes. See
+parent docs/fixes/2026-11-03-responder-area-run-1538.md.
+## 03.11.2026 — crossed responder bell area gate fixed, P1/P2 guest validation pending
+
+User clarifies P1/P2 could not join one another after hosting; bell HUD crossed.
+Prior P1->P2 success covered P3 as guest only. Native0191A750 still retained
+!area_disable_flag in AL (Cathedral240000->flag2405) after goods/SosStatus allowed
+the area. 0191A8C3 signed patch copiedAL; now MOV CL,1 lifts this geographical
+veto while native common-player eligibility/range/null checks remain. Exact
+native function fixture reproduces old rejection and fixes positive/negative
+areas; guest-bell/matchmaking fixtures PASS. Runtime2405/common values absent
+from old logs, so historical cause is consistent, not proven for every attempt.
+Read-only change-only bell icon/area/publication diagnostics added. Bundled
+c1d3cfd / parent1469079, inherited working changes retained. DLL build0 (3 old
+warnings),5-file PC copy0, backup responder-area-crossed-bell-20261103-20261103-152859.
+User-authorized coordinator20692, run responder-area-fix-20261103-152919.
+P1<->P2 actual former-host guest gameplay pending; no claim of completed fix in
+game. Journals/settings/saves/VPS/laptop unchanged. See parent
+ docs/fixes/2026-11-03-responder-crossed-bell.md.
+## 03.11.2026 — 15:07 host rotation run reviewed, P3 grant without native room remains open
+
+Collected9 stable PC logs +3 party event logs, warnings0:
+parent out/coop-dev/runs/review-20261103-host-rotation/pc. DLL14:56:31 present.
+Old closing rev18 recovered normally. P1+P3 state6/two hunters; P1 addressed kick
+returns P3 home. P1 role drains, P2 acquires and P3 joins state6/two hunters.
+P2 active title exit completes in2.493s, guest returns home, Continue observed.
+P3 next acquire unanimously final rev38 at15:06:26, BUT native remainsstate0:
+no CreateJoinRoom/state1/state3 until menu15:06:59. Exact post-item/native-start
+cause unknown; third hosting NOT confirmed. P3 menu releases owner rev39; all3
+journals end idle. No native negotiation failure/slow-disconnect ERROR; failed
+admission retry and quit-during-Join hook NOT exercised. No3-player gameplay.
+All runner exit0; P2 last idle exit only reaches final-leave log before shutdown,
+not a separately confirmed title transition. Analysis only; no runtime changes.
+See parent docs/fixes/2026-11-03-host-rotation-run-1507.md.
+## 03.11.2026 — host rotation retry/guest join exit fixed and installed, game pending
+
+Prior local3 consensus DID rotate P2->P1 (rev8 release/rev9 acquire). P3 initial
+native phase11 timeout had15/15 recorded UDP frames delivered; inner ready=false
+cause remains unproven. Proven recovery bug: private Force delete retained pending
+rev11, replayed failed claim and prevented fresh admission. Delivered-pending Force
+withdrawal now requires native idle/no load and revision ticket (stale rejected).
+Guest explicit cancel+idle now retires joined membership even without owner close.
+Native stopped Join task8 selects ordinary deadline/failure cleanup via C9C6AB
+read hook; no state/task writes or title ACK bypass. Real3-process rotation/failure/
+retry/quit scenario + exact native predicate/CC51F0/trampoline + menu/leave fixtures
+PASS. DLL build0,7-file fast PC copy0, backup p2p-host-rotation-20261103-20261103-145849.
+User explicitly requested launch: coordinator28988, parent run
+out/coop-dev/runs/host-rotation-fix-20261103-1459. All3 native games running15:00 (P1=33516,P2=36244,P3=20616), new DLL14:56:31 ready; gameplay pending. Saves/settings/
+journals/VPS/laptop unchanged; inherited working changes kept, no pin/push.
+See parent docs/fixes/2026-11-03-host-rotation-retry-exit.md.
+## 03.11.2026 — local-three P2P run reviewed
+
+Collected9 stable mod/native files, warnings0, plus3 stopped party event logs:
+parent out/coop-dev/runs/review-20261103-local-three/pc. P2 host/P3 guest reach
+state6/two hunters; both death/respawn and P2 title exit+Continue observed.
+P1 becomes next owner; first P3 join remains pending ~56s until P1 cancellation.
+Retry reaches protocol joined/native state4, then P3 menu exit stalls state7:
+14:35:03.902 native disconnect exceeds5s, no final leave/title before log end.
+All3 journals end rev18 ownerP1 members[P3] room33554436 closing=true, although
+P1 native reachesstate0. Exact cause unproven. Three-player gameplay/full rejoin
+not confirmed. Runner exit0 is process termination, not successful game exit.
+Analysis only; no runtime/build/deploy/save/settings changes. See parent
+ docs/fixes/2026-11-03-local-three-run-review.md.
+## Памятка по P2P
+
+Перед разбором новых регрессий читать [P2P-HANDOFF.md](../../../docs/P2P-HANDOFF.md) родительского репозитория: история перехода, архитектура, порты, версии/деплой, локальные профили, проверки и открытые баги. Актуально после запуска трёх локальных игр 03.11.2026; игровой результат ещё ожидается.
+
+## 03.11.2026 14:27 MSK — local-three mode installed and games running
+
+User requested local P2P test with existing profiles. Parent75411e7 adds local-test button/helper; 4 targeted isolation/socket tests PASS, launcher-only freeze0, installed4 files backup local-three-20261103-20261103-142456. FPS60/windowed1280x720/Skip Intro are per-launch only; settings/saves not reset. P1/P2/P3 loopback control37610/11/12 and nativeUDP3658/59/60. Native PIDs28640/19400/36528 and all3 NP contexts observed. P1 had pre-native compatibility port-pair allocation failure; only failed helper was replaced, retry succeeded, other games retained. Allocator issue remains unclaimed. Games left running; gameplay pending. Run parent out/coop-dev/runs/local-three-20261103-142526; see parent docs/fixes/2026-11-03-local-three-p2p.md.
+
+## 03.11.2026 — P2P promoted to develop, PC installed
+
+User accepted P2P and requested mainline replacement. Main develop includes experiment1650f48 and new launcher3f4b56a; bundled developd8c8e08 runtime is party/ (no experimental launch.py). Server/invite/password flow removed, automatic/Tailscale/Radmin/custom picker and all-peer TCP/UDP preflight added. Native UDP and durable role protocol retained.5 socket tests/QML/frozen runtime+UI smokes PASS; native/DLL/package exit0; installed main PC with backup p2p-main-20261103-20261103-095153. No game launch/provider VPN gameplay claim. Source experimental worktrees removed after preserving inherited source patches/untracked files. Permanent test install/profile cleanup was rejected automatically; both archived out of active paths, saves intact. Laptop/VPS untouched. See parent docs/fixes/2026-11-03-p2p-mainline.md.
 
 ## 03.11.2026 — serverless-party, эксперимент подготовлен к игре
 
@@ -41,6 +787,601 @@ DLL и frozen launcher build exit=0. Отдельные тестовые уст�
 и [протокол](../experimental/party/PROTOCOL.md). ACK сетевого компонента не
 означает exactly-once применение игровых эффектов после краша; VPN/NAT между
 разными провайдерами и каталог чаш ещё не проверены/не перенесены.
+## 2026-11-03 04:24 MSK — actual rejoin capture + TCP queue bounds installed
+
+DLL atomic attempt serial now advances on first delivered claim/native join
+transition, including cached signaling reuse; duplicate polling and unreadable
+load manager do not refill. Native relay observes export before routing/on tick,
+renews all known peer windows and existing VPS markers. Two-window realVPS
+production UDP/export-bridge probe:240/240 at all4 logged boundaries, PASS.
+TCP writer now nonblocking+absolute10s queue/frame deadline, unchanged FIFO/cap;
+expired transport wakes owner cleanup/reconnect, no stale byte replay. Callbacks
+and queue-full logging moved outside send lock.5s client queue/progress/Dispatch
+stats + per-connection server age/in-flight/throughput diagnostics added. Historical
+queue correlation to host death/distant lamp NOT proven; exact cause still open.
+
+Lifecycle+actual writer loop+native relay harness PASS; server departure11 and
+queue3 tests PASS; production DLL TCP functions viaVPS100 frames PASS. First probe
+omitted TCP_NODELAY and timed out after28; retained as differing-condition result,
+not the game's root cause. Native build0, fast package0, final DLL/delta0;
+8-file PC deploy0 backup
+D:/Games/Bloodborne/coop-dev/backups/rejoin-trace-tcp-queue-20261103-20261103-042422.
+VPS backed up /opt/bbsc/backups/rejoin-queue-20261103/bbsc_gameserver.py,
+updated Python server only, active. No game/user data/settings/firewall/SSH changes,
+no commit/pin/push. P3 CPU automatic stop and GPU remain excluded/deferred.
+Game confirmation pending; see fixes/2026-11-03-rejoin-trace-tcp-queue.md.
+
+## 2026-11-03 03:59 review — repeat joins observed; CPU-overload stop excluded
+
+Collected6 stable PC logs+VPS journal+persistent log, warnings0, review-20261103-0359.
+Initial joins work, later full repeat joins at03:47–48 and03:50–51. No stale-TCP
+false-host sequence/reconnect in this run; thus replacement branch not exercised.
+Host TCP queue261530 bytes/dropping03:49:39 observed, server errors0, cause unknown.
+P3 GPU device lost03:52:36+current WER141; server10s grace then guest-only PeerLeft
+03:52:47, no false host stop. Actual host menu quit49s sends explicit leave toP2.
+User attributes P3 automatic Stop03:48:35 to CPU overload and explicitly excludes
+it: do not investigate or treat its queue/native rejection as a network blocker.
+GPU issue remains deferred. Distinct native remote slots0/1, no identity guard hit.
+Important diagnostic gap: only initial six NP activations open traces; native
+rejoins reuse signaling and do NOT renew90s windows. Later tx0 is missing capture,
+not zero loss. Next diagnostic trigger must cover real native attempts/claims.
+Analysis only, no runtime edits/build/deploy/restart. See
+fixes/2026-11-03-connection-run-0359.md. GNS migration remains separate experiment.
+
+## 2026-11-03 03:30 MSK — TCP relay replacement fix built and installed
+
+Newer(sender,session) connection supersedes old socket; stale EOF/state/explicit
+leave cannot announce departure or invalidate the new connection. Transport-only
+loss waits10s for existing reconnect/beacon; matching recovery cancels the decision.
+Genuine explicit SessionLeave remains immediate; final newest-socket loss emits
+one party-scoped PeerLeft after grace. Registry-locked decision/enqueue and pending
+identity protect cancellation races; obsolete sockets cannot hide real departure.
+Client and server diagnostics now identify control source, conn IDs and decisions.
+
+Bundled production departure fixtures11 PASS; real publicVPS TCP replacement,
+after-EOF recovery beyond timer, stale leave rejection, genuine final departure
+and party scoping PASS. Actual persisted oldVPS log also confirms overlapping host
+sockets before delayed old ETIMEDOUT. Original WSA10060 cause remains unknown;
+recovery fixed, no timeouts disabled. DLL build0 (four existing warnings), fast
+full package0;7-file PC deploy0 at03:30:31; backup
+D:/Games/Bloodborne/coop-dev/backups/relay-replacement-20261103-20261103-033031.
+VPS backed up /opt/bbsc/backups/relay-replacement-20261103/bbsc_gameserver.py,
+updated Python game server only, restarted bbsc-gameserver, active. Native port
+unchanged, no game launched or user data/settings/firewall/SSH changed. No commit/
+pin/push. ZIP bloodborne_pc/dist/bbgl-1.1.0-windows-x64.zip. Game confirmation
+PENDING: two guests enter, keep session6–7min, leave/rejoin one with other remaining.
+Collect persistent VPS gameserver log as well as journals after run. See
+fixes/2026-11-03-relay-replacement.md.
+
+## 2026-11-03 03:12 run — initial joins work; TCP reconnect precedes false-host departure
+
+Collected6 stable PC logs + VPS, warnings0, review-20261103-0312. Both guests
+reach state6/full session. Host TCP relay times out WSA10060 at03:11:21, reconnects
+03:11:24; server counts4 sockets at03:11:34. Both guests mark host7c04a649 left
+and invoke DLL Stop03:11:43.448/450, while host remains active until its later
+Stop03:11:59. Actual VPS unregister function unconditionally broadcasts0x7e for
+old sender/session, without checking a replacement socket. Defect confirmed in
+code; stale-old-socket departure is strongest causal inference, exact control
+source/unregister not logged. TCP10060 initiating cause unknown. Independent
+attempt trace renews:1111 jointly covered sends match VPS RX and peer RX;90s
+windows end before final disconnect, so no per-frame conclusion at03:11:43.
+No rejected-send/01789812 Stop or identity guard rejection; separate host remote
+slots0/1. No rejoin exercised. Analysis only, no build/deploy/restart. See
+fixes/2026-11-03-connection-run-0312.md. Next fix: replacement-aware relay departure
+and explicit unregister/PeerLeft diagnostics; preserve genuine leave handling.
+
+## 2026-11-03 03:02 MSK — renewable attempt tracing installed on PC + VPS
+
+Every accepted signaling activation (also same connId) renews a bounded90s window;
+BBR1 diagnostic06/07 marker retries notify both peers, duplicate/stale markers
+cannot replenish budget. Independent signaling/vport40 SOCKET_TX(actual sendto
+bytes/error)/SOCKET_RX + server RX/TX/DROP share encoded-frame FNV hashes;
+pre-ACK responder traffic is retained. W/I/R/D lifetime budget renews too.
+Fixture/native builds/fast package PASS; deployed4 PC files with backup and
+Python relay on VPS (only gameserver restart, active). Final two-window realVPS
+probe found actual loss: 240 successful OS sends ->238 VPS RX/TX ->238 peer RX;
+role0 receives120/120, role1 receives118/120 (delivery test exit2). Two missing
+frames are between PC OS send and VPS application receive; precise network/
+stack segment not proven. All238 server-forwarded frames match client receive.
+Game connection/rejoin failures remain OPEN; no game launched or user data/
+settings/firewall changed. See fixes/2026-11-03-attempt-packet-trace.md for hashes,
+limits, tests, backups and next game run. No commits/pin/push.
+
+## 2026-11-03 02:47 MSK — latest run cannot reach the rejoin scenario
+
+02:40–02:44 run collected (3 profiles,6 stable files,no warnings) plus VPS:
+BBGL out/coop-dev/runs/review-20261103-0245. New DLL02:33:09 and native diagnostics
+present. No guest JoinRoom/state6; initial phase11 negotiation wait expires
+P2 at02:42:23.057 and P3 at02:43:42.000. No pre-defer send rejection or01789812
+Stop, no new Matching2 stale-identity guard hit. Rejoin fix NOT validated here;
+initial entry issue persists independently of unexercised room-member callbacks.
+Encoded W/I comparison before cancellation: P1->P2 5/17 sends unmatched,
+P2->P1 0/10; P1->P3 5/11, P3->P1 8/14. Outgoing physical endpoints correct,
+no sample omissions or vport40 transport/codec/queue errors. This locates a gap
+between encoded send and peer receipt, not its exact segment. Server UDP stats
+send_errors0, but per-frame trace budget was exhausted previously (0 new trace
+records), so full VPS attribution unavailable. Future bounded trace must renew
+per run/attempt. Menu exits separated from later host failure. No code/build/
+deploy/server restart/save/settings/firewall changes. See
+fixes/2026-11-03-connection-run-0245.md. Both entry and repeat-join bugs OPEN.
+
+## 2026-11-03 02:36 MSK — rejoin identity guards built and installed
+
+Server active-slot allocation is unique in inspected run records and compiled
+actual Room allocator (100 alternating rejoins incl generation wrap). Free slots
+may move between clients; room/member pair identifies the occupant. Reproduced
+emulator defect: late Check after MEMBER_LEFT resurrected absent member34 even
+when slot2 already belonged to36, emitting ESTABLISHED. Admission now requires
+current roster memberID+onlineID; MarkActive also validates membership. Pending
+signaling and room JOIN callbacks validate room/self/peer incarnation before
+game dispatch; genuine current DEAD/removal and KICKEDOUT remain supported.
+Native rejected-send diagnostics add target/self room+member; regular changed
+session shape adds native task IDs/slots. No guessed rebind, queue deletion,
+Stop suppression, bound increase, wire change or local shortcut.
+
+Baseline ghost resurrection reproduced; current admission/dispatch/reused-slot/
+healthy-peer/DEAD/JOIN variants PASS; actual server allocator PASS; exact native
+observer hook + local member binding + KICKEDOUT fixtures PASS. Native build0,
+bundled DLL build0 (four existing warnings), six-file PC delta deploy0 at02:35:53.
+Backup D:/Games/Bloodborne/coop-dev/backups/rejoin-identity-20261103-20261103-023553.
+No running game/launcher, no game launched or saves/settings/firewall changed.
+VPS unchanged (no server/protocol change). Working-tree build atop572e066 /
+151e24c, existing changes preserved, no broad commit/pin/push.
+Specific initiating recipient in previous run still unobserved; gameplay fix
+PENDING, not closed by fixtures. See fixes/2026-11-03-rejoin-identity.md.
+Next: hold one guest in session while kicking/rejoining the other, wait60s,
+repeat and swap; collect all3 logs with new identity fields on completion.
+
+## 2026-11-03 02:21 MSK — latest connection run reviewed, analysis only
+
+02:05–02:17 three-profile run + VPS collected in BBGL out/coop-dev/runs/
+review-20261103-0218 (six stable files, no warnings). P1 host; both guests enter
+and repeated joins reach state6. Previous pre-room negotiation timeout does not
+reproduce; PEEKLEN causal role remains unproven (first256 receives/client flags0).
+Addressed host kicks at02:12:18/32 trigger guest OnBeKickOut/Stop in154/99ms;
+notice calls recorded, native5s return retained. No earlier23–37s kick delay.
+Separate automatic guest Stops at02:13:29(P2),02:14:31/02:15:47(P3) originate
+at0x1789812 after repeated pre-defer Native send rejected at0x1789742. This is
+new evidence for investigating native logical recipient/channel lifecycle after
+rejoin, not proof of an ACK timeout, WAN loss or a particular stale pointer.
+P3 first departure is menu-confirmed; P2 at02:14:51 uses Silencing Blank;
+final menu exits distinguished. Native UDP/codec/queue error counters0 except
+late unbound vport30 after teardown. VPS904RX/904TX match, but trace budget ends
+at23:07:50 UTC, before later failures; client sample budgets also finite.
+Physical UDP3658/3659/3660 bind without collision; current endpoint inspection
+shows no competing application on those ports. No code/build/deploy or save/
+settings/firewall changes. Details: fixes/2026-11-03-connection-run-0218.md.
+Initial entry succeeds this run; repeat-join disconnect remains OPEN.
+
+## 2026-11-03 02:03 MSK — connection emulator audit, contract fix and trace deployed
+
+01:35–01:39 run: P1 host, P3 pre-room negotiation expires at01:37:56.358,
+phase11, wait<0, exchange ready/accepted false; no P3 JoinRoom. Four native
+sends have no matching receive sample, but old logs lack endpoint/wire data:
+WAN loss versus wrong destination/adapter is UNRESOLVED. Both upstream v0.0.1
+and v0.0.2 already contain emulator source. Matching2 and base activation API
+are identical between tags; state handshake changes only add timeline calls.
+Retain v0.0.2 NAT endpoint aliases, immediate relay and targeted claim placement;
+no whole-stack rollback or speculative wire switch. See
+fixes/2026-11-03-connection-emulator-audit.md for comparison and exact limits.
+
+Reproduced original-adapter incompatibility: MSG_PEEKLEN returned copied length
+(0 for null/capacity0), whereas original BBSC returns full queued datagram length.
+Restored full-length query without consuming packet; normal peek/truncation kept.
+Baseline production-adapter fixture reproduces failure; corrected adapter with
+real guest/transport backend PASS. Real UDP/readiness fixture540 deliveries PASS;
+trace/hash/header fixture and production server forward/drop/error/bound PASS.
+Additional client syscall/header/endpoint and encoded W/I packet hashes match
+server RX/TX/DROP hashes; bounded logs, no packet bodies/secrets retained.
+No local shortcut remains, per explicit user instruction: test through server.
+
+Python live-VPS probe120/120; two separate compiled current BBGL transports
+60/60 each direction, server120 RX/120 TX same hashes. Synthetic success does
+not execute native Bloodborne negotiation and does not close the gameplay bug.
+Fast package build exit0; final native incremental build exit0; staging probe
+refreshed, PC deploy exit0 (5219 files). Backup
+D:/Games/Bloodborne/coop-dev/backups/connection-emulator-audit-20261103-20261103-020241.
+VPS bbhost_service.py backed up in /opt/bbsc/backups/connection-trace-20261103,
+Python compile PASS, bbsc-gameserver active; native shadNet unchanged.
+No running game at deploy, no game launched, no save/settings/firewall edits.
+Working-tree build atop BBGL572e066/bundled151e24c, existing changes preserved;
+no broad commit/pin/push. Live entry validation PENDING.
+
+Next: P1 host, ring P3 once; after its entry ring P2. On failure wait10s for
+trace flush, then exit/report. Record actual roles/actions; no save rollback.
+
+## 2026-11-03 01:30 MSK — targeted KICKEDOUT fix built and installed
+
+Confirmed native mismatch: BBSC shadNet kick status FF000019 was put only
+in RoomUpdate.errorCode; Bloodborne requires presence length4 at +18 and
+reason at +8 (CC3E80/CC4209). Adapter now supplies the known status there,
+rejects stale-room kicks, logs payload at INFO. No wire/server change.
+Mod handles addressed OnBeKickOut only: releases stale 4047 before Lua,
+suspends retention for that guest and shows own return reason. Host gets
+selected-kick request notice via exact native entry/caller; other callers,
+local actor and remaining guest are preserved. Native 5s home-return delay
+retained; no waiting for bound1001 needed to initiate native kick processing.
+Production payload/native-guard fixture, targeted policy + exact trampoline,
+resident-guest/native-release/home-return checks PASS; whitespace checks PASS.
+Full fast package build exit=0 (DLL four existing warnings); PC deploy exit=0,
+5219 files. Backup D:/Games/Bloodborne/coop-dev/backups/
+targeted-kick-20261103-20261103-013001. Build: out/build-targeted-kick-20261103.log.
+No running games/launchers at installation; no game launched, saves/settings
+untouched. VPS unchanged. Pre-existing dirty trees preserved; build atop
+BBGL572e066/bundled151e24c, not clean commit-only release; no broad commit/pin.
+Gameplay/visible notifications PENDING. See fixes/2026-11-03-targeted-kickedout.md.
+Earlier hypothesis-only note below is historical; this native guard defect
+is now reproduced and corrected. Unrelated initial 00:47:52 queue failure
+is not established as addressed by this targeted fix.
+
+## 2026-11-03 — уточнение: задержка адресного kick хостом
+
+Пользователь уточнил действия 00:56:34 / 00:57:20. VPS подтверждает kick
+P3/user3 и P2/user2 через 1.7/2.0 с; исключённые гости начинают native возврат
+лишь через 23.0/37.4 с от host effect, после Stop по bound1001. Эти поздние
+Stop нельзя считать самопроизвольными разрывами. Первопричина задержки после
+server kick ещё не установлена: KICKEDOUT callback/native session teardown.
+Отсутствие уведомления сообщено пользователем; suppressed draw длиной13
+совместим со служебным silent sentinel и не доказывает скрытие leave banner.
+Обычные leave ids явно разрешены. Анализ only, новых сборок/деплоя нет.
+Подробная хронология и границы: fixes/2026-11-03-session-review-0100.md,
+раздел «Уточнение пользователя: адресное исключение Бланком хоста».
+
+## 2026-11-03 01:12 MSK — session review, native profile-port fix installed
+
+00:44–00:59 three-profile run + VPS reviewed; P1 host. Both guests join;
+P2 Stop 00:47:52, P3 00:56:52 / 00:59:05, P2 00:57:52 originate at
+0x1789812 (native deferred-send bound >=1001). The initiating queue/recipient
+failure remains unresolved. Death recovery, boss clear and transition to Dream
+retain the session before later departures. 953 HTTP completions error=0;
+no transport full/wrong_peer/codec rejection, not proof of loss-free delivery.
+Found BBGL bridge never installed p2p_port hook: launcher ports were ignored,
+all clients requested 3658 and relied on fallback. Settings hooks now installed
+before native import registration. Added bounded pre-defer native send failure
+observer; no retry, queue deletion or bound change. Targeted settings fixture
+and exact native observer trampoline/flags/throttle fixture PASS. Full fast
+package build exit=0, DLL 4 existing warnings; PC deploy exit=0, 5219 files.
+Backup D:/Games/Bloodborne/coop-dev/backups/session-review-0100-20261103-20261103-011120.
+No running games/launchers at install; no games launched or save/settings edits.
+VPS/protocol unchanged, no server update needed. Existing dirty trees preserved;
+working-tree build atop BBGL572e066 / bundled151e24c, no broad commit/pin.
+Evidence: bloodborne_pc/out/coop-dev/runs/review-20261103-0100; build log
+out/build-session-review-20261103-0100.log. Details/next gameplay scenario:
+fixes/2026-11-03-session-review-0100.md. Gameplay PENDING; disconnects NOT closed.
+
+## 2026-11-03 00:43 MSK — connection review and client package installed
+
+00:25–00:30 run reviewed across all three profiles and VPS. P3 signaling/vport40
+exchange succeeds, outer native negotiation cancels after ~6s without JoinRoom;
+P2 subsequently joins, then native Stop at 00:29:29.011 (caller 0x1789812).
+Initial cancellation and later Stop remain unresolved, not proven fixed.
+Fixed stable Player-profile UDP ports through both UI and game environment;
+private BBSC HTTP minimum connect deadline 3s, bounded connect-only retry retained;
+transport D samples represent copied bytes. Added pre-teardown native failure
+observer at 0x1481AF9 (original result/wait/exchange state), both mod trees.
+Six launcher checks, HTTP production fixture, exact native hook trampoline and
+540 real UDP delivery test PASS. Full fast build exit=0; PC deployment exit=0,
+5219 selected files. Backup D:/Games/Bloodborne/coop-dev/backups/
+connection-0030-20261103-20261103-004233. No game/launcher running, no game launch,
+save/settings/firewall changes. VPS services active; no server code/protocol
+change or VPS update needed. Local working-tree build atop BBGL572e066 /
+bundled151e24c, pre-existing changes preserved; not a clean revision-only release.
+Evidence: bloodborne_pc/out/coop-dev/runs/review-20261103-0030; details and next
+focused scenario: fixes/2026-11-03-connection-0030.md. Gameplay PENDING.
+
+## 2026-11-03 00:14 MSK — death/HTTP/performance package installed
+
+Full fast package build exit=0; PC deploy exit=0, 5219 selected files copied.
+Backup: D:/Games/Bloodborne/coop-dev/backups/death-http-perf-20261103-20261103-001347.
+One accepted YOU DIED event per death across fallback/native guest producers;
+private native HTTP jobs retry TCP-connect timeout at most twice, never ambiguous
+sent requests; Python accept backlog 5 -> 128. Hot region cache/validated-span
+reads reduce redundant memory guards without relaxing the 250ms cache lifetime.
+Targeted fixtures PASS; no gameplay/FPS improvement claim yet. VPS Python server
+updated with backup /opt/bbsc/backups/death-http-perf-20261103; active, backlog128,
+external ss.info burst 24/24 HTTP200. Native shadNet unchanged. No running game
+at installation, no games launched, no save/settings/firewall changes. Previous
+23:47 source-only claim-deadline/Stop-observer corrections included in build.
+Working-tree build atop BBGL572e066 / bundled151e24c, not a clean revision-only
+release; unrelated source changes preserved. See fixes/2026-11-03-death-http-perf.md.
+
+## 2026-11-03 00:00 MSK — latest three-player run reviewed (analysis only)
+
+23:49–23:59 MSK run, P1 host; P2/P3 initial and repeat joins succeed, both
+wipe recoveries retain the session. 23:54 departures use Silencing Blank;
+final exits are native-menu confirmed. Duplicate accepted death-text event
+on P2 at 23:58:13.980 / 18.487: fallback crosses late native death script;
+visible duplicate banner unproven. Old 23:22:26 DLL still has unavailable Stop
+observer; 23:47 source fixes not exercised. HTTP timeouts and substantial logged
+frame overhead remain; no native Fault or relay send errors. No code/build/deploy
+or save/settings changes. See fixes/2026-11-03-run-review-0000.md; evidence in
+bloodborne_pc/out/coop-dev/runs/review-20261103-0000.
+
+## 2026-11-02 23:47 MSK — latest failed joins reviewed; partial source correction only
+
+P1 host, P2 joins twice then leaves at 23:30:48 / 23:32:09; P3 never enters
+JoinRoom. Three-profile mod/native logs + VPS journal: out/coop-dev/runs/
+review-20261102-2333. Fixed reproduced stale-claim deadline extension on duplicate
+HTTP delivery (20s became ~32s), plus duplicate Stop observer installation that
+hid the initiating departure caller. Production lifecycle and trampoline checks
+PASS; both code trees updated. No production build/deploy per user request.
+Initial P3 cancellation and P2 disconnections remain UNRESOLVED, not confirmed
+fixed by these changes. No save/settings/game/server changes. See
+fixes/2026-11-02-run-review-2333.md for evidence and limits.
+
+## 2026-11-02 23:23 MSK — native own-sign refresh installed on PC
+
+Private-server own signs now queue native dirty refresh every 2s (rather than
+assuming ServerInfo/cache writes trigger publication). Native HTTP replies remain
+game-owned; in-flight requests / delivered claims pause refresh. Idle own-world
+bell only, not loading/joining/hosting/joined/leaving; lifetime/counts unchanged.
+Native cancellation origin/caller observers added (generic signaling cancellation
+and CD89C0 phase before task-13 teardown). Exact initiating caller of the recorded
+first failure remains unproven; late claim timing is the supported hypothesis.
+Three targeted fixtures PASS; bundled DLL build exit=0 (4 existing warnings).
+Five-file delta installed exit=0, backup D:/Games/Bloodborne/coop-dev/backups/
+native-sign-refresh-20261102-232304. No game was running; no save/settings/game
+or server changes. VPS update not required for this DLL-only change.
+Commits: standalone 824a72c, bundled/pin 151e24c, BBGL 572e066; existing unrelated
+working-tree changes preserved and present in local build. Gameplay PENDING.
+Details: docs/fixes/2026-11-02-native-sign-refresh.md. Next focused scenario:
+P1 host, P2/P3 guests, initial joins from different maps; record second bell to
+loaded-world time and all three native/mod logs. Do not infer bug closure from build.
+
+## 2026-11-02 23:17 MSK — remote departure banner fix installed locally
+
+Native role-0 removal line incorrectly says local "returning home". Departure
+hook now selects named disconnected text for remote co-op actors, preserving
+local return and invader handling. Both trees + EN/RU generators updated.
+Production callback through native trampoline PASS; bundled DLL build exit=0
+(4 existing warnings), delta deploy exit=0, 5 files with backup. Gameplay pending.
+See docs/fixes/2026-11-02-departure-banners.md.
+
+## 2026-11-02 23:08 MSK — per-member wipe join-banner fix installed locally
+
+Only kept-death remote insert restarts receive one-shot quiet member-arrival
+records; genuine unmarked joins retain their message, including during recovery.
+Removed wipe host-wide join-column override; guest local return override retained.
+Production filter, binding and exact native-hook trampoline fixtures PASS.
+Bundled DLL build exit=0 (4 existing warnings); delta deploy exit=0, 5 files.
+Backup: D:/Games/Bloodborne/coop-dev/backups/wipe-arrival-filter-20261102-20261102-230857.
+No game processes were running. No server/settings/save changes or game launch.
+Both code trees synchronized; existing dirty work preserved, no broad commit.
+Gameplay/UI validation pending. Details: docs/fixes/2026-11-02-wipe-arrival-filter.md.
+
+## 2026-11-02 22:43 MSK — latest connection selector package installed on PC
+
+Full current-local-source fast build exit=0 (BB_FAST_DEPLOY=1): bundled DLL,
+native port, shadNet, launcher and frozen game server. Includes Connection/Address
+selector and separate server/game launch busy state plus latest local mod changes.
+Installed to D:/Games/Bloodborne/Bloodborne Game Launcher, deploy exit=0,
+5219 selected files copied. Backup: D:/Games/Bloodborne/coop-dev/backups/
+latest-connection-selector-20261102-224246. No game/launcher was running.
+Player 1/2/3 entry points retained; no profile/settings/save or firewall changes.
+VPS Python game server exactly matches current bundled source; both services active
+since 18:14:58 UTC, existing LookupOnlineId deployment documented above unchanged.
+No redundant VPS restart. File verification/verify-release disabled as requested;
+no development test reruns or game launch. Gameplay remains unconfirmed.
+Build log: bloodborne_pc/out/build-deploy.log. Built working-tree changes atop
+BBGL 50ef084 and bundled BBSC 59ff490; not a clean revision-only release.
+
+## 2026-11-02 — latest full package installed on PC at 22:38 MSK
+
+Full local working-tree package build exit=0 with BB_FAST_DEPLOY=1: bundled
+BBSC DLL, native port, patched shadNet, launcher and frozen game server.
+Installed into D:/Games/Bloodborne/Bloodborne Game Launcher, deploy exit=0,
+5220 selected files copied. Backup: D:/Games/Bloodborne/coop-dev/backups/
+latest-rules-coop-20261102-223756. No game/launcher processes were running.
+Player 1/2/3 entry points retained; profiles, settings and saves unchanged.
+Numeric defaults only: enemy HP 0, boss HP 50, damage 0, enemy/boss stagger 0
+percent per guest; existing saved values are not migrated. Includes current
+kept-wipe member-rebind changes; gameplay confirmation remains pending.
+VPS already has matching LookupOnlineId patch and Python game-server source;
+both services active since 18:14:58 UTC. No redundant VPS restart/update.
+No file audit/verify-release or repeated gameplay tests. Build log:
+bloodborne_pc/out/build-deploy.log. Pin remains 59ff490; build includes local
+uncommitted changes, not a clean revision-only release.
+
+## 2026-11-02 — kept-wipe local member rebind (built, installation pending)
+
+Client recovery now runs native local member assignment + child forwarding once
+per kept reload, even for equal parent ids, before restarting remote insert tasks.
+An unready self task defers recovery; ordinary periodic checks remain idempotent.
+Added native Stop caller observer; native queue limit / real disconnect policy
+unchanged. Production-function fixture and actual Stop-prologue trampoline PASS;
+bundled DLL build exit=0 (4 warnings), mod delta prepared. Installation initially
+pending because Bloodborne.exe PID 35624 is open. No process termination, server,
+save/settings changes. Unbound child in the recorded run remains a hypothesis;
+gameplay confirmation required. See docs/fixes/2026-11-02-wipe-member-rebind.md.
+
+## 2026-11-02 — local three-player run 21:56–22:15 MSK reviewed
+
+Player 1 host, Players 2/3 guests; DLL built 21:06:13. Player 3 first native
+negotiation closed at 22:08:42, delayed claim expired, signaling timed out;
+successful world entry 22:10:24 (~110s after first ring). Boss wipe reload
+completed for all, then Player 2 first entered leaving at 22:14:58.502, host
+59.594; room 3 ended on VPS 22:15:03. Reliable backlogs 285/437/274 observed,
+but hitting native 1001 limit / exact first stop cause unproven. VPS relay
+reported no send errors at the event. No native Fault or Windows crash events;
+all three later confirmed menu exit. Analysis only; no code/build/deploy/save
+changes. Evidence: bloodborne_pc/out/coop-dev/runs/review-20261102-2217.
+Details: BBSC/docs/fixes/2026-11-02-run-review-2215.md (workspace standalone tree).
+## 2026-11-02 — 3+ player code review (analysis only)
+
+Two production-function reproductions: party-wide dead count blocks repair of a
+different revived remote; partial life roster hides a living native partner.
+Also found host in-place revive treated as wipe reload (packet transition reproduced;
+downstream warp reviewed, not executed). No production edits/build/deploy/game run.
+See [3+ player review](fixes/2026-11-02-three-plus-review.md).
+
+## 2026-11-02 — latest fixes installed on PC, laptop and VPS
+
+Full fast package build exit=0 after correcting Cainhurst reveal declaration scope
+(the prior declaration named an undefined anonymous-namespace function). Both source
+trees fixed; Cainhurst fixture PASS; bundled DLL build exit=0, 4 warnings. Native
+port, launcher and bundled shadNet (command 41) rebuilt. PC deploy exit=0, 5225
+files; laptop transfer/deploy exit=0, 5220 files. Backups:
+PC D:/Games/Bloodborne/coop-dev/backups/latest-fixes-20261102-210900;
+laptop C:/Games/Bloodborne/coop-dev/backups/latest-fixes-20261102-210926.
+VPS: existing Linux source accepted patch 0006; native shadNet build exit=0.
+Updated shadNet and Python gameserver after backup to
+/opt/bbsc/backups/latest-fixes-20261102-181458; both services restarted active.
+User permanently authorized VPS updates alongside device deployment when server
+code/protocol changes apply; preference recorded in bb-coop-build-deploy-logs.
+No game launches, save/settings/database/SSH/firewall changes. Fast deployment
+file verification disabled. Gameplay/state4 join improvement remains unconfirmed.
+Build log: bloodborne_pc/out/build-deploy-latest.log;
+VPS build log: /opt/bbsc/build/lookup-build.log.
+
+## 2026-11-02 — combined latest-fix review
+
+Compared review-20261102-2013 evidence with current bundled changes. Member binding,
+repeat death, home-return order (4 checks), resident guest leave, echo HUD,
+Cainhurst reveal, native leave release and native key-bank fixtures PASS;
+LookupOnlineId protocol suite: 4 PASS. Native key-bank fixture used read-only
+BBSC/build/runtime-mode-eboot.elf. Both core trees differ only in three comment
+lines; patch tables and updated resident-leave fixture match.
+Found resident-leave fixture broken by combined return-ownership change (missing
+bbsc_home_return_claimed stub). Updated both copies, reset ownership between
+independent scenarios and asserted duplicate native callback suppression. PASS.
+No production code/build/deploy/game/save changes in this review. State4/native
+join rejection remains unresolved; command-41 compatibility does not prove its
+cause. Member binding/backlog is a repair/containment hypothesis for freeze/FPS,
+HUD change corrects observation only; Blank startup still uses synthetic fallback.
+Latest fixes require a combined build and multiplayer confirmation before closure.
+
+## 2026-11-02 — Cainhurst reveal and guest crown pickup (source only)
+
+After host scene 25000010, guests now apply the original 12500810 world-effects
+tail when local playback has ended and host completion is confirmed. Includes
+geometry, collision, objects, character and SFX; late join/load also supported.
+Crown event 12501803 now registers its native action-button prompt for guests;
+completion is personal, preserving independent pickups. Both source trees updated.
+Production fixture and all 82 EMEVD side-effect comparisons PASS; native helper
+execution/gameplay remain unconfirmed. No build/install/save changes.
+Details: docs/fixes/2026-11-02-cainhurst-crown.md.
+
+## 2026-11-02 — Lecture Building guest exit doors
+
+Both trees now reject guest ActionButtonParam 3200000/3200001 before native
+acceptance/animation. Actual native rejection fixture PASS for both exits,
+host/solo, other buttons and session states 0..8. Bundled DLL build exit=0.
+No deployment; gameplay confirmation pending.
+See docs/fixes/2026-11-02-guest-transition-doors.md.
+
+## 2026-11-02 — prevent native guest key-bank reset (source + native fixture)
+
+Found the native temporary key-bank switch/clear at 0x01AC5600, called by guest
+actor setup at 0x01937A97. Local carried inventory now selects its persistent
+key bank; NPC consumption and NG+ deletion remain native. Both trees updated.
+Actual native bank-switch fixture PASS (baseline clears, fixed keeps keys across
+reinitialization; consumption and unrelated inventories checked). Recovery journal
+retained for legacy losses. Live gameplay confirmation pending.
+Details: docs/fixes/2026-11-02-local-key-bank.md.
+
+## 2026-11-02 — echo HUD acknowledgement corrected (source only)
+
+Replaced the pre-update widget heartbeat / MenuMan+0x210 pending-reward
+heuristic with a post-format observer at native 0x016570EC. It reads widget
++0x18C (the number passed to the primary text update). Only an active widget
+with an unchanged displayed number and unchanged different balance for 3s
+produces a warning. Hidden/absent widgets, loads, ongoing rewards and native
+roll-up reset the timer. No currency or pending-reward memory is modified.
+Both source trees updated. Extracted production C++ fixture PASS; production
+mid-function trampoline fixture PASS. Native bytes inspected read-only in
+installed CUSA03173 eboot: whole ADD RSP,0x88 before saved R13 is restored.
+No DLL build/install or game confirmation. Prior `widget last ran never`
+warnings do not prove a visible HUD failure. Which layout bypasses this native
+widget, and whether its visible counter stalls, remain unconfirmed.
+
+## 2026-11-02 — local member binding / reliable queue (source only)
+
+Added periodic native local-member binding repair for stable living host/guest actors;
+remote reinsertion no longer interrupts pending create/leave, and its missing timer
+requires a continuous absence. Removed 30000-packet reliable-send limit override,
+restoring native 1001 bound; bounded queue warnings now available in normal mode.
+Targeted extracted production fixture PASS, including idle/idempotence and guards.
+Existing pending-work fixture fails on finale stubs on HEAD too. Both trees updated.
+No product build/deploy/game/save changes. Exact observed FPS/desync cause and gameplay
+fix remain unconfirmed; native bound may end a broken whole session at 1001.
+See docs/fixes/2026-11-02-member-binding-backlog.md.
+
+## 2026-11-02 — LookupOnlineId compatibility fixed in source (unbuilt)
+
+BBGL client command 41 is absent from the pinned packaged shadnet server;
+its authenticated dispatcher returns Invalid=2 for unknown commands. Added
+package patch 0006 with authenticated protobuf/database lookup and canonical
+account identity, plus request name/packet context in client error diagnostics.
+Four source/protocol checks PASS (full patch application, protobuf cross-wire,
+auth/error guards, SQLite lookup). No product build/install/VPS change/game run.
+This fixes a demonstrated package compatibility gap; it does not prove the cause
+of the friends' recorded join failures or identify their running server binary.
+A rebuilt server must later be installed on the host. Mod sources/pin unchanged.
+See bloodborne_pc/docs/fixes/2026-11-02-lookup-online-id.md in workspace root.
+
+## 2026-11-02 — incomplete join / cancellation clarified (diagnosis only)
+
+Second guest enters room 161 with Matching2 peers active but remains state 4;
+LeaveRoom follows after 30.009/30.010 s despite BBSC world packets. Native
+0x8001000100000000 is hardcoded in cancellation/stop paths; task 13 logs late
+cleanup, not the initial rejection reason. Bundled shadNet source lacks command
+41 (LookupOnlineId), so dispatch returns Invalid; causal link to each failed
+join and deployed VPS composition remain unverified. No production edits,
+build/deploy/game run/save changes. See docs/fixes/2026-11-02-incomplete-join.md.
+
+## 2026-11-02 — repeat HP death lifecycle (source + targeted fixture)
+
+Native OnEvent_4000_Hp is consumed once per map load; kept in-place deaths do not
+rearm it. Subsequent HP deaths now enter BeginBbscCoopDeath with the death text
+at 500ms instead of the 3500ms repeat watchdog. Native scripts retain the 15s
+safety fallback. Alive/load/session reset clears stale native-entry time, so a
+rapid next death cannot inherit the previous script. Active death/release/curtain
+is guarded against duplicate entry. Boss/wipe/invasion decisions stay in the
+common death handler; native Lua event registration itself is not modified.
+Both source trees updated. Extracted production lifecycle fixture PASS for host,
+guest, rapid next death, native fallback, duplicate entry, load/HP/curtain/teardown.
+Bundled DLL build completed exit=0. No deployment. Gameplay confirmation pending; no saves changed.
+
+## 2026-11-02 — Parting Blank return ownership (source only)
+
+Native send-home and stranded recovery share a game-thread return claim. Duplicate
+native callbacks are skipped without releasing the active load locks. Stranded recovery
+now waits 15 seconds after state 0 instead of 1 second, allowing the native 5-second
+OnLeave_Limit to run first; it claims before native side effects and only after Lua
+readiness checks. Ownership survives loading and resets on completed home arrival or
+a fresh session. The existing 3-second synthetic OnLeaveMagic remains a startup safety
+net; the cause of missing native item events is not established. Both source trees
+updated; source control-flow checks only. No build, deploy or game confirmation.
+
+## 2026-11-02 — remaining guest incorrectly sent home after peer Blank (source only)
+
+The native OnLeave_Limit/send-home hook protected only own-world players. A living
+state-6 guest with persistence still enabled could therefore execute a delayed
+send-home caused by a peer leave. The hook now also protects a living resident
+guest when no local teardown/quit is pending. Deferred leave/death lock release
+accepts that resident too and rechecks the policy before releasing locks.
+Local Blank (persistence suspended), host loss/state 0/7, joining, quit and dead
+actors retain native recovery. Both source trees updated. Extracted production
+hook/lock fixture and native-leave fixture PASS; no DLL/package build or deployment.
+The reported three-player scenario still needs live confirmation.
+Details: docs/fixes/2026-11-02-resident-guest-blank.md.
+
+## 2026-11-02 — host connection selector (source only, unbuilt)
+
+BBGL hosting now exposes Connection then Address: automatic selection, active IPv4
+adapters (VPN first), and custom IPv4. One address fills automatically; multiple
+addresses require an explicit selection. Multiple VPNs are not silently guessed.
+Discovery uses active Windows adapters, not a remote reachability test. Refresh
+and selection are locked while hosting/running/busy; invitation address stays fixed.
+Server startup/firewall operations no longer turn Play into Cancel; only game launch
+preparation does. Host account/game access uses loopback; gameserver's new optional
+--local-shadnet keeps loopback summon URLs local and the advertised address for guests.
+Both gameserver source trees updated. Firewall script scopes to selected adapter
+subnets; custom IPv4 explicitly allows server ports from all networks when the user
+chooses Configure firewall. No actual firewall/router settings were changed.
+17 targeted tests PASS; source QML rendered and screenshots inspected. No product
+build, deployment, real hosting/game run, external checker or UPnP implementation.
+Details: bloodborne_pc/docs/fixes/2026-11-02-host-connection-selector.md.
 
 ## 2026-11-02 — black fade restored for deaths without reload (source only)
 
@@ -913,7 +2254,7 @@ Bundled d659347: целевая C++ проверка и DLL build PASS, уста
 
 > **T21 подтверждена пользователем:** прямой призыв в чашу и вход из Сна работают.
 > Новый остаток: урон клиента мобам в чаше регистрируется через 2–3 с, у хоста тоже.
-> [T22 — измерение задержки](../../bloodborne_pc/docs/coop-combat-latency.md), порт `6672649`.
+> [T22 — измерение задержки](../../../docs/coop-combat-latency.md), порт `6672649`.
 > Причина/исправление урона пока не установлены. Измерительный порт `6672649`
 > собран и установлен на ПК/ноут в 22:26 МСК (SHA256 `AEF3575C0B1C55CECB3779B8F156B091AAE4437BC8C3707ABDD13A91CF56D6DB`, обе проверки PASS).
 > Тесты: bounded capture/Windows sink и 540 настоящих UDP доставок PASS. Мод T21 не менялся;
@@ -1185,3 +2526,14 @@ become empty on target to prevent old guest recovery from overwriting imported s
 19 files verified by SHA256. Laptop's old save and all journals backed up in
 `C:/Games/Bloodborne/coop-dev/saves/before-pc-forest-20261030-111954`.
 Both games were closed. Mod and Research settings unchanged.
+
+## 04.11.2026 — notification wording and punctuation (source only)
+
+Russian and English single-sentence mod notices omit their final full stop.
+Original bell search/discovery, arrivals and invasion wording is restored where
+its meaning still applies to seamless co-op. Multi-sentence notices and search
+ellipses are retained; covenant discovery warnings remain in their existing form
+(the requested exclusion of «Слышен перезвон…» is preserved). Both generators
+share tools/gamedata/notice_text.py; menu help and item descriptions keep their
+punctuation. Verified 224 entries per language, original text correspondence,
+name/boss tags and inline notice punctuation. No build, deploy or game test.

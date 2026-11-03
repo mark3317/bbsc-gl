@@ -4,7 +4,7 @@
 
 ## Правила задачи
 - Код НЕ менять, сборки/деплой/игру/сервисы не запускать, git только на чтение (log/show/diff/blame, без fetch).
-- Писать только в `C:\Users\markn\CLionProjects\BBSC\docs\study\`. Временное — в scratchpad.
+- Писать только в `C:\Users\markn\CLionProjects\bloodborne_pc\mods-src\BBSC\docs\study\`. Временное — в scratchpad.
 - `D:\Games\Bloodborne\game` и `D:\Games\Bloodborne\bbport-coop` — только чтение.
 - Большие файлы (`bloodborne_re.cpp` 19 388 строк, `docs/CHANGELOG.md` 2 272 строки) — grep + диапазоны.
 - Доки `BBSC/docs/*.md` частично устарели (Phase 0, сентябрь); CHANGELOG доходит до 2026-10-04 (мод 11),

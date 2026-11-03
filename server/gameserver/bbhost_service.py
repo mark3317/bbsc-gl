@@ -623,7 +623,7 @@ SHAD_MAGIC = b"BBR1"
 class Relay:
     def __init__(self):
         self.sock = None
-        # Observability only. No changes to the BBHOST or BBR1 wire protocols.
+        # Traffic counters; optional BBR1 06/07 diagnostic messages leave frames unchanged.
         self.datagrams_in = 0
         self.bytes_in = 0
         self.datagrams_out = 0
@@ -636,6 +636,35 @@ class Relay:
         self.shad = {}       # shadPS4 relay: online id (16 bytes) -> {"addr": (ip, port), "seen"}
         self.shad_frames = 0
         self.shad_missing = {}  # (src, dst) -> (last told, last logged) for unregistered dst
+        # Bounded investigation trace, no packet bodies or account secrets. This
+        # hashes the same encoded frame as native P2P W/I samples (FNV-1a64).
+        self.packet_trace_remaining = 2048
+        self.attempt_traces = {}  # unordered ID pair -> bounded 90-second capture
+
+    def _trace_shad_packet(self, stage, src, dst, frame, addr, result):
+        capture = self.attempt_traces.get(tuple(sorted((src, dst))))
+        attempt = "none"
+        eligible = (len(frame) >= 6 and frame[0] == 0xff and
+                    (frame[2:4] in (b"\x00\x28", b"\xff\xff") or frame[4:6] == b"\x00\x28"))
+        if capture and time.monotonic() < capture["expires"] and eligible:
+            if capture["remaining"] <= 0:
+                return
+            capture["remaining"] -= 1
+            attempt = "{:016x}".format(capture["token"])
+            if capture["remaining"] == 0:
+                say("P2P attempt LIMIT: attempt={} budget exhausted".format(attempt))
+        else:
+            if self.packet_trace_remaining <= 0:
+                return
+            self.packet_trace_remaining -= 1
+        digest = 14695981039346656037
+        for value in frame:
+            digest = ((digest ^ value) * 1099511628211) & 0xffffffffffffffff
+        # Online IDs are hex, so even a malformed ID cannot inject journal lines.
+        say("P2P relay packet: stage={} src={} dst={} bytes={} hash={:016x} "
+            "wall_us={} endpoint={}:{} result={} attempt={}".format(
+                stage, src.hex(), dst.hex(), len(frame), digest,
+                time.time_ns() // 1000, addr[0], addr[1], result, attempt))
 
     def start(self, bind, port, rcvbuf_bytes=0):
         # Explicit opt-in only. Linux doubles SO_RCVBUF for accounting and caps
@@ -766,11 +795,41 @@ class Relay:
                 say("shadPS4 relay: {} registered from {}:{}".format(
                     npid.rstrip(b"\0").decode("ascii", "replace"), addr[0], addr[1]))
             self._send_packet(SHAD_MAGIC + b"\x02", addr)
-        elif kind == 0x03 and len(data) >= 37:
+        elif kind == 0x06 and len(data) == 45:
+            # Diagnostics only. Source validation is identical to frame admission.
+            src, dst = data[5:21], data[21:37]
+            sender = self.shad.get(src)
+            if sender is None or sender["addr"] != addr:
+                return
+            tick = time.monotonic()
+            key = tuple(sorted((src, dst)))
+            token = int.from_bytes(data[37:45], "big")
+            capture = self.attempt_traces.get(key)
+            if capture is None or token > capture["token"]:
+                # Bound memory even if a client requests arbitrary peers.
+                self.attempt_traces = {k: v for k, v in self.attempt_traces.items()
+                                       if tick < v["expires"]}
+                if key not in self.attempt_traces and len(self.attempt_traces) >= 256:
+                    self.attempt_traces.pop(next(iter(self.attempt_traces)))
+                capture = {"token": token, "expires": tick + 90, "remaining": 8192,
+                           "marker": SHAD_MAGIC + b"\x07" + data[5:]}
+                self.attempt_traces[key] = capture
+                say("P2P attempt BEGIN: attempt={:016x} src={} dst={} budget=8192 seconds=90".format(
+                    token, src.hex(), dst.hex()))
+            # Duplicate/reordered markers acknowledge the current epoch but never
+            # replenish its budget or extend its deadline. Retry to both sides.
+            for npid in key:
+                target = self.shad.get(npid)
+                if target:
+                    self._send_packet(capture["marker"], target["addr"])
+        elif kind == 0x03 and len(data) >= 43:
             dst, src = data[5:21], data[21:37]
+            frame = data[43:]
+            self._trace_shad_packet("RX", src, dst, frame, addr, "received")
             with LOCK:
                 sender = self.shad.get(src)
                 if sender is None or sender["addr"] != addr:
+                    self._trace_shad_packet("DROP", src, dst, frame, addr, "sender-unregistered-or-address")
                     return
                 sender["seen"] = now
                 target = self.shad.get(dst)
@@ -784,9 +843,15 @@ class Relay:
                     tell, logged = now - last[0] >= 10, now - last[1] >= 60
                     self.shad_missing[key] = (now if tell else last[0], now if logged else last[1])
             if to:
-                self._send_packet(SHAD_MAGIC + b"\x04" + src + data[37:], to)
+                try:
+                    sent = self._send_packet(SHAD_MAGIC + b"\x04" + src + data[37:], to)
+                except OSError as error:
+                    self._trace_shad_packet("TX", src, dst, frame, to, "error-{}".format(error.errno))
+                    raise
+                self._trace_shad_packet("TX", src, dst, frame, to, sent)
                 self.shad_frames += 1
             else:
+                self._trace_shad_packet("DROP", src, dst, frame, addr, "destination-unregistered")
                 if tell:
                     self._send_packet(SHAD_MAGIC + b"\x05" + dst, addr)
                 if logged:

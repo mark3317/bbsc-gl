@@ -5,6 +5,15 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+source = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+# StopRequest is already a selected Sites hook. Its lightweight observer must
+# execute through that owner even when research and capture are both disabled.
+dispatch = source[source.index('void PS4_SYSV_ABI TraceEntry('):]
+assert dispatch.index('BbscStopRequestHook(0, registers);') < dispatch.index(
+    'if (!BbscResearchEnabled() && (!capture_file')
+stop_install = source[source.index('void InstallBbscStopHooks()'):source.index(
+    'void InstallBbscStopHooks()') + 1200]
+assert 'image_base + 0x01ED07A0' not in stop_install
 fixture = r'''
 #include <windows.h>
 #include <cassert>
@@ -14,11 +23,21 @@ fixture = r'''
 u64 image;
 u8 skip=0;
 bool should_skip=false;
+u64 stop_caller=0;
 namespace BbscMod {
 u64 EbootAddress() { return image; }
 void LogPlain(const char* text) { std::puts(text); }
 }
 void PS4_SYSV_ABI callback(u64 tag, const Core::GuestRegisterSnapshot* snapshot) {
+    if (tag==5) {
+        if (should_skip) const_cast<Core::GuestRegisterSnapshot*>(snapshot)->rsi=15000012;
+        return;
+    }
+    if (tag==4) {
+        stop_caller=*reinterpret_cast<const u64*>(snapshot->rsp);
+        assert(snapshot->rdi==17);
+        return;
+    }
     if (tag==3) {
         if (should_skip) *reinterpret_cast<u8*>(snapshot->r12+0x111)=1;
         return;
@@ -72,6 +91,18 @@ int main() {
         assert(move(reinterpret_cast<u64>(control))==(enabled ? 0 : 1));
         assert(control[0x111]==(enabled ? 1 : 0));
     }
+    // Exact member-arrival LEA: RSI carries the message id; RDI is a local
+    // string destination. Replaying LEA must preserve the callback's new RSI.
+    const u8 arrival_code[]={0x55,0x48,0x89,0xe5,0x48,0x81,0xec,0xf0,0,0,0,
+        0x48,0x8d,0xbd,0x10,0xff,0xff,0xff,0x48,0x89,0xf0,0xc9,0xc3};
+    auto* arrival_start=start+0x5000;
+    std::memcpy(arrival_start,arrival_code,sizeof(arrival_code));
+    using Arrival=u64 PS4_SYSV_ABI (*)(u64,u64);
+    assert(Core::InstallGuestCodeHook(arrival_start+11,std::span<const u8>{arrival_code+11,7},5,callback));
+    for(bool enabled : {false,true,false,true}) {
+        should_skip=enabled;
+        assert(reinterpret_cast<Arrival>(arrival_start)(0,102001)==(enabled ? 15000012 : 102001));
+    }
     const u8 entry_code[]={0xB8,99,0,0,0,0xC3};
     std::memcpy(start+0x1000,entry_code,sizeof(entry_code));
     using Entry=u64 PS4_SYSV_ABI (*)();
@@ -92,6 +123,15 @@ int main() {
         should_skip=false; assert(yes()==99);
         should_skip=true; assert(yes()==13 && skip==0);
     }
+    // Exact Stop entry prologue: observer reads the original caller before
+    // PUSH RBP/PUSH R15, then the native body and epilogue run unchanged.
+    const u8 stop_code[]={0x55,0x48,0x89,0xe5,0x41,0x57,
+        0x48,0x89,0xf8,0x41,0x5f,0x5d,0xc3};
+    auto* stop_start=start+0x3000;
+    std::memcpy(stop_start,stop_code,sizeof(stop_code));
+    using Stop=u64 PS4_SYSV_ABI (*)(u64);
+    assert(Core::InstallGuestCodeHook(stop_start,std::span<const u8>{stop_code,6},4,callback));
+    assert(reinterpret_cast<Stop>(stop_start)(17)==17 && stop_caller!=0);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-hook-resume-') as temporary:

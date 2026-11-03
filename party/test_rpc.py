@@ -1,7 +1,56 @@
 """Combined bridge RPC, HTTP pooling and final leave checks without native builds."""
-import http.client,json,socket,time,unittest
+import http.client,json,socket,time,unittest,threading
 from test_compat import CompatibilityTests
+class ClaimRetryLimits(unittest.TestCase):
+    def test_timeout_is_bounded_and_never_submits_another_claim(self):
+        from unittest.mock import Mock,call
+        from compat import Compatibility
+        bridge=Compatibility.__new__(Compatibility)
+        bridge.e=Mock()
+        bridge.e.request.return_value=17
+        bridge.e.wait.side_effect=TimeoutError('confirmation unavailable')
+        bridge.log=Mock()
+        with self.assertRaises(TimeoutError):bridge.command('claim',target='B',claim={})
+        bridge.e.request.assert_called_once()
+        self.assertEqual(bridge.e.wait.call_args_list,[call(17,8),call(17,8)])
+
+    def test_rejection_and_other_operations_are_not_retried(self):
+        from unittest.mock import Mock
+        from compat import Compatibility
+        for kind,error in [('claim',ValueError('room closed')),('room_leave',TimeoutError())]:
+            with self.subTest(kind=kind):
+                bridge=Compatibility.__new__(Compatibility)
+                bridge.e=Mock()
+                bridge.e.wait.side_effect=error
+                bridge.log=Mock()
+                with self.assertRaises(type(error)):bridge.command(kind)
+                bridge.e.request.assert_called_once()
+                bridge.e.wait.assert_called_once()
+
 class RPCTests(CompatibilityTests):
+    def test_claim_recovers_confirmation_after_first_deadline(self):
+        a,b=self.group(2,compat=True)
+        a.op('acquire')
+        a.op('room_create',room={'max_slots':5,'world':1,'bins':[],'flags':0,'member_bins':[]})
+        self.settled()
+        before=a.state()['state']['revision']
+        b.call('block',peers=['A'])
+        recovery=threading.Timer(9,lambda:b.call('block',peers=[]))
+        recovery.start()
+        try:
+            from compat import game_user_id
+            started=time.monotonic()
+            answer=json.loads(self.http(a,'/summon_messenger/request',{'TargetUserId':game_user_id('B')}))
+            self.assertEqual(answer['ResKind'],0)
+            self.assertGreaterEqual(time.monotonic()-started,8)
+            self.settled()
+            state=a.state()['state']
+            self.assertEqual(state['revision'],before+1)
+            self.assertIn('B',state['pending'])
+        finally:
+            recovery.join()
+            b.call('block',peers=[])
+
     def test_combined_status_keepalive_and_current_title_ticket(self):
         a,b=self.group(2,compat=True)
         connection=http.client.HTTPConnection('127.0.0.1',b.info['http'],timeout=5)
@@ -50,6 +99,32 @@ class RPCTests(CompatibilityTests):
             self.assertIsNone(a.state()['state']['owner']);self.assertIsNone(a.state()['state']['room'])
             body['cancel_seq']=2;body['loading']=True
             self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
+    def test_bell_notice_generation_excludes_host_and_legacy_reply(self):
+        a,b,c=self.group(3,compat=True)
+        body=dict(state=0,loading=False,bell=False,cancel_seq=0,bell_notice=True)
+        def ticks():
+            return [self.http(client,'/party/tick',body,True).decode() for client in (a,b,c)]
+        self.assertEqual(ticks(),['1 0 0']*3)
+        a.op('acquire');self.settled()
+        self.assertEqual(ticks(),['1 0 0','0 0 1','0 0 1'])
+        self.assertEqual(ticks(),['1 0 0','0 0 1','0 0 1'])
+        self.assertEqual(self.http(b,'/party/tick',dict(body,bell_notice=False),True),b'0 0')
+        a.op('release');self.settled()
+        self.assertEqual(ticks(),['1 0 0']*3)
+        c.op('acquire');self.settled()
+        self.assertEqual(ticks(),['0 0 2','0 0 2','1 0 0'])
+
+    def test_bell_release_is_explicit_final_and_legacy_compatible(self):
+        a,b,c=self.group(3,compat=True)
+        body=dict(state=0,loading=False,bell=False,cancel_seq=0,bell_notice=True,bell_release=True)
+        a.op('acquire');self.settled()
+        self.assertEqual(self.http(b,'/party/tick',body,True),b'0 0 1 0')
+        a.op('release');self.settled()
+        self.assertEqual(self.http(b,'/party/tick',body,True),b'1 0 0 1')
+        self.assertEqual(self.http(b,'/party/tick',dict(body,bell_release=False),True),b'1 0 0')
+        c.op('acquire');self.settled()
+        self.assertEqual(self.http(b,'/party/tick',body,True),b'0 0 2 0')
+
     def test_private_http_backlog_capacity(self):
         from compat import Compatibility
         from engine import Engine,invite

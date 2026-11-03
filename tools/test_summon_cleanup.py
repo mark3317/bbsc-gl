@@ -30,16 +30,23 @@ fixture = r'''
 #include <mutex>
 #include <string>
 #include <vector>
+#include <map>
+#include "bbsc_network_attempt.h"
+BbscMod::NetworkAttemptTrace network_attempt_trace;
+#include <string_view>
 using s64=int64_t; using u64=uint64_t; using u32=uint32_t; using s32=int32_t;
 using DWORD=unsigned long;
 #define LOG_INFO(...)
 #define LOG_WARNING(...)
 #define BBSC_TIMELINE(...)
+#define PS4_SYSV_ABI
 std::atomic<bool> joined_claim_cleanup_due{false};
 std::atomic<bool> stale_cleared{false},was_in_session{false},placement_aimed{false};
 std::atomic<s64> claim_delivered_ms{0},own_user_id{0},placement_received_ms{0};
 std::atomic<u32> placement_sender{0};
 std::mutex summon_lifecycle_mutex;
+u64 summon_lifecycle_generation=0;
+bool summon_cleanup_in_flight=false;
 std::string own_sign_url,own_sign_body;
 s64 cleanup_retry_ms=0,now=1000;
 constexpr s64 ClaimJoinWaitMs=20000,PlacementStaleMs=20000,AimedPlacementStaleMs=90000;
@@ -59,17 +66,33 @@ DWORD Post(const std::string& url,const std::string& body){
 int original_send(int,const void*,u64){++creates;operations.push_back('C');broker_record=true;return 0;}
 int original_set_content_length(int,u64){return 0;}
 bool RewriteAreaId(std::string&){return false;}
-namespace Core::Bloodborne {void ClearSeamlessHostPlacementHeader(){}}
+namespace Core::Bloodborne {
+bool pending=false;
+void ClearSeamlessHostPlacementHeader(){}
+void SetBbscNativeSignClaimPending(bool v){pending=v;}
+}
+std::mutex state_mutex;
+std::map<int,std::string> request_urls;
+bool IsSummon(const std::string& u){return u.find("/summon_messenger/")!=std::string::npos;}
+bool IsSummonCreate(const std::string& u){return u.find("/summon_messenger/create")!=std::string::npos;}
+bool IsPublicServer(const std::string& u){return u.find("public")!=std::string::npos;}
+void FinishNativeSignRequest(int){}
+int original_read_data(int,void* out,u64 size){
+ const std::string reply=R"({"MessageId":"SummonDataCreateResponse","UserId":1})";
+ assert(size>=reply.size());std::memcpy(out,reply.data(),reply.size());return reply.size();
+}
 '''
 for signature in ('std::string JsonString(', 'std::string JsonNumber(',
                   'bool ClearStaleRecord(', 'void WatchSessionForStaleClaims()',
-                  'int SendCleanSummonCreate(', 'void MaintainSummonLifecycle()'):
+                  'int SendCleanSummonCreate(', 'void MaintainSummonLifecycle()',
+                  'int PS4_SYSV_ABI ReadData('):
     fixture += function(signature) + '\n'
 fixture += r'''
 const std::string url="http://private:31315/summon_messenger/create?user_id=2545";
 const std::string body=R"({"SessionId":"same-session","UserId":2545})";
-int create(){return SendCleanSummonCreate(1,url,body.data(),body.size());}
 void tick(){MaintainSummonLifecycle();}
+int attempt(){return SendCleanSummonCreate(1,url,body.data(),body.size());}
+int create(){int rc=attempt();if(rc){tick();rc=attempt();}return rc;}
 int main(){
  // Initial cleanup, then normal refresh without deleting an active invitation.
  assert(create()==0&&deletes==1&&creates==1&&broker_record);
@@ -79,7 +102,8 @@ int main(){
  tick();assert(deletes==2); // joined member no longer searchable
  // A pre-join create can complete late; ReadData arms another consume only
  // after its response, preventing publication/ack reordering from retaining it.
- broker_record=true;joined_claim_cleanup_due=true;now+=2000;tick();
+ broker_record=true;joined_claim_cleanup_due=true;stale_cleared=false;
+ ++summon_lifecycle_generation;now+=2000;tick();
  assert(!broker_record&&!joined_claim_cleanup_due);int baseline=deletes;
  state=7;tick();assert(deletes==baseline);
  // Regression: departure with no HTTP traffic / next bell. A host can no
@@ -100,13 +124,28 @@ int main(){
  // A delivered claim is allowed its entire join window; no cleanup during
  // a real slow join, even after the timeout. An abandoned idle claim is removed.
  claim_delivered_ms=now;now+=20001;state=4;tick();assert(claim_delivered_ms==0);
+ int joining_deletes=deletes;stale_cleared=false;tick();assert(deletes==joining_deletes);
  state=6;tick();state=0;tick();create();
  claim_delivered_ms=now;now+=20000;tick();assert(broker_record);
  ++now;tick();assert(!broker_record&&claim_delivered_ms==0);
+ // Re-delivery must not extend the first delivery's deadline. In the failed
+ // three-player run a duplicate moved the nominal 20s cleanup to 32s.
+ create();request_urls[1]=url;char reply[256];
+ ReadData(1,reply,sizeof(reply));const s64 first_delivery=now;
+ now+=12000;ReadData(1,reply,sizeof(reply));
+ assert(claim_delivered_ms==first_delivery);
+ now=first_delivery+20001;tick();assert(!broker_record&&!Core::Bloodborne::pending);
+ // Public replies and a late reply to an established join cannot arm a new
+ // idle-join deadline or block native sign refresh after the session ends.
+ request_urls[2]="http://public/summon_messenger/create";
+ ReadData(2,reply,sizeof(reply));assert(claim_delivered_ms==0);
+ state=6;ReadData(1,reply,sizeof(reply));
+ assert(claim_delivered_ms==0&&!Core::Bloodborne::pending&&joined_claim_cleanup_due);
+ tick();state=0;tick();create();
  // Invalid identity must not mark cleanup successful.
  stale_cleared=false;assert(!ClearStaleRecord(url,"{}")&&!stale_cleared);
- // A concurrent create cannot pass an in-flight departure delete, and no
- // delayed delete may subsequently remove the newly published sign.
+ // The native create callback returns immediately while a delete is blocked.
+ // It may only retry publication after the worker completes that delete.
  stale_cleared=true;was_in_session=true;state=0;
  std::promise<void> entered,release;
  auto released=release.get_future();
@@ -114,18 +153,30 @@ int main(){
  operations.clear();
  auto maintenance=std::async(std::launch::async,[]{tick();});
  entered.get_future().wait();
- auto posting=std::async(std::launch::async,[]{return create();});
- assert(posting.wait_for(std::chrono::milliseconds(25))==std::future_status::timeout);
- release.set_value();maintenance.get();assert(posting.get()==0);
+ auto posting=std::async(std::launch::async,[]{return attempt();});
+ assert(posting.wait_for(std::chrono::seconds(1))==std::future_status::ready);
+ assert(posting.get()!=0);
+ {std::unique_lock unlocked(summon_lifecycle_mutex,std::try_to_lock);assert(unlocked);}
+ release.set_value();maintenance.get();assert(attempt()==0);
  during_delete={};tick();assert((operations==std::vector<char>{'D','C'})&&broker_record);
- std::cout<<"PASS: eager idle cleanup, refresh, slow join, failure retry, blocked stale create, claim timeout, concurrent rejoin\n";
+ // A late response during unlocked delete dirties a new generation. The old
+ // successful deletion must not mark that generation clean.
+ stale_cleared=false;state=6;
+ during_delete=[&]{char data[256];ReadData(1,data,sizeof(data));};
+ tick();assert(!stale_cleared&&joined_claim_cleanup_due);
+ during_delete={};tick();assert(stale_cleared&&!joined_claim_cleanup_due);
+ // Even another short lifecycle section never makes the native wrapper wait.
+ {std::scoped_lock lock{summon_lifecycle_mutex};
+  auto busy=std::async(std::launch::async,[]{return attempt();});
+  assert(busy.wait_for(std::chrono::seconds(1))==std::future_status::ready&&busy.get()!=0);}
+ std::cout<<"PASS: async cleanup, retry ordering, slow join, failure backoff, nonblocking create, stale completion fence\n";
 }
 '''
 build = root / 'build'
 build.mkdir(exist_ok=True)
 cpp, exe = build / 'test_summon_cleanup.cpp', build / 'test_summon_cleanup.exe'
 cpp.write_text(fixture, encoding='utf-8')
-subprocess.run(['C:/msys64/clang64/bin/clang++.exe', '-std=c++20', str(cpp), '-o', str(exe)], check=True)
+subprocess.run(['C:/msys64/clang64/bin/clang++.exe', '-std=c++20', '-I', str(root/'emulator/mod'), str(cpp), '-o', str(exe)], check=True)
 env = dict(os.environ)
 env['PATH'] = 'C:/msys64/clang64/bin;' + env.get('PATH', '')
 subprocess.run([str(exe)], check=True, env=env)

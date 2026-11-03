@@ -97,14 +97,17 @@ void title_stub() {
 }
 u64 OnReturnTitleOffset=reinterpret_cast<u64>(&title_stub)-image_base;
 s32 transition_stub() {
-    assert(memory[request_address]==2 && closed==0); // target selected before transition
-    assert((session==0 || session==2 || session==5) && memory[world+0x1554]==0);
-    assert(memory[world+0x1520]==0); // never select phantom forced-home coordinates
+    // StageTransition starts a WORLD reload (native 013CDE3E..013CDE45).
+    // Selecting event request 2 first does not turn it into a title loader.
     memory[world+8]=1; events.push_back(8); return 1;
 }
 u64 StageTransitionOffset=reinterpret_cast<u64>(&transition_stub)-image_base;
 int closed=0;
-void close_stub(s32 mode) { assert(mode==3 && memory[world+8]==1); ++closed; }
+void close_stub(s32 mode) {
+    assert(mode==3 && memory[request_address]==2 && memory[world+8]==0);
+    memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0; // native close can reset restrictions
+    ++closed; // hand the title request to native StageFlow without a competing world reload
+}
 u64 MultiPlayStopRequestOffset=reinterpret_cast<u64>(&stop_stub)-image_base;
 '''
 
@@ -202,14 +205,41 @@ int main() {
         BbscMod::party_ready=true; memory[world+8]=1;
         TickBbscPendingQuit(); assert(closed==0 && memory[request_address]==0);
         memory[world+8]=0; TickBbscPendingQuit();
-        assert(memory[0xb00111]==0 && closed==1 && memory[world+8]==1);
+        assert(memory[0xb00111]==0 && closed==1 && memory[world+8]==0);
+        assert(memory[menu+0x2DC]==host_lock && memory[0x600000+0x8D]==host_lock);
         assert(memory[menu+0x250]==0 && memory[request_address]==2 && BbscQuitInProgress());
         memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
-        TickBbscPendingQuit(); assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
+        // Native title request is asynchronous. Keep the host restricted even
+        // after Stop/final ACK and CloseMenus, until native loading really starts.
+        now+=60'000;
+        TickBbscPendingQuit();
+        assert(memory[menu+0x2DC]==host_lock && memory[0x600000+0x8D]==host_lock);
+        assert(closed==1 && events.back()==6); // no repeated title/menu calls
+        memory[world+8]=1;
+        memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
+        TickBbscPendingQuit();
+        assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
+        memory[world+8]=0; TickBbscPendingQuit(); // same addresses at title/Continue
+        assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
         ReleaseBbscQuitTitleAtLoad(false,world); assert(BbscQuitInProgress());
         memory[world+0x1592]=0; ReleaseBbscQuitTitleAtLoad(true,world); assert(BbscQuitInProgress());
         memory[world+0x1592]=1; ReleaseBbscQuitTitleAtLoad(true,world); assert(!BbscQuitInProgress());
-        TickBbscPendingQuit(); assert(events.size()==9 && events.back()==8); // title once, no delayed disconnect
+        TickBbscPendingQuit(); assert(events.size()==8 && events.back()==6); // title once; no world reload
+    }
+    // Replacing title/menu context permanently retires the old host hold,
+    // even if an allocator later reuses the original addresses.
+    for (bool replace_world : {false,true}) {
+        reset(3); confirm(); TickBbscPendingQuit(); result(0);
+        memory[world+0x1554]=0; TickBbscPendingQuit(); session=0; TickBbscPendingQuit();
+        const u64 original_world=world;
+        if (replace_world) world+=0x10000;
+        else memory[image_base+MenuManPointerOffset]=menu+0x10000;
+        TickBbscPendingQuit();
+        assert(memory[menu+0x10000+0x2DC]==0 && memory[world+8]==0);
+        world=original_world; memory[image_base+MenuManPointerOffset]=menu;
+        memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
+        TickBbscPendingQuit();
+        assert(memory[menu+0x2DC]==0 && memory[0x600000+0x8D]==0);
     }
     reset(); memory[world+0x1554]=1; confirm(); result(0);
     TickBbscPendingQuit(); assert(events.size()==1 && !bbsc_pending_quit.requested);
@@ -263,7 +293,7 @@ int main() {
     TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[image_base+MatchingStatePointerOffset]=0;
     TickBbscPendingQuit(); TickBbscPendingQuit();
-    assert(events==std::vector<int>({1,2,6,8}));
+    assert(events==std::vector<int>({1,2,6}));
     assert(memory[request_address]==2 && memory[menu+0x250]==0 && BbscQuitInProgress());
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[0x700000]=0; TickBbscPendingQuit(); assert_cancelled();
@@ -306,4 +336,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-menu-quit-') as temporary:
     cpp.write_text(prefix + state + functions + fixture, encoding='utf-8')
     subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++20', '-O0', str(cpp), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=10)
-print('Production menu quit: native menu ownership, final group gate, title then StageTransition, cancellation: PASS')
+print('Production menu quit: native menu ownership, final group gate, direct title without world reload, cancellation: PASS')

@@ -1,18 +1,28 @@
-# Serverless party, experiment v1
+# Local Party protocol
 
-## Baseline and scope
+## Current integration — 04.11.2026
 
-BBGL HEAD 572e066, BBSC HEAD 151e24c, plus the exact dirty working copies copied
-on 2026-11-03. Original trees are untouched. `out/serverless-baseline` in the
-experimental parent worktree contains binary patches and status before new edits.
-Inherited changes are not authored or committed by this experiment.
+Party is the mainline BBGL co-op path, started inside run.py from BB_PARTY_CONFIG.
+The loopback compatibility API serves native NP/game requests; authenticated
+peer control and native UDP gameplay remain separate. No external shadnet.exe,
+gameserver.exe or VPS is required for this path. Offline / Co-op are launch modes.
+Launcher discovery uses UDP announcements and TCP mesh checks; the replicated
+engine below uses explicit unicast peers. The no-broadcast statement below
+applies to the engine, not launcher discovery.
 
-The launcher is the client network component. Its own threads host a loopback-only
-compatibility API; no shadnet.exe, gameserver.exe, VPS or additional server process
-is started. The same party engine runs in independent lightweight test clients.
-It is experimental and opt-in at process launch; legacy launch is unchanged.
+The original isolated experiment and baseline are historical; see the parent
+repository docs/experiments/serverless-party.md and docs/P2P-HANDOFF.md.
 
 ## Identities and transport
+
+The optional member `name` is the native NP online ID shown by the game (1–16
+ASCII letters, digits, hyphen or underscore; launcher names require at least3).
+Names must be unique, ignoring case. Invitations without names retain their
+previous native IDs. The compatibility boundary translates names to stable
+member IDs for control/signaling requests and back for native responses/events.
+Account IDs, game UserIds and durable journals remain keyed by stable member ID.
+Launcher discovery preserves chosen names in the agreed configuration/digest;
+renaming does not change the group or secret and takes effect on the next launch.
 
 An invitation contains a random group ID, epoch, secret, ordered immutable roster,
 and explicit unicast IPv4 endpoints. Each member has a stable ID/account ID and

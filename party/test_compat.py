@@ -4,6 +4,35 @@ from test_processes import Tests as ProcessTests
 from protobuf import encode,decode
 from compat import account,game_user_id,packet,blob,recv_exact
 class CompatibilityTests(ProcessTests):
+    def test_chosen_names_roundtrip_without_changing_durable_identity(self):
+        a,b=self.group(2,compat=True,names=['Host_Name','twin'])
+        a.op('acquire')
+        with self.np_connect(a,'Host_Name') as sa,self.np_connect(b,'twin') as sb:
+            from compat import account
+            token=self.np_call(sa,39,None,{},'GetTokenReply')
+            self.assertEqual(token['npid'],'Host_Name')
+            self.assertEqual(token['user_id'],account('A'))
+            lookup=self.np_call(sa,41,'LookupOnlineIdRequest',{'npid':'twin'},'LookupOnlineIdReply')
+            self.assertEqual(lookup,{'npid':'twin','account_id':account('B')})
+            rid=self.np_call(sa,101,'CreateRoomRequest',{'max_slots':5},'CreateRoomReply')['room_id']
+            a.op('claim',target='B',claim={})
+            joined=self.np_call(sb,102,'JoinRoomRequest',{'room_id':rid},'JoinRoomReply')
+            self.assertEqual({m['npid'] for m in joined['details']['members']},{'Host_Name','twin'})
+            users=self.np_call(sa,113,'GetUserInfoListRequest',{'npids':['twin']},'GetUserInfoListReply')
+            self.assertEqual(users['users'][0]['account_id'],account('B'))
+            self.assertEqual(users['users'][0]['npid'],'twin')
+            signal=self.np_call(sa,105,'RequestSignalingInfosRequest',{'target_npid':'twin'},'RequestSignalingInfosReply')
+            self.assertEqual(signal['target_npid'],'twin')
+            self.assertEqual(signal['target_port'],3659)
+            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as udp:
+                udp.settimeout(2)
+                udp.sendto(b'\xff'*4+b'\x01'+b'Host_Name'.ljust(16,b'\0')+bytes(4),('127.0.0.1',a.info['np']+1))
+                reply,_=udp.recvfrom(100)
+                self.assertEqual(reply,b'\xff'*4+socket.inet_aton('127.0.0.1')+struct.pack('!H',3658))
+            state=self.settled()[0]['state']
+            self.assertEqual(state['owner'],'A')
+            self.assertIn('B',state['joined'])
+
     # This class only runs its explicitly named compatibility test below.
     def http(self,c,path,body=None,control=False):
         headers={'Content-Type':'application/json'}

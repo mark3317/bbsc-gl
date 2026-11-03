@@ -17,10 +17,11 @@ namespace BbscMod {
 u64 EbootAddress(){ return image; }
 void LogPlain(const char*){}
 bool PartyEnabled(){ return enabled; }
-bool PartyAcquire(){ ++requests; return grant; }
 void PartyCancel(){}
 }
 u64 GetLocalPlayerCharacter(){ return 17; }
+bool GateBbscPartyItem(const GuestRegisterSnapshot&){ ++requests; return grant; }
+void ObserveBbscHostBlankItem(u32){}
 void PS4_SYSV_ABI callback(u64 tag,const Core::GuestRegisterSnapshot* registers){
 struct Site { u64 offset; } site{tag};
 BODY

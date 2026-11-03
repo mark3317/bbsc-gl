@@ -101,7 +101,8 @@ def _build_ss_info(local, bbhost=False):
         xml = xml.replace("http://{YOUR SHADNET SERVER}:31315", "http://127.0.0.1:20443")
         print("  summon endpoints -> this server (bbhost players)")
     else:
-        xml = xml.replace("{YOUR SHADNET SERVER}", ARGS.shadnet)
+        shadnet = (getattr(ARGS, 'local_shadnet', None) if local else None) or ARGS.shadnet
+        xml = xml.replace("{YOUR SHADNET SERVER}", shadnet)
         print("  summon endpoints -> {}:31315  ({} replaced)".format(ARGS.shadnet, before))
 
     # 2. everything else -> this process. The template ships pointing at 127.0.0.1:20443; if we
@@ -1044,6 +1045,9 @@ RELAY_LOCK = threading.Lock()
 # Immutable snapshot rebuilt on connects/disconnects, not on every frame.
 # Keep connection keys, so the sender exclusion remains exactly "is not conn".
 RELAY_ROSTER = ()
+RELAY_CONNECTION_SEQUENCE = 0
+RELAY_PENDING_DEPARTURES = {}  # (sender, session) -> one cancellable transport-loss decision
+RELAY_RECONNECT_GRACE = 10.0  # reconnect (2s) + connect + next existing session beacon
 RELAY_QUEUE_LIMIT = 512 * 1024  # bytes waiting for one player before he is dropped as too slow
 # Stage 3A: coalesce ALREADY-QUEUED frames for each client into bounded TCP writes.
 # No queue wait is introduced. Wire bytes, per-peer FIFO order and recipient list do not change.
@@ -1101,7 +1105,12 @@ def _relay_log_stats(interval):
         delta.subtract(previous)
         previous = now
         with RELAY_LOCK:
-            clients = len(RELAY_CLIENTS)
+            peers = list(RELAY_CLIENTS.values())
+            clients = len(peers)
+        for peer in peers:
+            print("bbsc TCP client: conn={} endpoint={} sender={} session={} stats={}".format(
+                peer.connection_id, peer.name, peer.sender_hint, peer.session_hint,
+                peer.diagnostics()), flush=True)
         print(("bbsc TCP relay stats {}s: clients={}; rx_frames={} / {} bytes; "
                "enqueued_frames={} / {} bytes; fanout={:.2f}; "
                "observed_session_frames={}; discovery_frames={}; opaque_frames={}; "
@@ -1118,8 +1127,11 @@ def _relay_log_stats(interval):
 
 def _relay_register_client(conn, client):
     """Register a socket, refreshing the snapshot and observational hints."""
-    global RELAY_ROSTER, RELAY_HINTED_CLIENTS
+    global RELAY_ROSTER, RELAY_HINTED_CLIENTS, RELAY_CONNECTION_SEQUENCE
     with RELAY_LOCK:
+        RELAY_CONNECTION_SEQUENCE += 1
+        client.connection_id = RELAY_CONNECTION_SEQUENCE
+        client.superseded_sessions = set()
         prior = RELAY_CLIENTS.get(conn)
         if prior is not None and prior.session_hint is not None:
             RELAY_HINT_COUNTS[prior.session_hint] -= 1
@@ -1134,8 +1146,65 @@ def _relay_register_client(conn, client):
         return len(RELAY_CLIENTS)
 
 
-def _relay_unregister_client(conn):
-    """Drop a socket, including its monitoring-only session-hint entry."""
+def _relay_departure_log(client, key, decision, reason, **extra):
+    details = " ".join("{}={}".format(k, v) for k, v in extra.items())
+    print("      relay departure: conn={} endpoint={} sender={:08x} session={:08x} "
+          "decision={} reason={!r} {}".format(
+              client.connection_id, getattr(client, "name", "?"), key[0], key[1],
+              decision, reason, details), flush=True)
+
+
+def _relay_live_identity_locked(key):
+    return [peer for peer in RELAY_CLIENTS.values()
+            if (peer.sender_hint, peer.session_hint) == key
+            and key not in peer.superseded_sessions and not getattr(peer, "closed", False)]
+
+
+def _relay_finish_departure(key, pending):
+    # Check and enqueue under the registry lock: identity adoption cannot race
+    # between a last replacement check and putting PeerLeft into recipients' FIFO.
+    # send() only enqueues; it never performs a network write under this lock.
+    with RELAY_LOCK:
+        if RELAY_PENDING_DEPARTURES.get(key) is not pending:
+            return
+        del RELAY_PENDING_DEPARTURES[key]
+        live = _relay_live_identity_locked(key)
+        if live:
+            _relay_departure_log(pending["client"], key, "suppressed-replacement",
+                                 pending["reason"], replacement=live[0].connection_id)
+            return
+        recipients = [peer for peer in RELAY_CLIENTS.values()
+                      if peer.session_hint == key[1] and
+                      key not in peer.superseded_sessions and not getattr(peer, "closed", False)]
+        payload = struct.pack('<BII', 0x7E, *key)
+        queued = sum(bool(peer.send(payload)) for peer in recipients)
+        _relay_departure_log(pending["client"], key, "notify-peer-left",
+                             pending["reason"], recipients=queued)
+
+
+def _relay_note_identity_locked(client, key):
+    # Newer sockets supersede older incarnations of the same party identity.
+    # A stale socket cannot cancel the newer socket's genuine departure later.
+    same = [peer for peer in RELAY_CLIENTS.values()
+            if (peer.sender_hint, peer.session_hint) == key]
+    newest = max(same, key=lambda peer: peer.connection_id)
+    for peer in same:
+        if peer.connection_id < newest.connection_id:
+            if key not in peer.superseded_sessions:
+                peer.superseded_sessions.add(key)
+                _relay_departure_log(peer, key, "superseded", "newer socket identified",
+                                     replacement=newest.connection_id)
+    if client is not newest or key in client.superseded_sessions:
+        return
+    pending = RELAY_PENDING_DEPARTURES.pop(key, None)
+    if pending:
+        pending["timer"].cancel()
+        _relay_departure_log(pending["client"], key, "cancelled-reconnected",
+                             pending["reason"], replacement=client.connection_id)
+
+
+def _relay_unregister_client(conn, reason="TCP EOF"):
+    """Socket loss is not player departure until its replacement check completes."""
     global RELAY_ROSTER, RELAY_HINTED_CLIENTS
     with RELAY_LOCK:
         old_client = RELAY_CLIENTS.pop(conn, None)
@@ -1146,15 +1215,28 @@ def _relay_unregister_client(conn):
                 del RELAY_HINT_COUNTS[old_client.session_hint]
         RELAY_ROSTER = tuple(RELAY_CLIENTS.items())
         count = len(RELAY_CLIENTS)
-        recipients = tuple(peer for _, peer in RELAY_ROSTER
-                           if old_client is not None and old_client.session_hint is not None
-                           and peer.session_hint == old_client.session_hint)
-    # TCP EOF is an actual process/connection departure, not a slow map-load timeout.
-    # This control frame comes only from the relay server, never from a player envelope.
-    if old_client is not None and old_client.sender_hint and old_client.session_hint:
-        payload = struct.pack('<BII', 0x7E, old_client.sender_hint, old_client.session_hint)
-        for peer in recipients:
-            peer.send(payload)
+        if old_client is None:
+            return count
+        key = (old_client.sender_hint, old_client.session_hint)
+        if not all(key):
+            return count
+        live = _relay_live_identity_locked(key)
+        if key in old_client.superseded_sessions or live:
+            _relay_departure_log(old_client, key, "suppressed-superseded", reason,
+                                 replacement=live[0].connection_id if live else "already-gone")
+            return count
+        prior = RELAY_PENDING_DEPARTURES.pop(key, None)
+        if prior:
+            prior["timer"].cancel()
+        pending = {"client": old_client, "reason": reason}
+        timer = threading.Timer(RELAY_RECONNECT_GRACE, _relay_finish_departure,
+                                args=(key, pending))
+        timer.daemon = True
+        pending["timer"] = timer
+        RELAY_PENDING_DEPARTURES[key] = pending
+        _relay_departure_log(old_client, key, "waiting-reconnect", reason,
+                             grace_s=RELAY_RECONNECT_GRACE)
+        timer.start()
     return count
 
 
@@ -1178,6 +1260,7 @@ def _relay_forward(conn, payload):
         sender_client = RELAY_CLIENTS.get(conn)
         if envelope is not None and sender_client is not None:
             sender, session, kind = envelope
+            identity_changed = (sender_client.sender_hint, sender_client.session_hint) != (sender, session or None)
             sender_client.sender_hint = sender
             sender_client.seen_envelope = True
             old_hint = sender_client.session_hint
@@ -1192,6 +1275,15 @@ def _relay_forward(conn, payload):
                     RELAY_HINT_COUNTS[new_hint] += 1
                     RELAY_HINTED_CLIENTS += 1
                 sender_client.session_hint = new_hint
+            key = (sender, session)
+            if session and (identity_changed or key in RELAY_PENDING_DEPARTURES):
+                _relay_note_identity_locked(sender_client, key)
+            if key in sender_client.superseded_sessions:
+                if kind == 0x2A:
+                    _relay_departure_log(sender_client, key, "suppressed-stale-leave", "superseded socket")
+                return 0
+            if kind == 0x2A and session:
+                _relay_departure_log(sender_client, key, "explicit-session-leave", "player envelope")
             if kind in RELAY_DISCOVERY_TYPES:
                 category = "discovery_frames"
             elif session and kind in RELAY_SESSION_TYPES:
@@ -1236,7 +1328,13 @@ class RelayClient:
         self.conn = conn
         self.name = name
         self.queue = collections.deque()
+        self.queue_times = collections.deque()
         self.queued = 0
+        self.high_water = 0
+        self.in_flight = 0
+        self.in_flight_since = 0
+        self.last_rx = self.last_sent = time.monotonic()
+        self.rx_frames = self.tx_frames = self.tx_bytes = 0
         self.cond = threading.Condition()
         self.closed = False
         self.reason = ""
@@ -1244,6 +1342,22 @@ class RelayClient:
         self.session_hint = None
         self.seen_envelope = False
         threading.Thread(target=self._writer, daemon=True).start()
+
+    def diagnostics(self):
+        now = time.monotonic()
+        with self.cond:
+            return {"queued": self.queued, "frames": len(self.queue), "high_water": self.high_water,
+                    "oldest_ms": int((now-self.queue_times[0])*1000) if self.queue_times else 0,
+                    "in_flight": self.in_flight,
+                    "send_ms": int((now-self.in_flight_since)*1000) if self.in_flight else 0,
+                    "rx_age_ms": int((now-self.last_rx)*1000),
+                    "tx_age_ms": int((now-self.last_sent)*1000),
+                    "rx_frames": self.rx_frames, "tx_frames": self.tx_frames, "tx_bytes": self.tx_bytes}
+
+    def note_rx(self):
+        with self.cond:
+            self.last_rx = time.monotonic()
+            self.rx_frames += 1
 
     def send(self, payload):
         # Retain original API for peer-count (0x7f) announcements.
@@ -1259,7 +1373,9 @@ class RelayClient:
                 return False
             was_empty = not self.queue
             self.queue.append(data)
+            self.queue_times.append(time.monotonic())
             self.queued += len(data)
+            self.high_water = max(self.high_water, self.queued)
             # A sleeping writer can exist only while the queue is empty.
             if was_empty:
                 self.cond.notify()
@@ -1275,6 +1391,7 @@ class RelayClient:
                     _relay_record(send_errors=1)
         self.closed = True
         self.queue.clear()
+        self.queue_times.clear()
         self.queued = 0
         self.cond.notify()
         try:
@@ -1296,7 +1413,9 @@ class RelayClient:
                 # Drain only frames already waiting. This adds no artificial
                 # latency and leaves the same 512-KiB enqueue/backpressure rule.
                 data = self.queue.popleft()
+                self.queue_times.popleft()
                 self.queued -= len(data)
+                frame_count = 1
                 # The common case is a single frame with an otherwise empty
                 # queue: avoid allocating a list or copying its bytes.
                 if self.queue and len(data) < RELAY_WRITE_BATCH_MAX_BYTES:
@@ -1305,14 +1424,23 @@ class RelayClient:
                     while (self.queue and len(batch) < RELAY_WRITE_BATCH_MAX_FRAMES and
                            size + len(self.queue[0]) <= RELAY_WRITE_BATCH_MAX_BYTES):
                         frame = self.queue.popleft()
+                        self.queue_times.popleft()
+                        frame_count += 1
                         batch.append(frame)
                         size += len(frame)
                         self.queued -= len(frame)
                     if len(batch) > 1:
                         data = b"".join(batch)
+                self.in_flight = len(data)
+                self.in_flight_since = time.monotonic()
             # Preserve the exact concatenated length-prefixed TCP stream.
             try:
                 self.conn.sendall(data)
+                with self.cond:
+                    self.tx_frames += frame_count
+                    self.tx_bytes += len(data)
+                    self.last_sent = time.monotonic()
+                    self.in_flight = 0
             except OSError as error:
                 self.fail("send failed ({})".format(error))
                 return
@@ -1329,7 +1457,7 @@ def _relay_client(conn, address):
     name = "{}:{}".format(*address)
     client = RelayClient(conn, name)
     count = _relay_register_client(conn, client)
-    print("      relay: {} connected ({} player(s))".format(name, count), flush=True)
+    print("      relay: {} connected conn={} ({} socket(s))".format(name, client.connection_id, count), flush=True)
     _relay_announce()
     frames = 0
     reason = ""
@@ -1349,20 +1477,23 @@ def _relay_client(conn, address):
                 reason = "closed by the player"
                 break
             frames += 1
+            client.note_rx()
             _relay_forward(conn, payload)
     except OSError as error:
         reason = "read failed ({})".format(error)
     finally:
-        left = _relay_unregister_client(conn)
         if client.reason:
             reason = client.reason  # the writer gave up first
+        print("      relay close stats: conn={} reason={!r} stats={}".format(
+            client.connection_id, reason, client.diagnostics()), flush=True)
+        left = _relay_unregister_client(conn, reason or "gone")
         client.fail(reason or "gone")
         try:
             conn.close()
         except OSError:
             pass
-        print("      relay: {} left after {} frames, {:.0f} s ({}) ({} player(s))".format(
-            name, frames, time.time() - started, reason, left), flush=True)
+        print("      relay: {} conn={} left after {} frames, {:.0f} s ({}) ({} socket(s))".format(
+            name, client.connection_id, frames, time.time() - started, reason, left), flush=True)
         _relay_announce()
 
 
@@ -1401,6 +1532,9 @@ def start_relay(host, port):
 
 
 class QuietHTTPServer(ThreadingHTTPServer):
+    # Several local clients each issue concurrent native HTTP jobs. Python 3.12
+    # defaults to five pending TCP connections, below a single startup burst.
+    request_queue_size = 128
     # The game drops keep-alive connections with a reset; that is normal, not worth a traceback.
     def handle_error(self, request, client_address):
         if isinstance(sys.exc_info()[1], (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
@@ -1475,6 +1609,7 @@ def main():
     global AREA_REPLY_BUDGET
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--local-shadnet", help="optional shadNet address for clients on this PC")
     parser.add_argument("--shadnet", required=True,
                         help="address of the real shadnet server, e.g. 26.1.2.3")
     parser.add_argument("--host", default="127.0.0.1")

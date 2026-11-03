@@ -199,7 +199,7 @@
       "name": "Enemy HP per guest (%)",
       "description": "Extra health for normal enemies, per guest",
       "type": "int",
-      "default": 40,
+      "default": 0,
       "min": 0,
       "max": 300,
       "env": "BBSC_SCALE_ENEMY_HP"
@@ -209,7 +209,7 @@
       "name": "Boss HP per guest (%)",
       "description": "Extra health for bosses, per guest",
       "type": "int",
-      "default": 100,
+      "default": 50,
       "min": 0,
       "max": 300,
       "env": "BBSC_SCALE_BOSS_HP"
@@ -219,7 +219,7 @@
       "name": "Enemy damage per guest (%)",
       "description": "Extra damage for enemies and bosses, per guest",
       "type": "int",
-      "default": 15,
+      "default": 0,
       "min": 0,
       "max": 200,
       "env": "BBSC_SCALE_DAMAGE"
@@ -229,7 +229,7 @@
       "name": "Enemy stagger resistance per guest (%)",
       "description": "Harder to stagger normal enemies, per guest",
       "type": "int",
-      "default": 15,
+      "default": 10,
       "min": 0,
       "max": 200,
       "env": "BBSC_SCALE_ENEMY_STAGGER"
@@ -239,7 +239,7 @@
       "name": "Boss stagger resistance per guest (%)",
       "description": "Harder to stagger bosses, per guest",
       "type": "int",
-      "default": 20,
+      "default": 10,
       "min": 0,
       "max": 200,
       "env": "BBSC_SCALE_BOSS_STAGGER"
