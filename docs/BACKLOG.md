@@ -1,3 +1,14 @@
+## 04.11.2026 — architecture/test cleanup, no product build
+
+Reviewed main entrypoints/build dependencies and catalogued229 test/support files.
+Removed unreachable launcher helpers, orphan QML and obsolete experiment launcher
+setup; adapted network/UI/version tests to Party. Legacy save/profile contracts
+retained with explicit skips. Targeted checks:48 PASS,1 FAIL,1 skipped.
+Local-three lifetime fixture hit WinError5 replacing exit-status JSON; worker
+failed and coordinator timed out. Retained as OPEN, exact file-lock cause unknown.
+No game/save/settings/deploy/pin changes; second guest and host exit still OPEN.
+See [audit](../../../docs/fixes/2026-11-04-full-project-audit.md) and parent docs/TEST-CATALOG.md.
+
 ## 04.11.2026 — quest reward prerequisites corrected; gameplay pending
 
 Shared NPC death could advance a guest's separate personal quest before its

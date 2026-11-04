@@ -24,16 +24,16 @@
 {30, 103400, u"Вы погибли"}, // You died
 {30, 103500, u"Вы погибли"}, // You died
 {30, 103101, u"Хост погиб.\nВы остаётесь в его игре."}, // The host died.\nYou stay in their game.
-{30, 103001, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103006, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103007, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103056, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103057, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103051, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103052, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103053, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103054, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
-{30, 103055, u"<?deadName?> погибает.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103001, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103006, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103007, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103056, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103057, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103051, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103052, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103053, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103054, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
+{30, 103055, u"<?deadName?> погиб.\nОн возродится."}, // <?deadName?> died.\nThey will respawn.
 {30, 106200, u"Хост <?hostName?> погиб.\nВы остаётесь в его игре."}, // The host <?hostName?> died.\nYou stay in their game.
 {30, 105200, u"Хост начал битву с боссом:\n<?npcNameId@1000?>"}, // The host started the battle against\n<?npcNameId@1000?>
 {30, 105300, u"Хост начал битву с боссом:\n<?npcNameId@1000?>"}, // The host started the battle against\n<?npcNameId@1000?>
@@ -223,5 +223,5 @@
 {20, 111, u"Завершите совместную игру или остановите поиск."}, // End co-op or stop searching for players.
 {24, 111, u"Используйте Бланк молчания, чтобы остановить\nпоиск колокола или завершить совместную игру.\n\nГость возвращается в свой мир.\nХост отправляет всех гостей домой."}, // Use the Silencing Blank to stop a bell's search\nor end co-op.\n\nAs a guest, you return t
 {30, 15000011, u"Вы догнали <?hostName?>"}, // You caught up with <?hostName?>
-{30, 15000012, u"<?joinName?> догоняет вас"}, // <?joinName?> caught up with you
+{30, 15000012, u"<?joinName?> догнал вас"}, // <?joinName?> caught up with you
 {30, 15000035, u"Вы во Сне Охотника хоста"}, // You are in the host's Hunter's Dream
