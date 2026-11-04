@@ -1,3 +1,18 @@
+## 04.11.2026 — installed on this PC; gameplay still pending
+
+Supersedes the source-only build/deploy status in older entries below.
+BBSC 7b464e0 and BBGL ec0ec22: cleanup/localization committed, DLL and launcher
+package built and installed on this PC; build/copy exit=0. No push, no game launch.
+Install: D:/Games/Bloodborne/Bloodborne Game Launcher.
+Backup: D:/Games/Bloodborne/coop-dev/backups/localization-cleanup-20261104-031341.
+Fast package: BB_FAST_DEPLOY=1 SKIP_BUILD=1; native port reused.
+Quest/name/claim changes are included, but second guest admission, host menu exit
+and live localization bounds remain unconfirmed. Do not close these by build alone.
+Local Party WinError 5 replacing status JSON remains OPEN; exact cause unknown.
+Menu test still expects obsolete ROW_RESTART; separate from localization success.
+Details: [parent handoff](../../../docs/P2P-HANDOFF.md) and
+[localization review](../../../docs/fixes/2026-11-04-localization-review.md).
+
 ## 04.11.2026 — Russian localization, source only
 
 Bell names checked against original rusru goods. Death/catch-up notices now use
