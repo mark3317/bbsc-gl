@@ -114,7 +114,7 @@ class BridgeTests(ProcessTests):
    release.set()
    if proc.poll() is None:proc.kill();proc.wait()
    proc.stdin.close();proc.stdout.close();server.shutdown();server.server_close();thread.join()
- def test_native_title_waits_for_unanimous_leave(self):
+ def test_native_title_with_offline_peer_preserves_group_fence(self):
   a,b=self.group(2,compat=True)
   self.assertNotIn('error',a.op('acquire'))
   rid=a.op('room_create',room={'max_slots':5,'world':1,'bins':[],'flags':0,'member_bins':[]})['result']
@@ -124,16 +124,14 @@ class BridgeTests(ProcessTests):
     '-I',str(ROOT/'emulator/mod'),'-I',str(ROOT/'emulator/mod/shim'),'-I',str(ROOT/'emulator/externals/fmt/include'),
     str(cpp),str(ROOT/'emulator/mod/bbsc_party.cpp'),'-lwinhttp','-o',str(exe)],check=True)
   env=dict(os.environ);env.update(BBSC_PARTY='1',BBSC_PARTY_PORT=str(b.info['http']),BBSC_PARTY_TOKEN=b.info['token'],BBSC_PARTY_INSTANCE='title-'+uuid.uuid4().hex)
+  a.kill() # stale joined participation, as in the reported Player 1 run
   proc=subprocess.Popen([str(exe),'title'],env=env,stdout=subprocess.PIPE,text=True)
   try:
    self.assertEqual(proc.stdout.readline().strip(),'waiting')
-   b.call('block',peers=['A'])
-   ticket=b.send('command',op={'kind':'room_leave'})
-   time.sleep(.7);self.assertIsNone(proc.poll())
-   self.assertIn('B',a.state()['state']['joined'])
-   b.call('block',peers=[]);self.assertNotIn('error',b.get(ticket))
    out,_=proc.communicate(timeout=6)
    self.assertEqual(proc.returncode,0);self.assertIn('confirmed-and-old-ack-invalidated',out)
+   snap=b.state()['state'];self.assertEqual(snap['owner'],'A');self.assertIn('B',snap['joined'])
+   self.assertEqual(snap['owner'],'A') # unresolved ownership still fences admission
   finally:
    if proc.poll() is None:proc.kill();proc.wait()
    proc.stdout.close()

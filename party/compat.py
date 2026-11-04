@@ -418,6 +418,12 @@ class Compatibility:
                 seq=int(body.get('cancel_seq',0))
                 if seq<=0 or seq!=self.latest_cancel or seq!=n.get('cancel_seq'): return 0
                 if not self.native_leave_idle(n):return 0
+                # Title unload is local and safe after native Stop. An offline
+                # peer may prevent unanimous leave forever; retain the journal,
+                # ownership and admission gates while maintenance drains it.
+                # Never confuse permission to unload with a finalized release.
+                if body.get('await_title') and n.get('await_title') and self.release_intent:
+                    return 1
                 if not self.e.finalized(s) or self.e.pending_local: return 0
                 if s['owner']==self.e.id or self.e.id in s['pending'] or self.e.id in s['joined']: return 0
                 return int(self.e.id not in room.get('members',{}) and self.e.id not in room.get('departing',{}))

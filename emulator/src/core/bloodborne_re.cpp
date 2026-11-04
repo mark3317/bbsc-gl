@@ -10254,7 +10254,7 @@ void TickBbscPendingQuit() {
                 }
                 return;
             }
-            LOG_INFO(Debug, "BBSC quit: final party leave confirmed; permitting title load");
+            LOG_INFO(Debug, "BBSC quit: local title unload permitted; shared leave may still be pending");
 #endif
             const u64 request = BbscEventRequestAddress();
             if (!request || !HasMemoryAccess(request, sizeof(s32), MemoryProt::CpuWrite)) {
@@ -10278,8 +10278,14 @@ void TickBbscPendingQuit() {
             // Close the old menu on a later stack than its confirmation functor,
             // after handing off the title intent; never start a map reload here.
             reinterpret_cast<CloseMenus>(image_base + BbscQuitCloseMenusOffset)(3);
+            // Restore the confirmed System-exit latch AFTER CloseMenus. Native
+            // StageFlow 01940DBB..01940E14 consumes +250 and selects task+150.
+            // Request 2 alone omits that exit flag and can reload the own world.
+            // Save and native Stop are already complete; do not replay save latches
+            // or invoke StageTransition (which independently starts a map reload).
+            WriteValue<s32>(completed.menu, 0x250, 1);
             HoldBbscHostQuitInput(bbsc_title_quit);
-            LOG_INFO(Debug, "BBSC quit: final leave complete; native title request submitted without world reload");
+            LOG_INFO(Debug, "BBSC quit: native disconnect complete; title request and confirmed System exit handed to StageFlow");
         } else if (!pending.disconnect_warned &&
                    SteadyNowMs() - pending.started_ms >= 5'000) {
             pending.disconnect_warned = true;

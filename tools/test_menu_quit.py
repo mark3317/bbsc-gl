@@ -49,6 +49,7 @@ std::vector<int> events; // journal=1, save=2, notify=3, suspend=4, stop=5
 constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
+std::atomic<bool> bbsc_beckoning_silenced{false};
 bool bbsc_duel_bell_ready=true, blank_active=true;
 std::vector<int> bbsc_blank_effect_rows{1};
 bool BbscLocalEffectActive(const std::vector<int>&) { return blank_active; }
@@ -207,7 +208,7 @@ int main() {
         memory[world+8]=0; TickBbscPendingQuit();
         assert(memory[0xb00111]==0 && closed==1 && memory[world+8]==0);
         assert(memory[menu+0x2DC]==host_lock && memory[0x600000+0x8D]==host_lock);
-        assert(memory[menu+0x250]==0 && memory[request_address]==2 && BbscQuitInProgress());
+        assert(memory[menu+0x250]==1 && memory[request_address]==2 && BbscQuitInProgress());
         memory[menu+0x2DC]=0; memory[0x600000+0x8D]=0;
         // Native title request is asynchronous. Keep the host restricted even
         // after Stop/final ACK and CloseMenus, until native loading really starts.
@@ -294,7 +295,7 @@ int main() {
     memory[image_base+MatchingStatePointerOffset]=0;
     TickBbscPendingQuit(); TickBbscPendingQuit();
     assert(events==std::vector<int>({1,2,6}));
-    assert(memory[request_address]==2 && memory[menu+0x250]==0 && BbscQuitInProgress());
+    assert(memory[request_address]==2 && memory[menu+0x250]==1 && BbscQuitInProgress());
     reset(); confirm(); TickBbscPendingQuit(); result(0); memory[world+0x1554]=0;
     memory[0x700000]=0; TickBbscPendingQuit(); assert_cancelled();
     assert(memory[request_address]==0);
@@ -336,4 +337,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-menu-quit-') as temporary:
     cpp.write_text(prefix + state + functions + fixture, encoding='utf-8')
     subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++20', '-O0', str(cpp), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=10)
-print('Production menu quit: native menu ownership, final group gate, direct title without world reload, cancellation: PASS')
+print('Production menu quit: native menu ownership, final group gate, native System-exit latch after Stop, no world reload, cancellation: PASS')
