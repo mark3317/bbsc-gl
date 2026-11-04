@@ -1,3 +1,12 @@
+## 04.11.2026 — Player 1 menu fix installed on this PC
+
+BBSC d893098 built successfully (exit0); six-file delta installed (copy exit0)
+into D:/Games/Bloodborne/Bloodborne Game Launcher, including coop/party/compat.py.
+Backup: D:/Games/Bloodborne/coop-dev/backups/player1-menu-fix-20261104-095340.
+No game launch, real saves/settings/journals unchanged. Gameplay confirmation
+remains OPEN; do not equate native fixture PASS with title arrival in game.
+Source diagnosis and checks follow below.
+
 ## 04.11.2026 — Player 1 menu exit corrected; build pending
 
 Latest Player 1 run09:43-09:45MSK, native PID9008 exit0, diagnostics off.
