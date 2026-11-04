@@ -68,12 +68,32 @@ class RPCTests(CompatibilityTests):
             a.op('acquire')
             rid=a.op('room_create',room={'max_slots':5,'world':1,'bins':[],'flags':0,'member_bins':[]})['result']
             a.op('claim',target='B',claim={});b.op('room_join',room_id=rid)
-            self.assertEqual(tick(3,True),'0 0') # native idle is not final group leave
+            self.assertEqual(tick(3,True),'0 3') # title unload does not release the group
             b.call('block',peers=['A']);ticket=b.send('command',op={'kind':'room_leave'})
-            time.sleep(.3);self.assertEqual(tick(3,True),'0 0')
+            time.sleep(.3);self.assertEqual(tick(3,True),'0 3')
             b.call('block',peers=[]);self.assertNotIn('error',b.get(ticket))
             self.assertEqual(tick(3,True),'0 3')
         finally:connection.close()
+    def test_title_with_offline_peer_keeps_unresolved_membership(self):
+        a,b=self.group(2,compat=True)
+        a.op('acquire')
+        rid=a.op('room_create',room={'max_slots':5,'world':1,'bins':[],'flags':0,'member_bins':[]})['result']
+        a.op('claim',target='B',claim={});b.op('room_join',room_id=rid)
+        self.settled();a.kill()
+        body=dict(state=0,loading=False,bell=False,cancel_seq=1,await_title=True)
+        self.assertEqual(self.http(b,'/party/tick',body,True),b'0 1')
+        time.sleep(.5)
+        snap=b.state()['state']
+        self.assertEqual(snap['owner'],'A');self.assertIn('B',snap['joined'])
+        self.assertEqual(self.http(b,'/party/can_beckon',{},True),b'0')
+        for state,loading in [(7,False),(6,False),(0,True)]:
+            body.update(state=state,loading=loading)
+            self.assertEqual(self.http(b,'/party/tick',body,True),b'0 0')
+        body.update(state=0,loading=False,cancel_seq=2,await_title=False)
+        self.assertEqual(self.http(b,'/party/tick',body,True),b'0 0')
+        body['await_title']=True
+        self.assertEqual(self.http(b,'/party/tick',body,True),b'0 2')
+
     def test_host_menu_retained_bell_waits_for_guest_then_releases(self):
         a,b=self.group(2,compat=True)
         self.http(a,'/party/acquire',control=True)
@@ -87,13 +107,13 @@ class RPCTests(CompatibilityTests):
             self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
             body['loading']=False
             self.np_call(sa,103,'LeaveRoomRequest',{'room_id':rid},'LeaveRoomReply')
-            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
+            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 1')
             self.assertIn('B',a.state()['state']['joined'])
             self.np_call(sb,103,'LeaveRoomRequest',{'room_id':rid},'LeaveRoomReply')
             end=time.monotonic()+5;answer=b''
             while time.monotonic()<end:
                 answer=self.http(a,'/party/tick',body,True)
-                if answer==b'1 1':break
+                if answer==b'1 1' and a.state()['state']['owner'] is None:break
                 time.sleep(.05)
             self.assertEqual(answer,b'1 1')
             self.assertIsNone(a.state()['state']['owner']);self.assertIsNone(a.state()['state']['room'])

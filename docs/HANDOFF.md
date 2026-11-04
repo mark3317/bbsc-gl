@@ -1,3 +1,19 @@
+## 04.11.2026 — Player 1 menu exit corrected; build pending
+
+Latest Player 1 run09:43-09:45MSK, native PID9008 exit0, diagnostics off.
+Read-only Party journal retains ownerLocalPlayer3 and joinedLocalPlayer1 at rev239.
+Title unload incorrectly required unanimous shared leave, blocking an isolated
+player with stale membership. Current title ticket now permits LOCAL unload only
+after fresh native idle/not-loading observation and explicit cancel. Ownership,
+room/journal, consensus and Beckoning gates remain unchanged; no forced release.
+Native StageFlow01940DBB..01940E14 requires System MenuMan+250 to set task+150;
+request2 alone omits it. Restore +250 after CloseMenus, after save and Stop,
+without replaying save latches or invoking StageTransition. Earlier claim that
++250 itself was necessarily a world reload was incomplete and is superseded.
+Production quit, actual native branch on fake memory, offline-peer RPC and real
+WinHTTP tests PASS. No real saves/settings/journals changed. Gameplay pending.
+Details: fixes/2026-11-04-player1-menu-exit.md.
+
 ## 04.11.2026 — installed on this PC; gameplay still pending
 
 Supersedes the source-only build/deploy status in older entries below.

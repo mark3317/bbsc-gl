@@ -81,6 +81,32 @@ try:
     assert command(0x013CDE30) == 1
     assert ctypes.c_int32.from_address(request + 8).value == 2
     assert ctypes.c_uint8.from_address(world + 8).value == 1
+    # Execute the actual StageFlow menu-exit branch, not a hand-written model.
+    # Its +150 flag distinguishes the native System exit from a world reload.
+    task, frame, menu = buffer(0x300), buffer(0x400), buffer(0x400)
+    put64(image + 0x05556678, world)
+    put64(image + 0x05562878, menu)
+    start, end = 0x01940DBB, 0x01940E86
+    ctypes.memmove(image + start, read(start, end-start), end-start)
+    # Stop at either branch boundary before unrelated engine work.
+    ctypes.memmove(image + 0x01940E16, b'\xc3', 1)
+    ctypes.memmove(image + end, b'\xc3', 1)
+    wrapper = (bytes.fromhex('55 41 55 48 83 ec 08 48 bd') + struct.pack('<Q', frame+0x200) +
+               bytes.fromhex('49 bd') + struct.pack('<Q', task) +
+               bytes.fromhex('48 b8') + struct.pack('<Q', image+start) +
+               bytes.fromhex('ff d0 48 83 c4 08 41 5d 5d c3'))
+    ctypes.memmove(image, wrapper, len(wrapper))
+    for confirmed in (0,1):
+        ctypes.c_int32.from_address(frame+0x200-0x160).value=confirmed
+        ctypes.c_int32.from_address(frame+0x200-0x140).value=0
+        ctypes.c_uint8.from_address(task+0x150).value=0
+        ctypes.c_int32.from_address(world+0x154C).value=-1
+        ctypes.c_int32.from_address(menu+0x250).value=confirmed
+        kernel.FlushInstructionCache(ctypes.c_void_p(-1), image, 0x6000000)
+        ctypes.CFUNCTYPE(None)(image)()
+        assert ctypes.c_uint8.from_address(task+0x150).value==confirmed
+        assert ctypes.c_int32.from_address(menu+0x250).value==0
+    print('Native StageFlow: confirmed menu latch selects exit +150; title request alone omits it: PASS')
     print('Native title request alone: no reload; old title + StageTransition: world reload armed: PASS')
 finally:
     kernel.VirtualFree(image, 0, 0x8000)
