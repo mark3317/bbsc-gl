@@ -1,3 +1,23 @@
+## 04.11.2026 — Russian localization, source only
+
+Bell names checked against original rusru goods. Death/catch-up notices now use
+past tense; regenerated bbsc_messages_ru.inc (224 entries). Original notice
+overrides preserved. Launcher information uses current bells. Qt text wrapping
+checked offscreen; native game notice bounds still need visual confirmation.
+No build/deploy/game/save/pin changes. See parent
+[localization review](../../../docs/fixes/2026-11-04-localization-review.md).
+
+## 04.11.2026 — architecture/test cleanup, no product build
+
+Reviewed main entrypoints/build dependencies and catalogued229 test/support files.
+Removed unreachable launcher helpers, orphan QML and obsolete experiment launcher
+setup; adapted network/UI/version tests to Party. Legacy save/profile contracts
+retained with explicit skips. Targeted checks:48 PASS,1 FAIL,1 skipped.
+Local-three lifetime fixture hit WinError5 replacing exit-status JSON; worker
+failed and coordinator timed out. Retained as OPEN, exact file-lock cause unknown.
+No game/save/settings/deploy/pin changes; second guest and host exit still OPEN.
+See [audit](../../../docs/fixes/2026-11-04-full-project-audit.md) and parent docs/TEST-CATALOG.md.
+
 ## 04.11.2026 — current architecture and cleanup review
 
 Mainline uses embedded Party; external server/VPS is not required. Removed

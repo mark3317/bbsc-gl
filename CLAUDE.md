@@ -1,3 +1,10 @@
+> Аудит 04.11: [отчёт](../../docs/fixes/2026-11-04-full-project-audit.md). Каталог тестов — docs/TEST-CATALOG.md
+> родительского проекта. Не запускать общий discover: некоторые native scripts
+> выполняются при импорте; VPS/Blender/ELF — ручные. Файлы unittest без main
+> запускать через unittest. Исторические save/profile skip не считать PASS.
+> Отдельный экспериментальный party/launch.py и его prepare-скрипт удалены;
+> текущий запуск — run.py / scripts/local_party.py.
+
 # Актуальное состояние — 04.11.2026
 
 Основной кооп использует локальный Party внутри run.py, private-network discovery
