@@ -75,14 +75,40 @@ int main(){
  remote=reinterpret_cast<u64>(actor2.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();assert(inserts==1&&binds==2);
  loading=true;bbsc_world_presence_local.visit++;now++;TickBbscWorldPlayers();assert(inserts==1);
  loading=false;now++;Hear();TickBbscWorldPlayers();assert(inserts==2&&removals==2&&remote==0); // address retained across local journey
+ // Stage loading may allocate a different actor from retained native slot data.
+ // Its new address/draw state does not replace the per-visit native admission.
+ remote=reinterpret_cast<u64>(actor1.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();
+ loading=true;bbsc_world_presence_local.visit++;now++;TickBbscWorldPlayers();
+ remote=reinterpret_cast<u64>(actor2.data());Actor(remote);
+ loading=false;now++;Hear();TickBbscWorldPlayers();assert(inserts==3&&removals==3&&remote==0);
+ remote=reinterpret_cast<u64>(actor1.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();
+ now++;Hear();TickBbscWorldPlayers();assert(inserts==3&&removals==3); // one restart per visit
+ remote=0;
  // Missing/unfinished native actors can recover; retries remain bounded.
- now+=2500;Hear();TickBbscWorldPlayers();now+=4000;Hear();TickBbscWorldPlayers();assert(inserts<=4);
+ now+=2500;Hear();TickBbscWorldPlayers();now+=4000;Hear();TickBbscWorldPlayers();assert(inserts<=5);
  for(int i=0;i<4;++i){
   World::PlayerVisualLife life;World::PlayerVisualInput in;in.loading=false;in.here=true;in.alive=in.actor_alive=in.actor_ready=in.task_ready=true;in.local_visit=1;in.peer_visit=i+1;in.actor=i+100;in.model=i+200;
   assert(life.Observe(in,1000).rebind);assert(!life.Observe(in,2000).insert);
   in.actor_ready=false;assert(!life.Observe(in,2001).insert);assert(life.Observe(in,4501).insert);
   assert(!life.Observe(in,4502).insert);assert(life.Observe(in,8501).insert);assert(!life.Observe(in,15000).insert);
   in.loading=true;assert(!life.Observe(in,16000).insert);
+ }
+ {
+  World::PlayerVisualLife life;World::PlayerVisualInput in;
+  in.loading=false;in.here=in.alive=in.actor_alive=in.actor_ready=in.task_ready=true;
+  in.local_visit=in.peer_visit=1;in.actor=100;in.model=200;
+  assert(life.Observe(in,1000).rebind);
+  in.here=false;life.Observe(in,1001);
+  // A remote traveller can also acquire a new local copy before its task is ready.
+  in.here=true;++in.peer_visit;in.actor=101;in.model=201;in.task_ready=false;
+  assert(!life.Observe(in,2000).insert);
+  in.actor=102;in.model=202;in.task_ready=true;
+  assert(life.Observe(in,2001).insert);
+  in.actor=103;in.model=203;
+  assert(life.Observe(in,2002).rebind);assert(!life.Observe(in,9000).insert);
+  // No actor after a further local journey: begin admission without the old delay.
+  ++in.local_visit;in.actor=in.model=0;in.actor_ready=false;
+  assert(life.Observe(in,9001).insert);assert(!life.Observe(in,9002).insert);
  }
  active=false;TickBbscWorldPlayers();VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
@@ -96,5 +122,5 @@ def main():
         subprocess.run([compiler,'-std=c++20','-O2','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
-    print('PASS production per-peer player lifecycle: native binding/insertion, load/address reuse, apart/reunion, native stale-actor removal/recreation, unfinished actor recovery, no visibility writes, bounded retries, four remote peers')
+    print('PASS production per-peer player lifecycle: native binding/insertion, reused/new/missing actors on local and remote travel, pending tasks, one admission per visit, unfinished actor recovery, no visibility writes, bounded retries, four remote peers')
 if __name__=='__main__':main()
