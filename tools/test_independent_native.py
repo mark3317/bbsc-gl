@@ -17,17 +17,31 @@ def function(signature):
 PREFIX=r'''
 #include <atomic>
 #include <cassert>
+#include <set>
+#include <mutex>
 #include "core/bbsc_world_control.h"
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 using namespace Core::Bloodborne;
 #define PS4_SYSV_ABI
 struct GuestRegisterSnapshot {u64 rax{},rbx{},rcx{},rdx{},rsi{},rdi{},rbp{},rsp{},r8{},r9{},r10{},r11{},r12{},r13{},r14{},r15{},rflags{};};
 bool active=false,here=true;
+std::atomic<bool> bbsc_independent_hooks{true},bbsc_independent_travel_hooks{true};
+std::mutex bbsc_world_presence_mutex;
+World::PresenceBook bbsc_world_presence_book;
+World::Presence bbsc_world_presence_local;
+int session=3,remote_mode=1,member_count=2;
+u64 GetGlobalState(){return 1;}
+int GetBbscSessionMemberCount(u64){return member_count;}
+int GetSessionState(){return session;}
+u32 GetBbscRelayHost(){return 22;}
+std::vector<u64> GetMultiPlayerInsTasks(){return {1000,2000};}
+template<class T>T ReadValue(u64 task,size_t offset){return offset==0xE8?T(task==1000?(session==6?0:3):remote_mode):T(0);}
+s64 SteadyNowMs(){return 10000;}
 bool BbscIndependentActive(){return active;}
 thread_local u8 bbsc_independent_send_depth=0;
 u8 bbsc_independent_send_skip=0;
 std::atomic<u32> bbsc_independent_role{0},bbsc_independent_owner{0};
-u32 BbscWorldPeer(u64 member){return member==100?11:member==200?22:0;}
+u32 BbscWorldPeer(u64 member){return member==100?11:member==200||member==2200?22:0;}
 bool BbscWorldPeerHere(u32){return here;}
 bool BbscWorldSendHere(u32){return here;}
 u64 BbscWorldNativeMember(u32 peer){return peer==22?200:0;}
@@ -36,6 +50,14 @@ thread_local u64 bbsc_world_hp_original=0;
 '''
 MAIN=r'''
 int main(){
+    bbsc_world_presence_local.world={11,99};bbsc_world_presence_local.phase=World::Phase::Playing;
+    bbsc_world_presence_local.map=0x18000000;bbsc_world_presence_local.visit=1;bbsc_world_presence_local.sequence=1;
+    bbsc_world_presence_local.capabilities=World::PresenceCapability|World::IndependentTravelCapability;
+    auto remote=bbsc_world_presence_local;bbsc_world_presence_book.Bind({11,99},11);
+    assert(bbsc_world_presence_book.Hear(22,{11,99},remote,10000));
+    assert(BbscWorldAllMembersReady()); // host: mode3 self, mode1 remote guest
+    session=6;remote_mode=2;assert(BbscWorldAllMembersReady()); // guest: mode0 self, mode2 remote host
+    member_count=3;assert(!BbscWorldAllMembersReady());member_count=2;
     GuestRegisterSnapshot r;r.rsi=100;r.rdx=0x27;r.rax=77;
     BbscWorldPacketSend(0,&r);assert(r.rax==77&&!bbsc_independent_send_skip);
     active=true;BbscWorldPacketSend(0,&r);assert(r.rax==0&&bbsc_independent_send_skip);
@@ -104,7 +126,8 @@ def check_original_sites(elf):
     print(f'PASS original 1.09 ELF: {total} native hook spans + 7 callable prologues')
 
 def main():
-    signatures=['void PS4_SYSV_ABI BbscWorldPacketSend(u64,const GuestRegisterSnapshot* regs)',
+    signatures=['bool BbscWorldAllMembersReady()',
+        'void PS4_SYSV_ABI BbscWorldPacketSend(u64,const GuestRegisterSnapshot* regs)',
         'u64 BbscWorldStateStandIn(s32 role)',
         'void PS4_SYSV_ABI BbscWorldHpRound(u64,const GuestRegisterSnapshot* regs)',
         'void PS4_SYSV_ABI BbscWorldHpState(u64,const GuestRegisterSnapshot* regs)',

@@ -309,9 +309,12 @@ bool BbscWorldAllMembersReady() {
     const auto tasks=GetMultiPlayerInsTasks();std::set<u32> peers;
     for(const auto task:tasks){
         const auto mode=ReadValue<s32>(task,0xE8);
-        if(mode!=0 && mode!=1) continue;
+        // Native self tasks are mode3 (host) / mode0 (guest). Remote tasks
+        // are mode1 (guest) / mode2 (host); never negotiate against ourselves.
+        if(mode!=1 && mode!=2) continue;
         if(ReadValue<u8>(task,0xED)&2) continue;
-        const u32 peer=BbscWorldPeer(task+0xC8);if(!peer) return false;peers.insert(peer);
+        const u32 peer=mode==2 && GetSessionState()==6 ? GetBbscRelayHost() : BbscWorldPeer(task+0xC8);
+        if(!peer) return false;peers.insert(peer);
     }
     if(peers.size()!=static_cast<size_t>(count-1)) return false;
     const std::vector<u32> roster(peers.begin(),peers.end());
