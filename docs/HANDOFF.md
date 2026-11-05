@@ -1,3 +1,30 @@
+## 05.11.2026 — c5b3b54 game check FAILED: map reset and cutscene-induced takeover
+
+User reports severe desync: introductory movie when host joins late, boss-clear
+behaviour, closed doors, mutually invisible players. Guest entered Yharnam
+19:46:43; host arrived19:47:56. Native host Request24010005 at19:47:56.201 was
+replayed by mod on guest19:47:57.019. This happens BEFORE takeover, so timeout
+alone cannot explain the initial world reset. Both relay progress/send counters
+pause about15s during the movie, with no queued/dropped frames. On resumption,
+host acquires Yharnam epoch3 at19:48:12 despite the earlier guest remaining there.
+ChooseOwner currently tests Fresh3s for previous owner: movie silence can transfer
+authority without observed departure, violating the intended sticky ownership.
+
+Host respawn point also changes2412951->2412959, auxiliary-1 immediately after
+arrival, later aux101163 then-1. Cause not proven. Baseline applied in batches
+as actors activate; repeated applied=1 is NOT by itself proof of repeated same
+actor. Read-only native table check found393 distinct indices for393 actors,
+zero negative/duplicate indices; do not pursue guessed invalid-index collision.
+
+Both sessions later solo. Post-home read-only ordinary story/boss flags agree,
+but this does NOT establish their pre-load values: home restoration already ran.
+No current native fault observed. Need fix initial world bootstrap BEFORE events
+and prevent owner replacement merely because a cutscene stalls heartbeats;
+then verify actual actor/name presence and historical deaths. Previous fixtures,
+menu asset checks and successful build/start do not close these game failures.
+Evidence: parent out/coop-dev/runs/independent-native-arrival-20261105 observed
+P1/P2 complete run logs. No game inputs, save edits or runtime writes used here.
+
 ## 05.11.2026 — late arrivals and native presence/travel corrections
 
 Final source c5b3b54: DLL rebuild and isolated-stage delta exit0. Backup
