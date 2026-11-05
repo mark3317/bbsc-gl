@@ -15,6 +15,7 @@ CODE = r'''
 #include <limits>
 #include "core/bbsc_world_presence.h"
 #include "core/bbsc_world_altars.h"
+#include "core/bbsc_world_control.h"
 using namespace Core::Bloodborne;
 using namespace Core::Bloodborne::World;
 constexpr u32 Yharnam = 0x18000000, Dream = 0x15000000, Dungeon = 0x1D0A5A00;
@@ -55,6 +56,17 @@ int main() {
     tracker.Observe(Dream,false,true,2300); assert(tracker.Visit()==3);
     tracker.Clear(); tracker.Observe(Dream,false,true,2400); assert(tracker.Visit()==4);
 
+    // A native movie suspends all ticks; silence must not hand this map to a later host.
+    auto resident=Sample();std::map<u32,Member> paused{{22,{resident,100,100}}};
+    paused[11]={resident,10000,10000};
+    assert(ChooseOwner(resident,paused,22,10000)==22);
+    PresenceBook movie;movie.Bind(resident.world,11);assert(movie.Hear(22,resident.world,resident,100));
+    auto later=resident;later.sequence++;assert(movie.Hear(33,resident.world,later,10000));
+    assert(!movie.Find(22,10000)&&movie.Resident(22));
+    paused[22].presence.phase=Phase::Loading;assert(ChooseOwner(resident,paused,22,10000)==11);
+    auto layout=resident;layout.map=0x1d0a5a00;layout.dungeon={55,66,88,0};layout.ritual=18;
+    assert(ScopeOf(layout).map==0x1d000000&&ScopeOf(layout).dungeon==layout.dungeon);
+
     // A member in another place/loading/leaving is not a participant here.
     auto b=a; assert(SamePlace(a,b));
     b.map=Dream; assert(!SamePlace(a,b));
@@ -64,6 +76,7 @@ int main() {
     b=a; a.map=b.map=Dungeon; a.dungeon=b.dungeon={55,66,16,0};
     assert(!SamePlace(a,b));
     a.ritual=b.ritual=7; assert(SamePlace(a,b));
+    b.map=0x1d0b5a00;assert(SamePlace(a,b)&&ScopeOf(a)==ScopeOf(b));b=a;
     b.ritual=8; assert(!SamePlace(a,b));
     b=a; b.dungeon.channel++; assert(!SamePlace(a,b));
     b=a; b.dungeon.form_hash++; assert(!SamePlace(a,b));
@@ -78,7 +91,7 @@ int main() {
     assert(!book.Hear(22,a.world,a,101));
     assert(book.Find(22,3099)); assert(!book.Find(22,3100));
     assert(book.LivingHere(a,100)==1);
-    assert(book.LivingHere(a,3100)==0);
+    assert(book.LivingHere(a,3100)==1); // a movie is not a death or departure
     b=Sample(Dream,2); assert(book.Hear(22,b.world,b,3200));
     assert(book.LivingHere(a,3200)==0);
     b=Sample(Yharnam,3); b.visit=2; assert(book.Hear(22,b.world,b,3300));

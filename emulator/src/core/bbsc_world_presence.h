@@ -85,10 +85,10 @@ inline std::optional<Presence> Decode(std::span<const u8> bytes) {
 }
 inline bool SamePlace(const Presence& a, const Presence& b) {
     if (!Valid(a) || !Valid(b) || a.phase != Phase::Playing || b.phase != Phase::Playing ||
-        a.world != b.world || a.map != b.map) return false;
-    return !Chalice::IsMap(a.map) ||
-           (a.ritual != 0 && a.ritual == b.ritual &&
-            Chalice::Valid(a.dungeon) && a.dungeon == b.dungeon);
+        a.world != b.world) return false;
+    if(!Chalice::IsMap(a.map) || !Chalice::IsMap(b.map))return a.map==b.map;
+    return a.ritual != 0 && a.ritual == b.ritual &&
+           Chalice::Valid(a.dungeon) && a.dungeon == b.dungeon;
 }
 
 // Raw map reads flicker at borders. Actual loading invalidates presence at once;
@@ -157,7 +157,9 @@ public:
     bool Hear(u32 sender, WorldId envelope, const Presence& p, s64 now) {
         if (!sender || sender == self_ || !self_ || !Valid(world_) ||
             envelope != world_ || p.world != world_ || !Valid(p)) return false;
-        std::erase_if(members_, [now](const auto& e) { return !Fresh(e.second, now); });
+        // Native movies/loading can suspend game ticks for many seconds.
+        // Only an observed leave/map change or native room departure removes
+        // residency; heartbeat age is not a new authority election.
         if (members_.size() >= 4 && !members_.contains(sender)) return false;
         auto old = last_.find(sender);
         if (old != last_.end() && (p.sequence <= old->second.sequence ||
@@ -180,10 +182,13 @@ public:
         const auto it = members_.find(sender);
         return it != members_.end() && Fresh(it->second, now) ? &it->second : nullptr;
     }
-    u32 LivingHere(const Presence& local, s64 now) const {
+    const Member* Resident(u32 sender) const {
+        const auto it=members_.find(sender);return it==members_.end()?nullptr:&it->second;
+    }
+    u32 LivingHere(const Presence& local, s64 /*now*/) const {
         u32 count = 0;
         for (const auto& [id, m] : members_)
-            count += Fresh(m, now) && m.presence.alive && SamePlace(local, m.presence);
+            count += m.presence.alive && SamePlace(local, m.presence);
         return count;
     }
     bool AllSupportTravel(const Presence& local, std::span<const u32> native_members,
@@ -214,7 +219,8 @@ inline u32 ChooseOwner(const Presence& place, const std::map<u32, Member>& membe
         return entry.first && PresenceBook::Fresh(entry.second, now) &&
                SamePlace(place, entry.second.presence);
     };
-    if (const auto it = members.find(previous); it != members.end() && eligible(*it)) return previous;
+    if (const auto it = members.find(previous); it != members.end() &&
+        SamePlace(place,it->second.presence)) return previous;
     if (const auto it = members.find(place.world.host); it != members.end() && eligible(*it)) return it->first;
     u32 chosen = 0;
     s64 earliest = 0;

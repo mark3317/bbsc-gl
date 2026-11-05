@@ -211,25 +211,100 @@ BbscWorldState BbscWorldCaptureFlags(const World::Scope& scope) {
         state.present|=u64{1}<<i;std::memcpy(state.groups[i].data(),reinterpret_cast<const void*>(p),125);}
     return state;
 }
+bool BbscWorldFlagsReady(const World::Scope& scope) {
+    const auto it=bbsc_independent_states.find(scope);
+    if(it==bbsc_independent_states.end() || !it->second.flags_ready)return false;
+    const bool ritual_seed=it->second.epoch==0 && Chalice::IsMap(scope.map) && std::ranges::any_of(bbsc_world_altars,[&](const auto& a){
+        return a.entry.occupied && a.entry.ritual==scope.ritual && a.mount.key==scope.dungeon;});
+    if(!(it->second.present&1) && !ritual_seed)return false;
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    const auto* owner=bbsc_independent_owners.Find(scope);
+    return !owner || it->second.epoch==owner->epoch ||
+        (owner->owner==BbscMod::RegisterOwnId() && it->second.epoch<owner->epoch);
+}
+void BbscWorldEnsureSeed(const World::Scope& scope) {
+    if(BbscMod::RegisterOwnId()!=scope.world.host || BbscWorldFlagsReady(scope))return;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};
+        if(const auto* owner=bbsc_independent_owners.Find(scope);owner && owner->owner!=scope.world.host)return;}
+    // An unvisited location starts with the session world's existing story.
+    // A location already owned by another player is NEVER recaptured here.
+    auto seed=BbscWorldCaptureFlags(scope);seed.sequence=++bbsc_world_state_sequence;
+    bbsc_independent_states[scope]=std::move(seed);
+}
 bool BbscWorldHasSnapshot(u32 map) {
     if(!BbscIndependentActive()) return false;
     World::Scope scope;
     {std::scoped_lock lock{bbsc_world_presence_mutex};scope=World::ScopeOf(bbsc_world_presence_local);}
-    if(bbsc_world_requested_scope && bbsc_world_requested_scope->map==map) scope=*bbsc_world_requested_scope;
-    scope.map=map;
-    const auto it=bbsc_independent_states.find(scope);
-    return it!=bbsc_independent_states.end() && it->second.flags_ready;
+    if(bbsc_world_requested_scope && (bbsc_world_requested_scope->map==map ||
+       (Chalice::IsMap(bbsc_world_requested_scope->map) && Chalice::IsMap(map)))) scope=*bbsc_world_requested_scope;
+    scope.map=Chalice::IsMap(map)?0x1D000000:map;
+    return BbscWorldFlagsReady(scope);
 }
 void ApplyBbscIndependentAtLoad(u32 map) {
     if(!BbscIndependentActive()) return;
     World::Scope scope;
     {std::scoped_lock lock{bbsc_world_presence_mutex};scope=World::ScopeOf(bbsc_world_presence_local);}
     if(bbsc_world_requested_scope) scope=*bbsc_world_requested_scope;
-    scope.map=map;
+    scope.map=Chalice::IsMap(map)?0x1D000000:map;
     if(auto it=bbsc_independent_states.find(scope);it!=bbsc_independent_states.end()) BbscWorldApplyFlags(scope,it->second);
     if(map==BbscDreamStateMap && GetSessionState()==6)ApplyBbscHostDreamState("independent arrival");
     if(Chalice::IsMap(map)) CompleteBbscChaliceLoad(map);
     ApplyBbscHostTime("independent world arrival");
+}
+
+World::Scope bbsc_world_bootstrap_scope{};
+u64 bbsc_world_bootstrap_load=~u64{0};
+bool BbscWorldSceneReady() {
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    const auto& local=bbsc_world_presence_local;
+    return bbsc_world_bootstrap_load==bbsc_world_native_load.load() &&
+        bbsc_world_bootstrap_scope==World::ScopeOf(local);
+}
+bool BbscWorldNativePeerReady(u32 owner) {
+    if(!owner || owner==BbscMod::RegisterOwnId())return true;
+    for(const u64 task:GetMultiPlayerInsTasks()){
+        const s32 mode=ReadValue<s32>(task,0xE8);if(mode!=1 && mode!=2)continue;
+        const u32 peer=mode==2 && GetSessionState()==6?GetBbscRelayHost():BbscWorldPeer(task+0xC8);
+        if(peer==owner && ReadValue<s32>(task,0x50)==6 && ReadValue<s32>(task,0x54)==6 &&
+           !(ReadValue<u8>(task,0xED)&2))return true;
+    }
+    return false;
+}
+bool GuardBbscWorldBootstrap(u64 instance) {
+    if(!BbscIndependentTravelAllowed() || !ReadablePointer(instance,0xC0))return false;
+    World::Scope scope;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};scope=World::ScopeOf(bbsc_world_presence_local);}
+    const u32 raw=GetCurrentPackedMap();if(!World::ValidMap(raw))return true;
+    scope.map=Chalice::IsMap(raw)?0x1D000000:raw;
+    if(!Chalice::IsMap(raw)){scope.dungeon={};scope.ritual=0;}
+    if(Chalice::IsMap(raw) && bbsc_world_requested_scope && bbsc_world_requested_scope->world==scope.world)
+        scope=*bbsc_world_requested_scope;
+    const u64 load=bbsc_world_native_load.load();
+    if(bbsc_world_bootstrap_load==load && bbsc_world_bootstrap_scope==scope)return false;
+    BbscWorldEnsureSeed(scope);
+    auto it=bbsc_independent_states.find(scope);
+    if(scope.map!=BbscDreamStateMap && !BbscWorldFlagsReady(scope)){
+        // Return without advancing the native instruction: initialization must
+        // not run against this visitor's fresh personal world.
+        static s64 sent=0;const s64 now=SteadyNowMs();
+        if(now-sent>=500){
+            World::Control c;c.kind=World::ControlKind::Request;c.scope=scope;
+            c.owner=BbscMod::RegisterOwnId();c.sequence=++bbsc_world_state_sequence;BbscWorldSend(c);sent=now;
+        }
+        return true;
+    }
+    u32 owner=0;u64 epoch=0;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* lease=bbsc_independent_owners.Find(scope)){owner=lease->owner;epoch=lease->epoch;}}
+    if(scope.map!=BbscDreamStateMap && owner && owner!=BbscMod::RegisterOwnId() &&
+       (it==bbsc_independent_states.end() || !it->second.enemies_ready || it->second.enemy_epoch!=epoch))return true;
+    if(!BbscWorldNativePeerReady(owner))return true;
+    if(it!=bbsc_independent_states.end())BbscWorldApplyFlags(scope,it->second);
+    if(scope.map==BbscDreamStateMap && GetSessionState()==6)ApplyBbscHostDreamState("before native events");
+    {std::scoped_lock lock{bbsc_world_presence_mutex};
+        bbsc_world_bootstrap_scope=scope;bbsc_world_bootstrap_load=load;}
+    BBSC_TIMELINE("WORLD","native world ready before events map={:#x} load={} flag_groups={:#x}",scope.map,load,
+        it==bbsc_independent_states.end()?0:it->second.present);
+    return false;
 }
 
 void BbscWorldPublishFlags(const World::Scope& scope,const BbscWorldState& state,u32 owner,u64 epoch,u64 seq) {
@@ -304,14 +379,7 @@ void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
             using Warp=void PS4_SYSV_ABI (*)(u64,float*,float*,u32);
             reinterpret_cast<Warp>(warp)(chr,at.data(),rotation.data(),1);
         }
-        if(e.fighting && GetCharacterHp(GetLocalPlayerCharacter())>0) {
-            const u64 ai=ReadValue<u64>(chr,0x3B8),a=ReadablePointer(ai,0xB8)?ReadValue<u64>(ai,0xB0):0;
-            const u64 target=ReadablePointer(a,0x568)?ReadValue<u64>(a,0x560):0;
-            if(ReadablePointer(target,0x20)) {
-                using Add=bool PS4_SYSV_ABI (*)(u64,u32,u64,u32,u64);
-                reinterpret_cast<Add>(image_base+0x012B2960)(target+0x10,0,GetLocalPlayerCharacter(),0,ReadValue<u64>(target,8));
-            }
-        }
+
     }
 }
 size_t BbscWorldSeedEnemies(u64 world,const BbscWorldState& state,const std::set<u64>& players,u64 doll,std::map<u32,u64>& seeded) {
@@ -323,7 +391,7 @@ size_t BbscWorldSeedEnemies(u64 world,const BbscWorldState& state,const std::set
         const u64 activation=ReadValue<u64>(chr,0x18);
         if(it==state.enemies.end() || seeded[id]==chr || !ReadablePointer(activation,0x18) ||
            ReadValue<s32>(activation,0x10)!=4 || ReadValue<s32>(activation,0x14)!=4)return;
-        BbscWorldTakeEnemy(chr,it->second,true);seeded[id]=chr;++count;
+        BbscWorldTakeEnemy(chr,it->second,false);seeded[id]=chr;++count;
     });
     return count;
 }
@@ -378,16 +446,23 @@ void TickBbscWorldSnapshots() {
             for(size_t i=0;i<125;++i)live[i]=(live[i]&~p.mask[i])|(p.bits[i]&p.mask[i]);
             continue;
         }
-        if(c.kind==World::ControlKind::Request && host){
+        if(c.kind==World::ControlKind::Request){
+            World::OwnerLease provider;
+            {std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* lease=bbsc_independent_owners.Find(c.scope))provider=*lease;}
+            if(!host && provider.owner!=self)continue;
             if(Chalice::IsMap(c.scope.map)) {
                 const bool known=std::ranges::any_of(bbsc_world_altars,[&](const auto& a){return a.entry.occupied &&
                     a.entry.ritual==c.scope.ritual && a.mount.key==c.scope.dungeon;});if(!known)continue;
             }
+            BbscWorldEnsureSeed(c.scope);
             auto it=bbsc_independent_states.find(c.scope);
-            if(it==bbsc_independent_states.end())it=bbsc_independent_states.emplace(c.scope,BbscWorldCaptureFlags(c.scope)).first;
-            const u64 seq=++bbsc_world_state_sequence;
-            BbscWorldPublishFlags(c.scope,it->second,self,it->second.epoch,seq);
-            BbscWorldPublishEnemies(c.scope,it->second,self,it->second.epoch,seq);continue;
+            if(it==bbsc_independent_states.end() || !BbscWorldFlagsReady(c.scope))continue;
+            // Proxy the owner's revision unchanged. A coordinator-local number
+            // would fence out subsequent legitimate native-owner updates.
+            const u64 seq=it->second.sequence;
+            const u32 source=provider.owner?provider.owner:self;
+            BbscWorldPublishFlags(c.scope,it->second,source,it->second.epoch,seq);
+            BbscWorldPublishEnemies(c.scope,it->second,source,it->second.epoch,seq);continue;
         }
         if(c.kind!=World::ControlKind::Flags && c.kind!=World::ControlKind::Enemies)continue;
         const bool from_host=message.sender==local.world.host;
@@ -412,7 +487,7 @@ void TickBbscWorldSnapshots() {
             BbscWorldApplyFlags(c.scope,state);
     }
     if(!BbscIndependentActive() || local.phase!=World::Phase::Playing || !World::Valid(World::ScopeOf(local)) ||
-       local.map!=GetCurrentPackedMap() || BbscCurtainActive() || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load())return;
+       local.map!=GetCurrentPackedMap() || BbscCurtainActive() || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load() || !BbscWorldSceneReady())return;
     const auto scope=World::ScopeOf(local);const u32 role=bbsc_independent_role.load();
     World::OwnerLease lease;{std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* p=bbsc_independent_owners.Find(scope);p)lease=*p;}
     static World::Scope previous_scope;static u64 previous_epoch=0;
@@ -457,9 +532,6 @@ void TickBbscWorldSnapshots() {
         if(!at || !ReadablePointer(stats,0x100) || hp<0)return;
         BbscWorldEnemy e;e.handle=ReadValue<u32>(chr,0x90);e.hp=hp;e.max=ReadValue<s32>(stats,0xFC);
         e.x=at->position[0];e.y=at->position[1];e.z=at->position[2];e.heading=at->rotation[1];
-        const u64 ai=ReadValue<u64>(chr,0x3B8),a=ReadablePointer(ai,0xB8)?ReadValue<u64>(ai,0xB0):0;
-        const u64 target=ReadablePointer(a,0x568)?ReadValue<u64>(a,0x560):0;
-        e.fighting=ReadablePointer(target,0x20)&&ReadValue<u64>(target,0x18)!=0;
         if(BbscWorldEnemyValid(e))next.enemies[e.handle]=e;
     });
     saved=std::move(next);
