@@ -109,15 +109,15 @@ void PS4_SYSV_ABI BbscWorldAltarCommand(u64,const GuestRegisterSnapshot* regs){
     if(!regs || GetSessionState()!=6 || !BbscIndependentTravelAllowed() ||
        !bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return;
     const u32 talk=bbsc_world_command_talk;
-    if(talk<210050 || talk>210110 || (talk-210050)%10 ||
-       !BbscWorldTalkAllowed(talk))return;
-    // c1_78 opens the special chalice menu. Reuse c1_41, the original headstone
-    // list, with the ten native layer entries already added by this ESD. It has
-    // no ritual creation/removal/inventory actions. c1_79 (empty-altar ritual UI)
-    // is never available to visitors. The host keeps both original commands.
+    if(talk<210050 || talk>210110 || (talk-210050)%10)return;
     auto* r=const_cast<GuestRegisterSnapshot*>(regs);
-    if(r->rax==78)r->rax=41;
-    else if(r->rax==79)r->rax=88; // outside the native dispatcher range: no-op
+    if(r->rax!=78 && r->rax!=79)return;
+    // Original t210050 uses78; all six ordinary altars use79 EVEN WHEN
+    // occupied. Both scripts already build the layer choices with c1_19.
+    // Native headstone41 opens those choices without ritual-edit actions.
+    r->rax=BbscWorldTalkAllowed(talk)?41:88;
+    BBSC_TIMELINE("TRAVEL","guest altar menu talk={} slot={} command={} occupied={}",
+        talk,(talk-210050)/10,r->rax,bbsc_world_catalog_ready.load() && bbsc_world_altars[(talk-210050)/10].entry.occupied);
 }
 void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
     if(regs && bbsc_world_travel_inflight && GetSessionState()==6 &&

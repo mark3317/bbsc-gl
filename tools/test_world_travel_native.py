@@ -82,7 +82,8 @@ int main(){
  command(210080,0x40000,78);assert(r.rax==41);
  BbscWorldTalkAllowed(210721); // another script evaluated: command mapping must still select our altar
  r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==41);
- r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==88);
+ r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==41);
+ altar.entry.occupied=false;r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==88);altar.entry.occupied=true;
  state=3;r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==78);state=6;
  assert(QueueBbscWorldTravel(72100423,1));
  assert(bbsc_world_travel_point==0); // actual native ESD order: altar first
@@ -100,6 +101,20 @@ int main(){
  r.rax=11;BbscWorldAltarCommand(0,&r);assert(QueueBbscWorldTravel(70000200,1)); // retired executor generation
 }
 '''
+def check_original_altar_scripts(game):
+    import sys
+    sys.path.insert(0,str(ROOT/'tools/gamedata'))
+    import bbfiles,esd
+    files=bbfiles.read_bnd4(bbfiles.read_dcx(game/'script/talk/m21_00_00_00.talkesdbnd.dcx'))
+    for slot in range(7):
+        script=esd.Esd(files[f't{210050+slot*10}.esd'][1])
+        commands=[c for g in script.groups.values() for state in g['states'].values() for c in state['entry']]
+        assert any(b==1 and i==(78 if slot==0 else 79) for b,i,args in commands)
+        choices={int(args[0][0]) for b,i,args in commands if b==1 and i==19 and args and args[0][0].isdigit()}
+        assert set(range(1,11))<=choices
+        assert any(str(72100420+slot) in str(args) for b,i,args in commands)
+    print('PASS original seven altar scripts: native78/79, ten layer choices, exact altar selection flags')
+
 def main():
     source=SOURCE[SOURCE.index('s32 bbsc_world_travel_point='):SOURCE.index('void TickBbscWorldTravel() {')]
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
@@ -111,4 +126,6 @@ def main():
         subprocess.run([str(exe)],check=True,env=env)
     print('PASS production ESD dispatcher ABI: R12=result/R15=evaluator, saved context, local actor, scoped lamps/headstones, host ritual/layer, native phase guard')
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    main()
+    if os.environ.get('BBSC_TEST_GAME'):check_original_altar_scripts(Path(os.environ['BBSC_TEST_GAME']))

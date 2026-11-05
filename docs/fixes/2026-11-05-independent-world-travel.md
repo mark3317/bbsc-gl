@@ -1,5 +1,14 @@
 # Independent travel — development branch, 05.11.2026
 
+Altar menu follow-up: checked original installed m21 ESDs read-only. t210050
+uses c1_78; t210060..210110 use c1_79 for occupied as well as empty altars.
+The previous79->no-op rule directly blocked ordinary altar menus. Occupied
+host altars now map BOTH78/79 to native headstone41 using their ten existing
+layer choices; empty/unknown host altars reject both. Host native UI unchanged.
+Production callback tests occupied79/empty79/host78 PASS. Original seven ESDs
+validate native command IDs, ten layers and exact72100420..426 selection flags.
+No game scripts edited. This supersedes the earlier claim that79 is empty-only.
+
 ## 05.11.2026 — late arrivals and native presence/travel corrections
 
 User run19:09-19:29 failed: absent host model/name remained, host could not see
