@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. Version **1.3.0**.
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. Version **1.2.0**.
 
 **The full main story has been tested as a co-op playthrough through the finale, including the transition to NG+. Chalice dungeons work in co-op, with native random generation restored for Root Chalices.** Guests explore the host's generated layout while retaining their own altars and individual progress; they do not need to create a matching dungeon first.
 
