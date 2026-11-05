@@ -215,11 +215,27 @@ bool BbscWorldFlagsReady(const World::Scope& scope) {
 }
 void BbscWorldEnsureSeed(const World::Scope& scope) {
     if(BbscMod::RegisterOwnId()!=scope.world.host || BbscWorldFlagsReady(scope))return;
+    u64 epoch=0;
     {std::scoped_lock lock{bbsc_world_presence_mutex};
-        if(const auto* owner=bbsc_independent_owners.Find(scope);owner && owner->owner!=scope.world.host)return;}
-    // An unvisited location starts with the session world's existing story.
-    // A location already owned by another player is NEVER recaptured here.
+        if(const auto* owner=bbsc_independent_owners.Find(scope)){
+            epoch=owner->epoch;
+            // Leases survive departure. Only a player STILL in this scope can
+            // supply its state; never wait on a lease for a different map.
+            if(owner->owner!=scope.world.host){
+                const auto* resident=bbsc_world_presence_book.Resident(owner->owner);
+                if(Chalice::IsMap(scope.map) || (resident &&
+                   resident->presence.phase!=World::Phase::Leaving &&
+                   World::ScopeOf(resident->presence)==scope))return;
+            }
+        }}
+    // Keep any completed state above. With no resident provider, seed missing
+    // flags from the host's world, preserving the lease fence. No NPC state or
+    // simulation ownership is invented here.
     auto seed=BbscWorldCaptureFlags(scope);seed.sequence=++bbsc_world_state_sequence;
+    seed.epoch=Chalice::IsMap(scope.map)?0:epoch;
+    const auto previous=bbsc_independent_states.find(scope);
+    if(previous==bbsc_independent_states.end() || previous->second.epoch!=seed.epoch || previous->second.present!=seed.present)
+        BBSC_TIMELINE("TRAVEL","destination flags seeded map={:#x} epoch={} present={:#x}",scope.map,epoch,seed.present);
     bbsc_independent_states[scope]=std::move(seed);
 }
 bool BbscWorldHasSnapshot(u32 map) {

@@ -29,6 +29,7 @@ bool active=true;u32 self=11,map=0x18010000;int native_state=4,sent=0,applied=0;
 namespace BbscMod {u32 RegisterOwnId(){return self;}}
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 World::OwnerBook bbsc_independent_owners;
+World::PresenceBook bbsc_world_presence_book;
 std::atomic<u64> bbsc_world_native_load{1};
 constexpr u32 BbscDreamStateMap=0x15000000;
 struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;};
@@ -55,6 +56,8 @@ int main(){
  World::Presence p;p.world={11,99};p.map=map;p.phase=World::Phase::Playing;p.visit=1;p.sequence=1;
  bbsc_world_presence_local=p;const auto scope=World::ScopeOf(p);
  bbsc_independent_owners.Bind(p.world);
+ bbsc_world_presence_book.Bind(p.world,11);
+ auto resident=p;assert(bbsc_world_presence_book.Hear(22,p.world,resident,100));
  World::Control lease;lease.kind=World::ControlKind::Owner;lease.scope=scope;lease.owner=22;lease.epoch=9;
  assert(bbsc_independent_owners.Take(11,lease,100));
  bbsc_independent_states[scope]={9,7,1,true};

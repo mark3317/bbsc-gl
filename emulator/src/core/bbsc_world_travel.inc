@@ -266,7 +266,17 @@ void TickBbscWorldTravel() {
         bbsc_world_travel_point=0;bbsc_world_travel_inflight=false;return;
     }
     const s64 now=SteadyNowMs();const u64 global=GetGlobalState();
-    if(!ReadablePointer(global,0x1598))return;
+    const auto wait=[&](const char* reason){
+        static s64 trip=-1,last=0;static const char* previous=nullptr;
+        if(trip!=bbsc_world_travel_since || previous!=reason || now-last>=5000){
+            trip=bbsc_world_travel_since;previous=reason;last=now;
+            BBSC_TIMELINE("TRAVEL","local travel waiting reason={} point={} waited_ms={} native_load={} world_pending={} finish_pending={}",
+                reason,bbsc_world_travel_point,now-bbsc_world_travel_since,
+                ReadablePointer(global,9)?ReadValue<u8>(global,8):0,
+                bbsc_world_load_pending.load()!=0,bbsc_reload_finish_pending.load());
+        }
+    };
+    if(!ReadablePointer(global,0x1598)){wait("global-unavailable");return;}
     const bool loading=ReadValue<u8>(global,8)!=0 || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load();
     if(bbsc_world_travel_inflight){
         bbsc_world_travel_saw_load|=loading || bbsc_load_generation.load()!=bbsc_world_travel_load;
@@ -280,11 +290,15 @@ void TickBbscWorldTravel() {
         }
         return;
     }
-    if(now-bbsc_world_travel_since>30000 || GetCharacterHp(GetLocalPlayerCharacter())<=0){bbsc_world_travel_point=0;return;}
-    if(loading || !bbsc_world_requested_scope)return;
+    if(now-bbsc_world_travel_since>30000 || GetCharacterHp(GetLocalPlayerCharacter())<=0){
+        BBSC_TIMELINE("TRAVEL","local travel cancelled point={} waited_ms={} hp={}",bbsc_world_travel_point,now-bbsc_world_travel_since,GetCharacterHp(GetLocalPlayerCharacter()));
+        bbsc_world_travel_point=0;return;
+    }
+    if(loading || !bbsc_world_requested_scope){wait(loading?"load-pending":"scope-missing");return;}
     const auto scope=*bbsc_world_requested_scope;
     BbscWorldEnsureSeed(scope);
     if(!BbscWorldHasSnapshot(scope.map)){
+        wait("destination-flags");
         if(now-bbsc_world_travel_request_sent>=500){
             World::Control request;request.kind=World::ControlKind::Request;request.scope=scope;
             request.owner=BbscMod::RegisterOwnId();request.sequence=++bbsc_world_state_sequence;
@@ -294,7 +308,7 @@ void TickBbscWorldTravel() {
     }
     // Release the ORIGINAL local event. It owns the menu, animation, delay,
     // stage request and point selection; no synthesized summon/coordinate warp.
-    if(Chalice::IsMap(scope.map) && !PrepareBbscChaliceLoad(scope.map))return;
+    if(Chalice::IsMap(scope.map) && !PrepareBbscChaliceLoad(scope.map)){wait("chalice-prepare");return;}
     const u64 flagman=ReadValue<u64>(image_base+WorldFlagManPointerOffset,0);
     if(!flagman || !bbsc_world_travel_flag)return;
     bbsc_world_travel_inflight=true;bbsc_world_travel_saw_load=false;
