@@ -12,8 +12,10 @@ saves RDI=result variant in R12 and RSI=evaluator in R15. Capture validated talk
 and actor from R15 at dispatch entry; use thread-local context after switch
 register reuse. Corrected production ABI fixture passes with R12=result, and
 with R15 clobbered at common exit. Earlier fixture was wrong and masked this bug.
-Both fixtures/full MOD syntax PASS. DLL build pending; no game launch requested
-for this diagnostic turn. Evidence: parent out/coop-dev/runs/independent-lamp-
+Both fixtures/full MOD syntax PASS. Fixd6bd1f6 DLL build/delta exit0, installed
+in isolated staging18:24 MSK with backup independent-lamp-crash-20261105-182403.
+Main installation unchanged. Games stopped; no automatic launch this turn.
+New native/gameplay confirmation OPEN. Evidence: parent out/coop-dev/runs/independent-lamp-
 crash-20261105-1817 (both complete run logs copied, no saves/settings).
 
 ## 05.11.2026 — independent mode never activated: room binding corrected

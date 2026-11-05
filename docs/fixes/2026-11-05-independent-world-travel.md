@@ -21,6 +21,12 @@ Production ESD ABI/takeover fixtures and full MOD syntax PASS. Build/deploy and
 new gameplay result are separate. Evidence in parent
 `out/coop-dev/runs/independent-lamp-crash-20261105-1817`.
 
+Fixd6bd1f6: DLL build/delta exit0; isolated staging updated18:24 MSK, backup
+`D:/Games/Bloodborne/coop-dev/backups/independent-lamp-crash-20261105-182403`.
+No automatic game launch this diagnostic turn; new gameplay result OPEN.
+Additional original ELF relocation proof: evaluator vtable0535AAB0+10 points
+to203AD60, whose203AD74 bytes4989D64989F74989FC save RSI->R15/RDI->R12.
+
 ## First gameplay failure: native room binding (18:04 MSK)
 
 P1 hosted/P2 joined successfully, but P2 followed the host Dream->Central Yharnam

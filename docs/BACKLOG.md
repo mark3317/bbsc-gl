@@ -1,5 +1,11 @@
 ## 05.11.2026 — independent travel: native integration, development branch
 
+Second game check: activation CONFIRMED18:15:12, guest lamps FAILED and both
+profiles crashed. Fixd6bd1f6 corrects real ESD evaluator/result register context
+and16-byte native Warp argument alignment. Targeted production fixtures/syntax
+PASS, DLL build/delta exit0, isolated stage updated18:24. No automatic launch;
+recheck guest lamps and authority takeover after owner load/return. See HANDOFF.
+
 First user game check FAILED (legacy follow/closed lamps). Native room was
 incorrectly read from self endpoint fields (zero). Fixf398e01 reads actual full
 64-bit Matching2 room; targeted regression PASS, build/delta exit0, P1/P2
