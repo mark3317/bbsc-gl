@@ -12,11 +12,15 @@ PREFIX = r'''
 #include <thread>
 #include "bbsc_party_acquire.h"
 using u64=std::uint64_t;using u32=std::uint32_t;using s32=std::int32_t;using u8=std::uint8_t;
+#define BBSC_TIMELINE(...)
 #define BBSC_MOD
 #define PS4_SYSV_ABI
 struct GuestRegisterSnapshot {u64 rdi=17,rsi=200,rdx=17;};
 using Box=BbscMod::PartyAcquireMailbox;
 Box mailbox;int cancellations=0;
+bool responder=false,erase_ok=true;
+u64 BbscLocalEffectNode(int id){return id==9005&&responder;}
+bool BbscEraseLocalEffect(int id){assert(id==9005);if(!erase_ok)return false;responder=false;return true;}
 namespace BbscMod {
 std::uint64_t PartyRequestAcquire(){return mailbox.Request();}
 Box::Result PartyAcquireResult(std::uint64_t t){return mailbox.Poll(t);}
@@ -38,6 +42,7 @@ MAIN = r'''
 int applied=0;bool native_ok=true;
 bool NativeApply(u64 p,s32 goods,s32 argument){
  assert(p==player && goods==200 && argument==17);
+ assert(!responder); // the old Small Bell must stop before native Beckoning
  GuestRegisterSnapshot regs{p,200,17};
  assert(GateBbscPartyItem(regs)); // NativeApply + nested GoodsExecutor use one grant
  assert(GateBbscPartyItem(regs));
@@ -46,10 +51,11 @@ bool NativeApply(u64 p,s32 goods,s32 argument){
 void request(){GuestRegisterSnapshot r;assert(!GateBbscPartyItem(r));assert(bbsc_pending_party_item.ticket);}
 void grant(){auto t=mailbox.Take();assert(t);assert(mailbox.Complete(t,true));}
 int main(){
- request();auto first=bbsc_pending_party_item.ticket;
+ responder=true;request();auto first=bbsc_pending_party_item.ticket;
  for(int i=0;i<10000;++i){GuestRegisterSnapshot r;assert(!GateBbscPartyItem(r));TickBbscPartyItem();}
- assert(applied==0 && bbsc_pending_party_item.ticket==first);
- grant();TickBbscPartyItem();assert(applied==1 && !bbsc_pending_party_item.ticket);
+ assert(applied==0 && responder && bbsc_pending_party_item.ticket==first);
+ grant();erase_ok=false;TickBbscPartyItem();assert(applied==0&&responder);
+ erase_ok=true;TickBbscPartyItem();assert(applied==1 && !responder && !bbsc_pending_party_item.ticket);
  TickBbscPartyItem();assert(applied==1);assert(mailbox.Poll(first)==Box::Idle);
  request();auto denied=mailbox.Take();assert(mailbox.Complete(denied,false));
  TickBbscPartyItem();assert(applied==1 && !bbsc_pending_party_item.ticket);

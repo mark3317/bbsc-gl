@@ -59,12 +59,14 @@ void PS4_SYSV_ABI Disable(u64 chr,u32 off){assert(chr==42&&off==0);calls.emplace
 void PS4_SYSV_ABI CreateSfx(u64 unused,u32 id){assert(unused==0);calls.emplace_back(2006,id,1);}
 void stub(u64 off,u64 target){unsigned char bytes[12]={0x48,0xb8};memcpy(bytes+2,&target,8);bytes[10]=0xff;bytes[11]=0xe0;memcpy((void*)(image_base+off),bytes,12);}
 '''
+code += 'struct BbscScriptedPickup { u32 map; s64 event; bool client_gate; };\n'
+code += re.search(r'constexpr std::array<BbscScriptedPickup, \d+> BbscScriptedPickups\{\{.*?\}\};',s,re.S).group()+'\n'
 code += re.search(r'constexpr std::array<[^;]+ BbscNpcQuestFlags\{.*?\};',s,re.S).group()+'\n'
 code += 'bool bbsc_npc_own_active=true;std::mutex bbsc_npc_own_mutex;std::map<u32,u8> bbsc_npc_own;\n'
 for signature in ['bool IsBbscNpcQuestFlag(u32 flag)',
                   'void NoteBbscNpcOwnFlag(u32 flag, u8 value)',
                   'void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live)',
-                  'void EnableBbscCainhurstCrownEvent(u64 instance)',
+                  'void EnableBbscScriptedPickupEvent(u64 instance)',
                   'void ArmBbscCainhurstReveal(s32 scene)',
                   'void ApplyBbscCainhurstReveal()',
                   'void TickBbscCainhurstReveal()']:
@@ -103,11 +105,11 @@ int main(){
  u32 args=256;
  WriteValue<u64>((u64)instance,0xb0,(u64)instruction);WriteValue<u64>((u64)instance,0xa8,(u64)ref);
  WriteValue<u64>((u64)ref,8,(u64)file);WriteValue<u64>((u64)file,0x78,(u64)&args-(u64)file);
- event_id=12500600;EnableBbscCainhurstCrownEvent((u64)instance);assert(args==256);
- event_id=12501803;writable=false;EnableBbscCainhurstCrownEvent((u64)instance);assert(args==256);
- writable=true;EnableBbscCainhurstCrownEvent((u64)instance);
+ event_id=12500601;EnableBbscScriptedPickupEvent((u64)instance);assert(args==256);
+ event_id=12501803;writable=false;EnableBbscScriptedPickupEvent((u64)instance);assert(args==256);
+ writable=true;EnableBbscScriptedPickupEvent((u64)instance);
  assert(args==0&&instruction[0]==(1001ull|(1ull<<32))&&instruction[1]==4&&instance[0x78]==0);
- EnableBbscCainhurstCrownEvent((u64)instance);assert(args==0);
+ EnableBbscScriptedPickupEvent((u64)instance);assert(args==0);
  VirtualFree((void*)image_base,0,MEM_RELEASE);
 }
 '''
@@ -120,7 +122,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-cainhurst-') as tmp:
 flags=s.split('BbscNpcQuestFlags{',1)[1].split('};',1)[0]
 values=list(map(int,re.findall(r'\b\d+\b',flags)))
 assert values==sorted(set(values)) and 12501803 in values
-assert 'return event == 12501803 ||' in s
+assert 'std::ranges::binary_search(BbscScriptedPickups, event' in s
 if os.environ.get('BB_GAME'):
     sys.path.insert(0,str(root/'tools/gamedata'))
     import struct

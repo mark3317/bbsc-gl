@@ -4,6 +4,29 @@ from test_processes import Tests as ProcessTests
 from protobuf import encode,decode
 from compat import account,game_user_id,packet,blob,recv_exact
 class CompatibilityTests(ProcessTests):
+    def test_join_reply_lost_reconnect_returns_same_member_once(self):
+        host,guest=self.group(2,compat=True)
+        host.op('acquire')
+        with self.np_connect(host,'A') as hs, self.np_connect(guest,'B') as gs:
+            room=self.np_call(hs,101,'CreateRoomRequest',{'max_slots':5},'CreateRoomReply')['room_id']
+            host.op('claim',target='B',claim={})
+            args=(102,'JoinRoomRequest',{'room_id':room},'JoinRoomReply')
+            first=self.np_call(gs,*args)
+        revision=guest.state()['state']['revision']
+        with self.np_connect(guest,'B') as replacement:
+            again=self.np_call(replacement,*args)
+        self.assertEqual(again,first)
+        self.assertEqual(guest.state()['state']['revision'],revision)
+
+    def test_delayed_login_cannot_replace_newer_authenticated_socket(self):
+        a,=self.group(1,compat=True)
+        with socket.create_connection(('127.0.0.1',a.info['np']),timeout=3) as old:
+            recv_exact(old,19)
+            with self.np_connect(a,'A') as current:
+                old.sendall(packet(0,0,9,blob(encode('LoginRequest',{'npid':'A','password':a.info['token']}))))
+                self.assertEqual(old.recv(1),b'')
+                self.assertTrue(self.np_call(current,12,None,{},'ServerFeaturesReply')['matching2_enabled'])
+
     def test_chosen_names_roundtrip_without_changing_durable_identity(self):
         a,b=self.group(2,compat=True,names=['Host_Name','twin'])
         a.op('acquire')
@@ -156,6 +179,7 @@ class CompatibilityTests(ProcessTests):
         end=time.monotonic()+5
         while time.monotonic()<end and a.state()['state']['owner'] is not None: time.sleep(.05)
         self.assertIsNone(a.state()['state']['owner'])
+        self.settled([a,b])
         self.assertEqual(self.http(b,'/party/acquire',control=True),b'1')
         xml=base64.b64decode(self.http(a,'/bb-eu/ss.info')).decode()
         self.assertNotIn('{YOUR',xml); self.assertNotIn(':31315',xml)

@@ -256,9 +256,12 @@ void Dispatch(const std::vector<std::uint8_t>& wrapped) {
     const bool guest = state == 4 || state == 6;
     const bool sender_hosting = session != 0 && session == sender;
     const std::uint8_t type = frame[4];
-    if (type == FollowType && frame.size() >= 0x1E && sender_hosting) {
-        FollowPacket follow{};
-        std::memcpy(&follow, frame.data(), std::min(frame.size(), sizeof(follow)));
+    FollowPacket follow{};
+    Core::Bloodborne::Chalice::Key dungeon{};
+    Core::Bloodborne::Follow::Arrival arrival{};
+    if (type == FollowType &&
+        !Core::Bloodborne::Follow::Decode(frame.data(), frame.size(), follow, dungeon, arrival)) return;
+    if (type == FollowType && sender_hosting) {
         // Every host's position: the mod's host lock (bloodborne_re.cpp) picks ours from them.
         Core::Bloodborne::NoteBbscRelayHost(sender, follow.packed_map, follow.x, follow.y,
                                             follow.z);
@@ -290,16 +293,9 @@ void Dispatch(const std::vector<std::uint8_t>& wrapped) {
         return; // our host talks over the signaling (an emulator build): as before
     }
     if (type == FollowType && frame.size() >= 0x1E) {
-        FollowPacket follow{};
-        std::memcpy(&follow, frame.data(), std::min(frame.size(), sizeof(follow)));
-        Core::Bloodborne::Chalice::Key dungeon{};
-        if (frame.size() == sizeof(follow) + sizeof(dungeon)) {
-            std::memcpy(&dungeon, frame.data() + sizeof(follow), sizeof(dungeon));
-        }
         Core::Bloodborne::OnBbscHostFollowPacket(follow.packed_map, follow.x, follow.y, follow.z,
                                                  follow.heading, follow.sequence,
-                                                 frame.size() >= sizeof(follow) ? follow.lamp_point
-                                                                                : -1, dungeon);
+                                                 follow.lamp_point, dungeon, arrival);
     } else if (type == ScaleType && frame.size() >= 15) {
         std::uint16_t percent[5]{};
         std::memcpy(percent, frame.data() + 5, sizeof(percent));

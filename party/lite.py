@@ -2,7 +2,12 @@ import argparse,json,sys,threading
 from pathlib import Path
 from engine import Engine
 ap=argparse.ArgumentParser(); ap.add_argument('--invite'); ap.add_argument('--id'); ap.add_argument('--profile'); ap.add_argument('--fault',default='{}'); ap.add_argument('--compat',action='store_true'); a=ap.parse_args()
-e=Engine(json.loads(Path(a.invite).read_text(encoding='utf-8-sig')),a.id,a.profile,fault=json.loads(a.fault)).start()
+cfg=json.loads(Path(a.invite).read_text(encoding='utf-8-sig'))
+if cfg.get('mode')=='dynamic-worlds-v1':
+    from dynamic import DynamicEngine
+    e=DynamicEngine(cfg,a.id,a.profile,cfg['peers_file']).start()
+else:
+    e=Engine(cfg,a.id,a.profile,fault=json.loads(a.fault)).start()
 lock=threading.Lock()
 def emit(x):
     with lock: print(json.dumps(x),flush=True)

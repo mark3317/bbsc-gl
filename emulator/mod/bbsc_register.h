@@ -14,6 +14,7 @@ void ReceiveSessionRegister(u32 sender, u32 session, const void* data, u32 size)
 void ReceiveRegisterKill(u32 sender, u32 session, const void* data, u32 size);
 void QueueRegisterKill(const RegisterIdentity& killer);
 void ForgetSessionRegister(u32 sender);
+u32 FindSessionRegisterPeer(const RegisterIdentity& identity);
 u32 RegisterSessionKey();
 u32 RegisterOwnId();
 u32 SendRegisterPacket(const void* data, u32 size);

@@ -214,14 +214,14 @@
 {2, 2000, u"Нужна помощь? Позвоните в Зовущий Колокол."}, // Need help? Ring the Beckoning Bell.
 {2, 1121, u"Зовите других игроков в свою игру\nЗовущим Колоколом."}, // Call other players into your game\nwith the Beckoning Bell.
 {2, 1122, u"Присоединяйтесь к игре другого игрока\nс Малым звонким колоколом."}, // Join another player's game\nwith the Small Resonant Bell.
-{20, 200, u"Позовите игроков в свою игру. Не тратит Озарение."}, // Call other players into your game. No Insight cost.
-{24, 200, u"Позвоните в Зовущий Колокол, чтобы позвать\nдругих игроков в свою игру. Не тратит Озарение.\n\nГости остаются после смертей и битв с боссами.\nБланк молчания завершает совместную игру."}, // Ring the Beckoning Bell to call other players\ninto your game. Costs no Insight.\n\nGuests
-{20, 205, u"Присоединитесь к чужой игре. Не тратит Озарение."}, // Join another player's game. No Insight cost.
-{24, 205, u"Позвоните в Малый звонкий колокол, чтобы найти\nхоста и присоединиться к его игре.\nНе тратит Озарение.\n\nВы остаётесь после смертей и битв с боссами.\nБланк молчания возвращает вас в свой мир."}, // Ring the Small Resonant Bell to find a host\nand join their game. Costs no Insight.\n\nYou
-{20, 225, u"Вторгнитесь в чужой мир. Не тратит Озарение."}, // Invade another player's world. No Insight cost.
-{24, 225, u"Позвоните в Зловещий звонкий колокол,\nчтобы найти мир для вторжения.\nНе тратит Озарение.\n\nВы входите в чужой мир как враг."}, // Ring the Sinister Resonant Bell to search\nfor a world to invade. Costs no Insight.\n\nYou
+{20, 200, u"Позовите игроков в свою игру."}, // Call other players into your game.
+{24, 200, u"Позвоните в Зовущий Колокол, чтобы позвать\nдругих игроков в свою игру.\n\nГости остаются после смертей и битв с боссами.\nБланк молчания завершает совместную игру."}, // Ring the Beckoning Bell to call other players\ninto your game.\n\nGuests stay after deaths
+{20, 205, u"Присоединитесь к чужой игре."}, // Join another player's game.
+{24, 205, u"Позвоните в Малый звонкий колокол, чтобы найти\nхозяина мира и присоединиться к его игре.\n\nВы остаётесь после смертей и битв с боссами.\nБланк молчания возвращает вас в свой мир."}, // Ring the Small Resonant Bell to find a host\nand join their game.\n\nYou stay after deaths
+{20, 225, u"Включите или выключите PvP в текущей сессии."}, // Enable or disable PvP in the current session.
+{24, 225, u"Позвоните в Зловещий звонкий колокол,\nчтобы включить или выключить PvP\nв текущей сессии."}, // Ring the Sinister Resonant Bell to enable\nor disable PvP in the current session.
 {20, 111, u"Завершите совместную игру или остановите поиск."}, // End co-op or stop searching for players.
-{24, 111, u"Используйте Бланк молчания, чтобы остановить\nпоиск колокола или завершить совместную игру.\n\nГость возвращается в свой мир.\nХост отправляет всех гостей домой."}, // Use the Silencing Blank to stop a bell's search\nor end co-op.\n\nAs a guest, you return t
+{24, 111, u"Используйте Бланк молчания, чтобы остановить\nпоиск колокола или завершить совместную игру.\n\nГость возвращается в свой мир.\nХозяин мира отправляет всех гостей домой."}, // Use the Silencing Blank to stop a bell's search\nor end co-op.\n\nAs a guest, you return t
 {30, 15000011, u"Вы догнали <?hostName?>"}, // You caught up with <?hostName?>
 {30, 15000012, u"<?joinName?> догнал вас"}, // <?joinName?> caught up with you
 {30, 15000035, u"Вы во Сне Охотника хоста"}, // You are in the host's Hunter's Dream

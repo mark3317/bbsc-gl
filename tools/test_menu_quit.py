@@ -50,6 +50,7 @@ constexpr u64 request_address=0x700008;
 u64 BbscEventRequestAddress() { return memory[0x700000]; }
 s32 session=6; s64 now=1000; bool accept_save=true;
 std::atomic<bool> bbsc_beckoning_silenced{false};
+std::atomic<bool> bbsc_host_selected_blank{false};
 bool bbsc_duel_bell_ready=true, blank_active=true;
 std::vector<int> bbsc_blank_effect_rows{1};
 bool BbscLocalEffectActive(const std::vector<int>&) { return blank_active; }

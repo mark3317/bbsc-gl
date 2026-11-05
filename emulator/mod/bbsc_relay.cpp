@@ -59,7 +59,6 @@ constexpr u8 ScaleType = Core::Bloodborne::Protocol::Scale;  // "SHAD" 0x24 + 5 
 constexpr u8 PvpType = Core::Bloodborne::Protocol::Pvp;    // "SHAD" 0x25 + u8 kind (0 host state, 1 guest asks) + u8 on + u32
 constexpr u8 ProgressType = Core::Bloodborne::Protocol::Progress; // "SHAD" 0x26 + u8 count + count x u32 the host's boss flags
 constexpr u8 HostBossType = Core::Bloodborne::Protocol::HostBoss; // "SHAD" 0x27 + s32 the boss on the host's boss bar (-1 none)
-constexpr u8 KeyItemsType = Core::Bloodborne::Protocol::KeyItems; // "SHAD" 0x29 + u32 the host's keys and badges + u32 sequence
 constexpr u8 CutsceneType = Core::Bloodborne::Protocol::Cutscene; // "SHAD" 0x28 + the host's cutscene request (bloodborne_re.cpp)
 constexpr u8 PeersType = Core::Bloodborne::Protocol::Peers; // server -> client: "N other players are connected", 1 byte count
 constexpr u8 PeerLeftType = Core::Bloodborne::Protocol::PeerLeft; // server only: sender + session of a closed TCP connection
@@ -350,19 +349,17 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         Core::Bloodborne::OnBbscExplicitSessionLeave(sender, from_our_host());
     } else if (frame[4] == FollowType && frame.size() >= 0x1E) {
         FollowPacket follow{};
-        std::memcpy(&follow, frame.data(), std::min(frame.size(), sizeof(follow)));
+        Core::Bloodborne::Chalice::Key dungeon{};
+        Core::Bloodborne::Follow::Arrival arrival{};
+        if (!Core::Bloodborne::Follow::Decode(frame.data(), frame.size(), follow, dungeon, arrival)) return;
         if (sender_hosting && (!guest || SessionKey() == 0 || session == SessionKey())) {
             Core::Bloodborne::NoteBbscRelayHost(sender, follow.packed_map, follow.x, follow.y,
                                                 follow.z);
         }
         if (from_our_host()) {
-            Core::Bloodborne::Chalice::Key dungeon{};
-            if (frame.size() == sizeof(follow) + sizeof(dungeon)) {
-                std::memcpy(&dungeon, frame.data() + sizeof(follow), sizeof(dungeon));
-            }
             Core::Bloodborne::OnBbscHostFollowPacket(
                 follow.packed_map, follow.x, follow.y, follow.z, follow.heading, follow.sequence,
-                frame.size() >= sizeof(follow) ? follow.lamp_point : -1, dungeon);
+                follow.lamp_point, dungeon, arrival);
         }
     } else if (frame[4] == LifeType && frame.size() >= 14) {
         // Only the players of our own session (same host).
@@ -373,7 +370,8 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         u32 sequence = 0;
         std::memcpy(&player, frame.data() + 5, 4);
         std::memcpy(&sequence, frame.data() + 10, 4);
-        Core::Bloodborne::OnBbscLifePacket(sender, frame[9], sequence, from_our_host());
+        Core::Bloodborne::OnBbscLifePacket(sender, frame[9], sequence, from_our_host(),
+                                           frame.size() == 15 && frame[14] == 1);
     } else if (frame[4] == ScaleType && frame.size() >= 15) {
         if (from_our_host()) {
             std::uint16_t percent[5]{};
@@ -396,10 +394,6 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         }
     } else if (frame[4] == HostBossType && frame.size() >= 9) {
         // Legacy boss-name banner packet. No gameplay state depends on it.
-    } else if (frame[4] == KeyItemsType) {
-        if (from_our_host()) {
-            Core::Bloodborne::OnBbscKeyItemsPacket(frame.data(), frame.size());
-        }
     } else if (frame[4] == CutsceneType) {
         if (from_our_host()) {
             Core::Bloodborne::OnBbscCutscenePacket(frame.data(), frame.size());
@@ -632,7 +626,8 @@ void StartRelay() {
 namespace Libraries::Np::NpSignaling::Helpers {
 
 u32 SendBbscFollowToPeers(u32 packed_map, float x, float y, float z, float heading, u32 sequence,
-                          s32 lamp_point, const Core::Bloodborne::Chalice::Key& dungeon) {
+                          s32 lamp_point, const Core::Bloodborne::Chalice::Key& dungeon,
+                          const Core::Bloodborne::Follow::Arrival& arrival) {
     FollowPacket packet{};
     packet.packed_map = packed_map;
     packet.x = x;
@@ -641,13 +636,8 @@ u32 SendBbscFollowToPeers(u32 packed_map, float x, float y, float z, float headi
     packet.heading = heading;
     packet.sequence = sequence;
     packet.lamp_point = lamp_point;
-    if (Core::Bloodborne::Chalice::IsMap(packed_map)) {
-        std::array<u8, sizeof(packet) + sizeof(dungeon)> scoped{};
-        std::memcpy(scoped.data(), &packet, sizeof(packet));
-        std::memcpy(scoped.data() + sizeof(packet), &dungeon, sizeof(dungeon));
-        return SendFrame(scoped.data(), scoped.size());
-    }
-    return SendFrame(&packet, sizeof(packet));
+    const auto frame = Core::Bloodborne::Follow::Encode(packet, dungeon, arrival);
+    return SendFrame(frame.data(), frame.size());
 }
 
 u32 SendBbscWorldFlagsToPeers(const void* packet, u32 size) {

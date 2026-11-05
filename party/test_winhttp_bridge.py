@@ -1,5 +1,5 @@
 """Real production Windows WinHTTP bridge against independent party clients, no game."""
-import os,subprocess,tempfile,time,unittest,uuid,threading
+import os,subprocess,tempfile,time,unittest,uuid,threading,json
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from test_processes import Tests as ProcessTests
@@ -10,8 +10,20 @@ SOURCE=r'''
 #include <string>
 #include <future>
 #include "bbsc_party.h"
-namespace BbscMod { void LogLine(char,const char*,const std::string&){} }
+namespace BbscMod {
+void LogLine(char,const char*,const std::string&){}
+std::string AimedPlacementAcknowledgment(){return {};}
+}
 int main(int argc,char** argv){
+ if(argc>1 && std::string(argv[1])=="roles"){
+  for(unsigned expected:{1u,2u,0u,0u}){
+   BbscMod::PartyObserve(0,false,false,1,true,true);
+   BbscMod::PartyMaintain();
+   if(BbscMod::PartyHostHint()!=expected)return 40;
+   Sleep(260);
+  }
+  return 0;
+ }
  if(argc>1 && std::string(argv[1])=="notices"){
   const unsigned long long expected[][2]={{7,0},{0,7},{0,0},{8,0},{0,0},{0,0}};
   for(const auto& pair:expected){
@@ -35,11 +47,11 @@ int main(int argc,char** argv){
   std::puts("late-grant-discarded");return 0;
  }
  if(argc>1 && std::string(argv[1])=="idle"){
-  BbscMod::PartyObserve(3,false,true); BbscMod::PartyMaintain(); Sleep(300);
-  BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain(); return 0;
+  BbscMod::PartyObserve(3,false,true,1,true); BbscMod::PartyMaintain(); Sleep(300);
+  BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false,1,true); BbscMod::PartyMaintain(); return 0;
  }
  if(argc>1 && std::string(argv[1])=="title"){
-  BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false); BbscMod::PartyMaintain();
+  BbscMod::PartyCancel(); BbscMod::PartyObserve(0,false,false,1,true); BbscMod::PartyMaintain();
   if(BbscMod::PartyTitleReady()) return 8;
   std::puts("waiting");std::fflush(stdout);
   const auto end=GetTickCount64()+15000;
@@ -68,6 +80,33 @@ int main(int argc,char** argv){
 }
 '''
 class BridgeTests(ProcessTests):
+ def setUp(self):
+  super().setUp()
+  from unittest.mock import patch
+  self.enterContext(patch.dict(os.environ,PATH='C:/msys64/clang64/bin;'+os.environ.get('PATH','')))
+ def test_host_hint_and_responder_snapshot(self):
+  replies=iter([b'0 0 0 7 1',b'0 0 0 0 2',b'1 0 0 0 3',b'1 0'])
+  seen=[]
+  class Handler(BaseHTTPRequestHandler):
+   def log_message(self,*args):pass
+   def do_POST(self):
+    seen.append(json.loads(self.rfile.read(int(self.headers.get('Content-Length',0)))))
+    body=next(replies);self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+  server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+  thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+  cpp=self.root/'roles.cpp';exe=self.root/'roles.exe';cpp.write_text(SOURCE)
+  subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-DFMT_HEADER_ONLY',
+   '-I',str(ROOT/'emulator/mod'),'-I',str(ROOT/'emulator/mod/shim'),'-I',str(ROOT/'emulator/externals/fmt/include'),
+   str(cpp),str(ROOT/'emulator/mod/bbsc_party.cpp'),'-lwinhttp','-o',str(exe)],check=True)
+  env=dict(os.environ,BBSC_PARTY='1',BBSC_PARTY_PORT=str(server.server_port),BBSC_PARTY_TOKEN='fixture',BBSC_PARTY_INSTANCE=uuid.uuid4().hex)
+  try:
+   subprocess.run([str(exe),'roles'],env=env,check=True,timeout=10)
+   self.assertEqual(len(seen),4)
+   for body in seen:
+    self.assertTrue(body['host_check']);self.assertTrue(body['responder']);self.assertTrue(body['fresh'])
+    self.assertTrue(body['placement_ticket'])
+    self.assertEqual(body['members'],1);self.assertFalse(body['bell'])
+  finally:server.shutdown();server.server_close();thread.join()
  def test_notice_reply_versions_and_malformed_release(self):
   replies=iter([b'0 0 7 0',b'1 0 0 7',b'1 0',b'0 0 8',b'1 0 0 invalid',b'garbage'])
   class Handler(BaseHTTPRequestHandler):

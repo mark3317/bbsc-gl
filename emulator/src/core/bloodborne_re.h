@@ -3,6 +3,7 @@
 
 #pragma once
 #include "core/bbsc_chalice.h"
+#include "core/bbsc_follow.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -35,7 +36,7 @@ void TraceMatching2LeaveRoom(std::uintptr_t return_address, std::uint64_t room_i
 // on the signaling receive thread, so it only records the message; TickBbscFollowHost acts on it.
 void OnBbscHostFollowPacket(std::uint32_t packed_map, float x, float y, float z, float heading,
                             std::uint32_t sequence, std::int32_t lamp_point,
-                            const Chalice::Key& dungeon = {});
+                            const Chalice::Key& dungeon = {}, const Follow::Arrival& arrival = {});
 // BBSC world state: one chunk of the host's event flags for its map block arrived (a whole
 // SignalingBbscWorldFlags packet). Signaling receive thread; only stores it.
 void OnBbscWorldFlagsPacket(const void* packet, std::uint32_t size);
@@ -43,7 +44,8 @@ void OnBbscWorldFlagsPacket(const void* packet, std::uint32_t size);
 void OnBbscChaliceMountPacket(const void* packet, std::size_t size);
 // BBSC life state: another player says whether it is dead (spectating) or alive. Relay receive
 // thread; only stores it.
-void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence, bool host = false);
+void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence,
+                      bool host = false, bool model_visible = false);
 // Confirmed departure; relay receive thread queues cleanup for the game thread.
 void OnBbscPeerLeft(std::uint32_t player, bool host);
 void OnBbscExplicitSessionLeave(std::uint32_t player, bool host);
@@ -59,8 +61,6 @@ void OnBbscPvpPacket(std::uint8_t kind, std::uint8_t on);
 void OnBbscProgressPacket(const std::uint32_t* flags, std::size_t count);
 // BBSC cutscenes: the host's cutscene request ("SHAD" 0x28, a whole packet). Relay thread; queued.
 void OnBbscCutscenePacket(const void* data, std::size_t size);
-// BBSC shared keys and badges: the host's owned ones ("SHAD" 0x29). Relay thread; only stored.
-void OnBbscKeyItemsPacket(const void* data, std::size_t size);
 void NoteBbscRelayHost(std::uint32_t sender, std::uint32_t packed_map, float x, float y, float z);
 std::uint32_t GetBbscRelayHost();
 // The relay sender of a host that rang our sign (aimed placement, mod): a joining guest takes that

@@ -24,6 +24,10 @@ def function(signature, source=SOURCE):
 
 prefix = r'''
 #include <algorithm>
+#include <atomic>
+#include <bit>
+#include <charconv>
+#include <cmath>
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -37,6 +41,7 @@ prefix = r'''
 #define FMT_HEADER_ONLY
 #include "fmt/format.h"
 #include "core/bbsc_chalice.h"
+#include "core/bbsc_follow.h"
 #include "core/libraries/np/np_signaling/np_signaling_bbsc.h"
 using namespace Core::Bloodborne;
 #undef PS4_SYSV_ABI
@@ -70,9 +75,15 @@ u64 GetGlobalState() { return 0x90000; }
 struct GuestRegisterSnapshot {
     u64 r13{},rcx{},rdx{},r8{},r15{},rbp{},rbx{},rsi{},rax{};
 };
-struct SummonPlacementDescriptor { u32 packed_region; };
-std::optional<SummonPlacementDescriptor> initial_claim;
-std::optional<SummonPlacementDescriptor> BbscConnectFirstHost() { return initial_claim; }
+struct SummonPlacementDescriptor { u32 packed_region; float x,y,z,heading; s32 area; };
+std::optional<SummonPlacementDescriptor> bbsc_connect_first_placement,seamless_received_host_placement;
+auto& initial_claim=bbsc_connect_first_placement;
+bool seamless_received_host_placement_consumed=false;
+std::mutex seamless_placement_mutex;
+std::atomic<u32> bbsc_tick_map{},bbsc_connect_first_map{};
+std::atomic<s64> bbsc_connect_first_since_ms{};
+bool BbscConnectFirstEnabled(){return true;}
+constexpr s64 BbscConnectFirstTimeoutMs=90000;
 bool bbsc_join_teleport_done=false, bbsc_chalice_transition_owned=false;
 constexpr u64 StageTransitionOffset=0x013cde30;
 s32 player_type=1, hp=594;
@@ -91,6 +102,7 @@ bool BbscMapResident(u32){return false;}
 u32 relay_host=9; u32 GetBbscRelayHost(){return relay_host;}
 bool IsSprjLuaEventManReady(){return true;}
 int departures=0; void OnBbscPeerLeft(u32,bool){++departures;}
+int native_loads=0; void SummonedReload(){++native_loads;}
 bool enabled=true;
 bool BbscWorldSyncEnabled() { return enabled; }
 u32 current=0x1d000000;
@@ -132,6 +144,26 @@ void WriteBbscGuestLootFile() { ++flushes; if (!fail_write) bbsc_loot_dirty=fals
 
 main = r'''
 int main() {
+    // Snapshot from the host must neither unlock nor relock personal altar destinations.
+    for (u8 original : {0x00, 0xFF}) {
+        std::array<u8,125> live,host;
+        live.fill(original); host.fill(static_cast<u8>(~original));
+        Chalice::CopyHostFlagGroup(12907,live.data(),host);
+        for (u32 bit=0;bit<1000;++bit) {
+            const bool lamp=bit>=830 && bit<=990 && (bit-830)%20==0;
+            const u8 expected=lamp ? original : host[bit/8];
+            assert(((live[bit/8]^expected)&(0x80u>>(bit%8)))==0);
+        }
+        Chalice::CopyHostFlagGroup(12908,live.data(),host);assert(live==host);
+    }
+    for (s32 role : {0,3,4,6,7}) {
+        session=role;memory[0x91592]=0;
+        assert(BbscProtectChaliceAltar(12907870)==(role==4||role==6||role==7));
+        assert(!BbscProtectChaliceAltar(12907871));
+        memory[0x91592]=1;
+        if(role==7) assert(!BbscProtectChaliceAltar(12907870));
+    }
+    session=3;
     // Recover the host's native ritual without depending on the altar number.
     memory[image_base+0x0553e9e8]=0x20000;
     memory[0x20000]=7; memory[0x20008]=0x30000;
@@ -207,11 +239,19 @@ int main() {
     enabled=false;
     assert(GateBbscChaliceSummon() && bbsc_chalice_summon_map==mount.map);
     assert(bbsc_chalice_borrowed.armed.revision==0);
-    now+=15000;TickBbscChaliceSummon();assert(departures==1 && !bbsc_chalice_summon_map);
-    now=1000;assert(GateBbscChaliceSummon());
+    bbsc_chalice_summon_since-=15000;TickBbscChaliceSummon();assert(departures==1 && !bbsc_chalice_summon_map);
+    assert(GateBbscChaliceSummon());
     quitting=true;TickBbscChaliceSummon();assert(!bbsc_chalice_summon_map);
     quitting=false;assert(GateBbscChaliceSummon());
     ++relay_host;TickBbscChaliceSummon();assert(!bbsc_chalice_summon_map);--relay_host;
+    // Early same-map claim, then relay identity becomes available; release exactly once.
+    bbsc_tick_map=mount.map;bbsc_connect_first_map=0x15000000;
+    assert(SetSeamlessHostPlacementHeader("1,1d000000,0,0,0,0,290100"));
+    assert(bbsc_connect_first_map==0 && BbscChaliceInitialJoinMap()==mount.map);
+    memory[0x91592]=1;relay_host=0;assert(GateBbscChaliceSummon());
+    now+=100;TickBbscChaliceSummon();assert(!native_loads);
+    enabled=true;relay_host=9;now+=100;TickBbscChaliceSummon();TickBbscChaliceSummon();
+    assert(native_loads==1 && !bbsc_chalice_summon_map);
     enabled=true;assert(!GateBbscChaliceSummon());
     assert(BbscChaliceJoinNeedsFollow()); // do not teleport dungeon coords into Yharnam
     GuestRegisterSnapshot first_load{};
@@ -223,6 +263,9 @@ int main() {
     current=mount.map; CompleteBbscChaliceLoad(current);
     assert(!BbscChaliceJoinNeedsFollow());
     initial_claim.reset(); bbsc_chalice_borrowed={};
+    bbsc_tick_map=0x15000000;
+    assert(SetSeamlessHostPlacementHeader("1,15000000,0,0,0,0,210000"));
+    assert(!BbscConnectFirstHost() && !bbsc_connect_first_map);
 
     // An already joined living guest suppresses the unprepared native m29 transition.
     // No teardown/global writes; host, initial summon, death, home, invader and BBSC follow pass.
@@ -323,7 +366,7 @@ int main() {
     assert(bbsc_chalice_remote.feature==3);
     bad=newer; bad.parts[0]=-2; assert(!Chalice::ValidMount(bad));
     bad=newer; bad.reserved=1; assert(!Chalice::ValidMount(bad));
-    now=7000; assert(!BbscLatestChaliceMount(newer.map,bad)); now=1000;
+    now+=6000; assert(!BbscLatestChaliceMount(newer.map,bad)); now-=6000;
     bbsc_chalice_value_hook_ready=false; assert(!BbscLatestChaliceMount(newer.map,bad));
     bbsc_chalice_value_hook_ready=true;
 
@@ -348,19 +391,65 @@ int main() {
     sent.clear(); present=0;
     SendBbscFlagSnapshot(1,0x18000000,3,40,key_of,present);
     assert(sent[0].size()==sizeof(Packet) && sent[0][5]==1);
+    // Root-layout variants: all 18 native parts and both loader feature bits,
+    // different FormData/ChannelIds but the SAME virtual map. Exercise first
+    // summon and subsequent follow with the actual capture/preparation/hooks.
+    bbsc_chalice_borrowed={};
+    for (u32 variant=0;variant<4;++variant) {
+        ClearBbscHostWorldSnapshots();
+        session=3; selected.fill(false); selected[5]=true; current=mount.map;
+        form[8]=static_cast<u8>(variant+1); memory[0x50010]=1000+variant;
+        const auto root_key=ReadBbscOwnChaliceKey(); assert(root_key!=a);
+        host.rcx=root_key.channel; host.r13=current; host.r15=variant; host.r8=3;
+        host.rdx=0x1d350000;
+        for(u32 part=0;part<18;++part) arrays[host.rbp-0x78][part]=9910000+variant*10000+part;
+        const auto expected_parts=arrays[host.rbp-0x78];
+        BbscChaliceContextHook(0,&host);
+        const auto root_mount=BbscHostChaliceMount(); assert(Chalice::ValidMount(root_mount));
+        sent.clear(); SendBbscChaliceMount();
+        OnBbscChaliceMountPacket(sent[0].data(),sent[0].size());
+        OnBbscHostFollowPacket(current,0,0,0,0,100+variant,-1,root_key);
+        sent.clear(); present=0;
+        SendBbscFlagSnapshot(1,current,10+variant,40,key_of,present);
+        session=6; selected.fill(false);
+        for(const auto& chunk:sent) OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
+        assert(BbscChaliceLoadReady(current));
+        assert(BbscChaliceNeedsLoad(current)); // map equality never hides a new ritual
+        initial_claim.reset(); bbsc_join_teleport_done=false;
+        if(variant==0) {
+            bbsc_tick_map=current;
+            assert(SetSeamlessHostPlacementHeader("1,1d000000,0,0,0,0,290100"));
+            assert(bbsc_connect_first_map==0 && BbscChaliceInitialJoinMap()==current);
+            assert(!GateBbscChaliceSummon());
+        } else assert(PrepareBbscChaliceLoad(current));
+        guest.r13=0xffffffff; memory[guest.rbx+0x48]=current;
+        arrays[guest.rbp-0x78].fill(-1);
+        BbscChaliceContextHook(0,&guest);
+        assert(arrays[guest.rbp-0x78]==expected_parts);
+        assert(guest.rcx==root_key.channel && guest.rdx==host.rdx);
+        assert(guest.r8==3 && guest.r15==variant && guest.r13==root_mount.stage_map);
+        CompleteBbscChaliceLoad(current);
+        assert(BbscChaliceArrivalReady(current) && !BbscChaliceNeedsLoad(current));
+        assert(!BbscChaliceJoinNeedsFollow());
+        assert((ReadBbscChaliceKey()==root_key && selected==std::array<bool,7>{}));
+    }
     puts("chalice: direct native summon, no cross-world teleport, one transition owner, native capture/injection, seamless Dream entry, altar guards, same-map revisions, cancellation/cleanup, replay/malformed packets, ordinary maps PASS");
 }
 '''
 
 start = SOURCE.index("// Borrowed loader input is process-local.")
 end = SOURCE.index("// Host side: say where we are", start)
-bridge = SOURCE[start:end]
-code = prefix + function("Chalice::Key ReadBbscOwnChaliceKey()") + follow
+bridge = SOURCE[start:end].replace("reinterpret_cast<void PS4_SYSV_ABI (*)()>(image_base + 0x0131E5C0)()", "SummonedReload()")
+code = prefix + function("bool IsSameSummonPlacement(const SummonPlacementDescriptor& left,\n                           const SummonPlacementDescriptor& right)")
+code += function("bool BbscConnectFirstPlacementFresh()")
+code += function("std::optional<SummonPlacementDescriptor> BbscConnectFirstHost()")
+code += function("bool SetSeamlessHostPlacementHeader(std::string_view value)")
+code += function("Chalice::Key ReadBbscOwnChaliceKey()") + follow
 code += "bool BbscChaliceLoadReady(u32);\nbool PrepareBbscChaliceLoad(u32);\n" + bridge + snapshots
 code += function("void OnBbscChaliceMountPacket(const void* data, std::size_t size)")
 code += function("void OnBbscHostFollowPacket(std::uint32_t packed_map, float x, float y, float z, float heading,\n"
                  "                            std::uint32_t sequence, std::int32_t lamp_point,\n"
-                 "                            const Chalice::Key& dungeon)")
+                 "                            const Chalice::Key& dungeon, const Follow::Arrival& arrival)").replace("const Follow::Arrival& arrival)", "const Follow::Arrival& arrival = {})")
 for signature in (
     "u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,\n"
     "                         u32 (*key_of)(u32 map, size_t index), u64& present)",
@@ -377,7 +466,8 @@ code += "constexpr u8 FollowType=0x20;\n#pragma pack(push,1)\n" + relay[start:en
 code += "u32 SendFrame(const void* p,u32 size) { return Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(p,size); }\n"
 code += "namespace Libraries::Np::NpSignaling::Helpers {\n" + function(
     "u32 SendBbscFollowToPeers(u32 packed_map, float x, float y, float z, float heading, u32 sequence,\n"
-    "                          s32 lamp_point, const Core::Bloodborne::Chalice::Key& dungeon)", relay) + "}\n"
+    "                          s32 lamp_point, const Core::Bloodborne::Chalice::Key& dungeon,\n"
+    "                          const Core::Bloodborne::Follow::Arrival& arrival)", relay).replace("const Core::Bloodborne::Follow::Arrival& arrival)", "const Core::Bloodborne::Follow::Arrival& arrival = {})") + "}\n"
 code += scope_prefix + function("bool SelectBbscLootScope(u32 map)") + main
 
 with tempfile.TemporaryDirectory(prefix="bbsc-chalice-") as tmp:

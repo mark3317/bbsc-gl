@@ -1,4 +1,6 @@
-"""Production death event deduplication and hot-path guard/cache regression fixtures."""
+"""Production inventory/Dream guards and memory-cache regressions.
+Native death processing is covered by test_repeat_death.py.
+"""
 from pathlib import Path
 import os
 import subprocess
@@ -44,34 +46,13 @@ template<class T>T ReadValue(u64 p,size_t off){T t{};
  if(ReadablePointer(p+off,sizeof(t)))memcpy(&t,(void*)(p+off),sizeof(t));return t;}
 template<class T>void put(u64 p,size_t off,T t){memcpy((void*)(p+off),&t,sizeof(t));}
 template<size_t N>u64 memory(std::array<u8,N>& a){u64 p=(u64)a.data();regions.push_back({p,N});return p;}
-bool enabled=true,accept=true,bbsc_death_text_submitted=false;
-int texts=0;u64 player=0,image_base=0;
-constexpr u64 DeathTextEventOffset=0;constexpr u32 DeathTextEventId=0xFFA;
-bool BbscDeathPenaltyEnabled(){return enabled;}
+u64 player=0,image_base=0;
 u64 GetLocalPlayerCharacter(){return player;}
 bool IsEbootCodeAddress(u64 p){return p!=0;}
-u32 query(u64){return 7;}
-bool event(u64,u32,u32,u32){++texts;return accept;}
-u64 BbscLuaEventObject(){return 0;}
 '''
 
 main = r'''
 int main(){
- std::array<u8,0x600> vt{};std::array<u8,0x20> actor{};std::array<u8,0x90> ev{};
- auto v=memory(vt);player=memory(actor);auto e=memory(ev);
- put(player,0,v);put(v,0x558,(u64)&query);put(v,0x598,(u64)&query);image_base=(u64)&event;
- // HP fallback first, native entry arrives 4.5s later for the same corpse.
- assert(RaiseBbscDeathText(e,"repeat death"));ShowBbscGuestDeathText(e);assert(texts==1);
- // Next life re-arms; native first also blocks a later fallback.
- bbsc_death_text_submitted=false;ShowBbscGuestDeathText(e);
- assert(RaiseBbscDeathText(e,"repeat death") && texts==2);
- // A rejected event must not consume the one-shot; retry the valid native event.
- bbsc_death_text_submitted=false;accept=false;
- assert(!RaiseBbscDeathText(e,"repeat death") && !bbsc_death_text_submitted);
- accept=true;ShowBbscGuestDeathText(e);assert(texts==4 && bbsc_death_text_submitted);
- bbsc_death_text_submitted=false;
- assert(!RaiseBbscDeathText(0,"invalid") && !bbsc_death_text_submitted);
- // Membership: hash collision, split storage, absent/empty, cyclic/corrupt links.
  std::array<u8,0x80> inv{};std::array<u8,0x7E1*2> hashes{};
  std::array<u8,32> entries{},slots{},extra{};
  auto i=memory(inv),h=memory(hashes),en=memory(entries),sl=memory(slots),ex=memory(extra);
@@ -145,14 +126,12 @@ with tempfile.TemporaryDirectory(prefix='bbsc-death-hotpaths-') as tmp:
     env = dict(os.environ)
     env['PATH'] = str(Path(compiler).parent) + os.pathsep + env.get('PATH', '')
     cache = MOD[MOD.index('struct CachedRegion {'):MOD.index('\nbool Readable(', MOD.index('struct CachedRegion {'))]
-    death = function(SOURCE, 'bool RaiseBbscDeathText(u64 event_object, std::string_view who)')
-    guest = function(SOURCE, 'void ShowBbscGuestDeathText(u64 event_object)')
     inventory = function(SOURCE, 'bool BbscInventoryHas(u64 inventory, u32 code)')
-    for name, code in [('death-inventory', prefix+death+guest+inventory+main),
+    for name, code in [('inventory', prefix+inventory+main),
                        ('regions', cache_prefix+cache+cache_main),
                        ('dream', prefix+dream_prefix+function(SOURCE, 'void PS4_SYSV_ABI BbscDreamTypeCheckHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)')+dream_main)]:
         cpp, exe = Path(tmp)/(name+'.cpp'), Path(tmp)/(name+'.exe')
         cpp.write_text(code, encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-O2',str(cpp),'-o',str(exe)],check=True)
         subprocess.run([str(exe)],env=env,check=True,timeout=10)
-print('PASS: late native death deduplication, rejected events, inventory guards, region churn/expiry')
+print('PASS: inventory guards, region churn/expiry and Dream guards; death processing covered by test_repeat_death')

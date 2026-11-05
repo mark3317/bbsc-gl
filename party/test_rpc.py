@@ -104,10 +104,10 @@ class RPCTests(CompatibilityTests):
             self.http(a,'/party/tick',body,True);time.sleep(.15)
             self.assertEqual(a.state()['state']['owner'],'A') # ringing/idle alone is not enough
             body['await_title']=True;body['loading']=True
-            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 0')
+            self.assertEqual(self.http(a,'/party/tick',body,True),b'0 0')
             body['loading']=False
             self.np_call(sa,103,'LeaveRoomRequest',{'room_id':rid},'LeaveRoomReply')
-            self.assertEqual(self.http(a,'/party/tick',body,True),b'1 1')
+            self.assertEqual(self.http(a,'/party/tick',body,True),b'0 1')
             self.assertIn('B',a.state()['state']['joined'])
             self.np_call(sb,103,'LeaveRoomRequest',{'room_id':rid},'LeaveRoomReply')
             end=time.monotonic()+5;answer=b''

@@ -1,0 +1,303 @@
+diff --git a/emulator/src/core/bbsc_patch_tables.h b/emulator/src/core/bbsc_patch_tables.h
+index 7924ad8..8ad2b6f 100644
+--- a/emulator/src/core/bbsc_patch_tables.h
++++ b/emulator/src/core/bbsc_patch_tables.h
+@@ -169,7 +169,7 @@ struct ByteEdit {
+     Group group;
+ };
+ 
+-constexpr std::array<ByteEdit, 17> ByteEdits{{
++constexpr std::array<ByteEdit, 16> ByteEdits{{
+     // The lamp prompt in 0x012F5C40 needs all four of +0x48, +0x49, +0x4A and +0x4B to be zero.
+     // +0x49 is the "I am in a multiplayer session" flag, built right here:
+     //     CMP dword ptr [RBX + 0x14], 0x1
+@@ -187,16 +187,8 @@ constexpr std::array<ByteEdit, 17> ByteEdits{{
+     // lamp=true in the log.
+     {"Lamp.MultiplayerGate", 0x012F8321, {0x08, 0xC1}, {0x30, 0xC9}, Group::Lamp},
+ 
+-    // The "Travel" prompt itself comes from the lamp's talk script, not from 0x012F5C40. The talk
+-    // condition dispatcher 0x0203AD60 answers the script function "is multiplayer in progress"
+-    // (case 0x34) with the same expression as +0x49 above:
+-    //     CMP dword ptr [RBX + 0x14], 0x1 / SETG AL / TEST ECX, ECX / SETG CL
+-    //     OR   CL, AL                        <- 0x0203C564
+-    //     MOVZX EAX, CL                      ; the script's answer
+-    // Clearing it makes every talk script on the HOST see a solo game (lamp prompt, and anything
+-    // else the scripts gate on co-op). The guest keeps the vanilla answer: Group::Lamp is a role
+-    // group that is only switched on while hosting.
+-    {"Lamp.TalkMultiplayerCheck", 0x0203C564, {0x08, 0xC1}, {0x30, 0xC9}, Group::Lamp},
++    // Talk f52 is scoped by BbscLampTalkMultiplayerHook, not a global byte edit.
++    // This preserves guest multiplayer checks outside audited travel scripts.
+ 
+     // Guest item pickup, part 2 (part 1 is below in WideEdits). Picking up a map treasure is
+     // 0x017D8570(item manager [0x0553D6E0], &item id). For a treasure (item +0x48 bit 0x80) it asks
+diff --git a/emulator/src/core/bloodborne_re.cpp b/emulator/src/core/bloodborne_re.cpp
+index b1085f9..9cf659f 100644
+--- a/emulator/src/core/bloodborne_re.cpp
++++ b/emulator/src/core/bloodborne_re.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "core/bbsc_stop_policy.h"
+ #include "core/bbsc_dream_finale.h"
++#include "core/bbsc_lamp_travel_data.h"
+ #include "core/bloodborne_re.h"
+ 
+ #include <algorithm>
+@@ -5067,6 +5068,9 @@ inline const char16_t* BbscL(const char16_t* english, const char16_t* russian) {
+ void ArmBbscRejoinLines(bool guest, u32 target_map, s64 for_ms);
+ constexpr s64 BbscHostRejoinLinesMs = 90'000;  // host: until the guest has caught up
+ constexpr s64 BbscGuestRejoinGraceMs = 20'000; // guest: after arriving
++bool BbscPersonalTravelActive();
++bool BbscPersonalTravelReady();
++void TickBbscPersonalTravel();
+ bool BbscDreamEnabled(); // the Hunter's Dream together, see BbscDreamTalkHook
+ constexpr s64 BbscWorldFlagsWaitMs = 4'000; // how long a follow waits for the host's flags
+ // The host's Hunter's Dream for a guest, see "The host's Hunter's Dream".
+@@ -5628,7 +5632,7 @@ BbscFollowSpot BbscFollowSpotOf(const BbscFollowMessage& host) {
+ constexpr s64 BbscFollowAfterLoadMs = 5'000;
+ 
+ void TickBbscFollowHost() {
+-    if (BbscQuitInProgress() || BbscDreamFinaleHolding()) return;
++    if (BbscQuitInProgress() || BbscDreamFinaleHolding() || BbscPersonalTravelActive()) return;
+     static s64 last_check_ms = 0;
+     static bool warping = false;
+     static s64 warp_requested_ms = 0;
+@@ -9437,6 +9441,11 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
+         bbsc_request_death_reload = true;
+         return;
+     }
++    if (BbscPersonalTravelActive()) {
++        bbsc_spectate_active = false;
++        bbsc_request_death_reload = true;
++        return;
++    }
+     const bool guest_waits_for_host = session_state == 6 && !LivingPartnerExists();
+     if (!guest_waits_for_host && !LivingPartnerExists()) {
+         // No partner: ask for the reload the retargeted call site no longer performs, so a solo
+@@ -10782,19 +10791,159 @@ void TickBbscSessionEnd() {
+     SuspendBbscPersistence("host gone for 180 s");
+ }
+ 
+-// The lamp edits are only on while this player hosts a session (code review B3/B4).
++// Guest travel never sets the vanilla request flags: those would replicate to the host.
++bool bbsc_personal_travel_hooks_ready = false;
++bool bbsc_personal_travel_load_hook_ready = false;
++alignas(16) std::array<u8, 0x88> bbsc_personal_travel_non_summon_phase{};
++s32 bbsc_personal_travel_point = 0;
++bool bbsc_personal_travel_active = false;
++u32 bbsc_personal_travel_host = 0;
++s64 bbsc_personal_travel_started = 0;
++
++bool BbscPersonalTravelActive() { return bbsc_personal_travel_active; }
++
++bool BbscPersonalTravelReady() {
++    return bbsc_personal_travel_hooks_ready && bbsc_personal_travel_load_hook_ready &&
++           bbsc_chalice_flag_hook_ready && BbscDreamEnabled() && BbscDreamOwnEnabled() &&
++           BbscWarpTogetherEnabled() && BbscRejoinV7Enabled() &&
++           Core::Bbsc::SwitchEnabled("SHADPS4_BBSC_LAMP");
++}
++
++bool BbscPersonalTravelGuest() {
++    const u64 global = GetGlobalState();
++    return BbscPersonalTravelReady() && bbsc_join_teleport_done && GetSessionState() == 6 &&
++           GetLocalPlayerType() == 1 && ReadablePointer(global, 0x1593) &&
++           ReadValue<u8>(global, 0x1592) == 0;
++}
++
++bool BbscPersonalTravelTalk(u32 talk) {
++    if (!BbscPersonalTravelGuest() || !BbscOwnOpeningDone() ||
++        std::ranges::find(LampTravel::Talks, talk) == LampTravel::Talks.end()) return false;
++    if (talk / 10000 == 21) return GetCurrentPackedMap() == 0x15000000;
++    const s32 point = static_cast<s32>((talk / 1000) * 10000 + 2950 + talk % 1000);
++    const auto flag = BbscLampLitFlag(point);
++    return flag && BbscEventFlag(*flag);
++
++}
++
++// R12 is the talk condition evaluator (dispatcher 0203AD60 saves RDI there).
++// Replaces the old global f52 byte edit: the host retains its existing answer,
++// while a guest gets a solo answer only for the audited lamps/headstones.
++void PS4_SYSV_ABI BbscLampTalkMultiplayerHook(u64, const GuestRegisterSnapshot* registers) {
++    if (!registers) return;
++    const u64 condition = registers->r12;
++    const u64 global = GetGlobalState();
++    const bool host = Core::Bbsc::SwitchEnabled("SHADPS4_BBSC_LAMP") &&
++                      GetSessionState() == 3 && GetLocalPlayerType() == 0 &&
++                      ReadablePointer(global, 0x1593) && ReadValue<u8>(global, 0x1592) != 0;
++    const bool guest = ReadablePointer(condition, 0x30) &&
++                       ReadValue<u64>(condition, 0) == image_base + 0x0535AAB0 &&
++                       BbscPersonalTravelTalk(ReadValue<u32>(condition, 0x10));
++    if (host || guest) {
++        auto* changed = const_cast<GuestRegisterSnapshot*>(registers);
++        changed->rax &= ~u64{0xFF};
++        changed->rcx &= ~u64{0xFF};
++    }
++}
++
++// Native load step 019297E0 normally replaces the destination with the old
++// summoned map at phase 3. For an explicitly personal trip select its normal
++// map/bonfire branch instead. Only the comparison reads this zero phase; the real
++// rules stay at 3 for session persistence and guest reconstruction.
++void PS4_SYSV_ABI BbscPersonalTravelLoadHook(u64, const GuestRegisterSnapshot* registers) {
++    if (registers && BbscPersonalTravelActive() && GetSessionState() == 6 &&
++        GetBbscRelayHost() == bbsc_personal_travel_host)
++        const_cast<GuestRegisterSnapshot*>(registers)->rax =
++            reinterpret_cast<u64>(bbsc_personal_travel_non_summon_phase.data());
++}
++
++// Called only for c1_11 from this game's local talk executor, before SetEventFlag.
++// Returning true consumes the request, so neither the host nor common.7200 sees it.
++bool QueueBbscPersonalTravel(u32 flag, u8 value) {
++    if (!value || !BbscPersonalTravelGuest()) return false;
++    const u32 here = GetCurrentPackedMap();
++    s32 point = 0;
++    if (here != 0x15000000 && flag >= 70000200 && flag < 70000210) {
++        // Each ground lamp's confirmed travel command uses 70000200 + its index.
++        point = 2102950;
++    } else if (here == 0x15000000) {
++        for (const auto& destination : LampTravel::Returns) {
++            if (destination.flag == flag) { point = destination.point; break; }
++        }
++    }
++    if (!point) return false;
++    // Consume even a rejected duplicate/unsafe request; never let it leak to vanilla.
++    const u64 global = GetGlobalState();
++    if (!bbsc_personal_travel_point && ReadValue<u8>(global, 8) == 0 &&
++        GetCharacterHp(GetLocalPlayerCharacter()) > 0 && !BbscQuitInProgress() &&
++        !BbscDreamFinaleHolding() && BbscOwnOpeningDone()) {
++        bbsc_personal_travel_point = point;
++        bbsc_personal_travel_host = GetBbscRelayHost();
++        bbsc_personal_travel_started = SteadyNowMs();
++    }
++    return true;
++}
++
++void TickBbscPersonalTravel() {
++    if (GetSessionState() != 6 || GetBbscRelayHost() != bbsc_personal_travel_host ||
++        BbscQuitInProgress()) {
++        bbsc_personal_travel_active = false;
++        // A fresh request is bound to the current host below; old in-flight requests expire.
++        if (bbsc_personal_travel_host && GetBbscRelayHost() != bbsc_personal_travel_host)
++            bbsc_personal_travel_point = 0;
++        bbsc_personal_travel_host = GetBbscRelayHost();
++    }
++    if (!BbscPersonalTravelGuest()) { bbsc_personal_travel_point = 0; return; }
++    const u64 global = GetGlobalState();
++    if (ReadValue<u8>(global, 8) != 0) return;
++    if (bbsc_personal_travel_point) {
++        if (SteadyNowMs() - bbsc_personal_travel_started > 5000 ||
++            GetCharacterHp(GetLocalPlayerCharacter()) <= 0 || BbscDreamFinaleHolding()) {
++            bbsc_personal_travel_point = 0;
++            return;
++        }
++        const u64 rules = ReadValue<u64>(image_base + SummonSessionRulesPointerOffset, 0);
++        if (!HasMemoryAccess(rules + 0x84, 4, MemoryProt::CpuWrite) ||
++            !HasMemoryAccess(global + 0x1520, 1, MemoryProt::CpuWrite)) {
++            bbsc_personal_travel_point = 0;
++            return;
++        }
++        const s32 point = bbsc_personal_travel_point;
++        bbsc_personal_travel_point = 0;
++        bbsc_personal_travel_host = GetBbscRelayHost();
++        bbsc_personal_travel_active = true;
++        bbsc_personal_travel_started = SteadyNowMs();
++        ClearBbscBossContext("personal lamp travel");
++        // Same guest phase as RequestBbscSessionWarp, but native BONFIRE placement,
++        // never the stale forced summon coordinates or a new own-world snapshot.
++        ArmBbscReinsertV8();
++        WriteValue<s32>(rules, 0x84, 3);
++        WriteValue<u8>(global, 0x1520, 0);
++        reinterpret_cast<void PS4_SYSV_ABI (*)(s32)>(image_base + BbscQuitCloseMenusOffset)(3);
++        reinterpret_cast<void PS4_SYSV_ABI (*)(u64, s32)>(image_base + 0x0132E050)(0, point);
++        BBSC_TIMELINE("TRAVEL", "guest personal lamp point {}, host {} stays connected",
++                      point, bbsc_personal_travel_host);
++        return;
++    }
++    // A deliberate visit suppresses follow even if the host travels meanwhile.
++    // Reunite only after reaching the host's map, with a fresh host observation.
++    if (bbsc_personal_travel_active && SteadyNowMs() - bbsc_personal_travel_started > 5000) {
++        std::scoped_lock lock{bbsc_follow_mutex};
++        if (bbsc_follow_latest.received_ms > bbsc_personal_travel_started &&
++            bbsc_follow_latest.packed_map == GetCurrentPackedMap())
++            bbsc_personal_travel_active = false;
++    }
++}
++
+ void TickBbscLampRole() {
+     static int last = -1;
+-    // A guest must never get the talk-script patches: a guest's lamp travel starts a load out of
+-    // the host's world that a kept session then stalls (2026-09-24, the guest's StageTransition
+-    // with the host removing the member and no load after it). Own world and player type 0 are
+-    // both required, not only the session state.
+     const u64 global = GetGlobalState();
+     const bool own_world = ReadablePointer(global, 0x1593) && ReadValue<u8>(global, 0x1592) != 0;
+-    const int hosting = GetSessionState() == 3 && own_world && GetLocalPlayerType() == 0 ? 1 : 0;
+-    if (hosting != last) {
+-        last = hosting;
+-        Core::Bbsc::SetHostLampPatches(hosting == 1);
++    const bool host = GetSessionState() == 3 && own_world && GetLocalPlayerType() == 0;
++    const int allowed = host || BbscPersonalTravelGuest() ? 1 : 0;
++    if (allowed != last) {
++        last = allowed;
++        Core::Bbsc::SetHostLampPatches(allowed == 1);
+     }
+ }
+ 
+@@ -12199,6 +12348,10 @@ void PS4_SYSV_ABI BbscDreamTalkHook(u64 /*tag*/, const GuestRegisterSnapshot* re
+         return; // host, solo, or no evaluator: nothing was refused
+     }
+     const u32 talk = ReadValue<u32>(condition, 0x10);
++    if (BbscPersonalTravelTalk(talk)) {
++        WriteValue<u8>(condition, 0x25, 0);
++        return;
++    }
+     if (BbscDreamOwnEnabled() && BbscGuestInHostWorld()) {
+         for (size_t i = 0; i < BbscDreamOwnGuestTalks.size(); ++i) {
+             if (BbscDreamOwnGuestTalks[i].id != talk) {
+@@ -16665,6 +16818,11 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
+                  static_cast<u8>(registers->rdx));
+         return;
+     }
++    if (caller_offset == BbscTalkSetFlagReturnOffset &&
++        QueueBbscPersonalTravel(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx))) {
++        bbsc_setflag_skip = 1;
++        return;
++    }
+     const bool talk_event = bbsc_npc_own_active && bbsc_event_run.ours &&
+                             caller_offset >= BbscEventBank2003Begin &&
+                             caller_offset < BbscEventBank2003End &&
+@@ -16769,9 +16927,16 @@ void InstallBbscResearchHooks() {
+ }
+ 
+ void InstallBbscDreamHooks() {
+-    if (image_base == 0 || !BbscDreamEnabled()) {
+-        return;
+-    }
++    if (image_base == 0) return;
++    static constexpr std::array<u8, 5> Multiplayer{0x08, 0xC1, 0x0F, 0xB6, 0xC1};
++    const bool multiplayer = InstallGuestCodeHook(
++        reinterpret_cast<void*>(image_base + 0x0203C564), Multiplayer, 0,
++        BbscLampTalkMultiplayerHook);
++    static constexpr std::array<u8, 7> LoadPhase{0x83, 0xB8, 0x84, 0, 0, 0, 3};
++    bbsc_personal_travel_load_hook_ready = InstallGuestCodeHook(
++        reinterpret_cast<void*>(image_base + 0x0192997A), LoadPhase, 0,
++        BbscPersonalTravelLoadHook);
++    if (!BbscDreamEnabled()) return;
+     static constexpr std::array<u8, 5> TalkSite{0x4A, 0x8B, 0x7C, 0xE9, 0x18};
+     static constexpr std::array<u8, 6> TypeCheckPrologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
+     InstallBbscResearchHooks();
+@@ -16781,6 +16946,7 @@ void InstallBbscDreamHooks() {
+     const bool type = InstallGuestCodeHook(
+         reinterpret_cast<void*>(image_base + CharacterTypeCheckOffset),
+         std::span<const u8>{TypeCheckPrologue}, 1, BbscDreamTypeCheckHook, &bbsc_dream_type_skip);
++    bbsc_personal_travel_hooks_ready = multiplayer && talk;
+     if (!talk || !type) {
+         LOG_ERROR(Debug, "BBSC Dream: hooks failed (talk {}, event type check {})", talk, type);
+         return;
+@@ -21793,6 +21959,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
+         { BBSC_PERF_NESTED("tick TickBbscChaliceBorrow"); TickBbscChaliceBorrow(); }
+         { BBSC_PERF_NESTED("tick TickBbscFollowHost"); TickBbscFollowHost(); }
+         { BBSC_PERF_NESTED("tick TickBbscHpPenalty"); TickBbscHpPenalty(); }
++        { BBSC_PERF_NESTED("tick TickBbscPersonalTravel"); TickBbscPersonalTravel(); }
+         { BBSC_PERF_NESTED("tick TickBbscLampRole"); TickBbscLampRole(); }
+         { BBSC_PERF_NESTED("tick TickBbscMessages"); TickBbscMessages(); }
+         { BBSC_PERF_NESTED("tick TickBbscRejoinLines"); TickBbscRejoinLines(); }

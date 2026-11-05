@@ -196,7 +196,6 @@ for name in ("GateWatch", "ItemSurvey", "StateDiff"):
 exit_handler = function("void TickBbscSessionExit(bool peer_work)")
 assert "if (peer_work) QueueBbscWork(BbscWork::PeerLeft)" in exit_handler
 for queue, kind in (("bbsc_boss_reward_queue.push_back(event);", "BossReward"),
-                    ("bbsc_guest_drop_queue.emplace_back(lot, ReadValue<u32>(row, 0x08));", "GuestDrop"),
                     ("bbsc_peer_left_pending[player] = host;", "PeerLeft")):
     assert SOURCE.split(queue, 1)[1].lstrip().startswith("QueueBbscWork(BbscWork::" + kind + ");")
 
