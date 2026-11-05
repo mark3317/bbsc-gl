@@ -20,8 +20,13 @@ public:
     PlayerVisualAction Observe(PlayerVisualInput in,s64 now) {
         PlayerVisualAction out;
         const bool journey=in.local_visit!=last_.local_visit || in.peer_visit!=last_.peer_visit || in.here!=last_.here;
-        if(last_.local_visit && journey && in.here && in.actor && in.actor==last_.actor)
-            refresh_=true; // retained native actor belongs to the preceding journey
+        // StageFlow can allocate a NEW PlayerIns from the retained remote slot
+        // while its member task is still at CreateWait. Neither that address nor
+        // a draw graph proves FirstSync ran for this meeting. Admit once per
+        // journey, including a missing or newly allocated actor, then leave the
+        // actor produced by that admission alone on subsequent observations.
+        if(last_.local_visit && journey && in.here)
+            refresh_=true;
         const bool changed=journey || in.actor!=last_.actor || in.model!=last_.model ||
                            in.alive!=last_.alive || in.actor_alive!=last_.actor_alive || in.actor_ready!=last_.actor_ready;
         if(changed){since_=now;bound_=false;}
