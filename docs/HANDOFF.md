@@ -18,7 +18,11 @@ not enemy messages/current-owner echoes. Native object correction2F is owner-
 only so a returning host cannot reset the guest map owner's objects. These
 changes address competing state; visual flicker confirmation still OPEN.
 Device/remote-player, catalog/Dream isolation, native object owner/echo fixtures
-and MOD syntax PASS. Preparing DLL + two-profile launch per user. Evidence:
+and MOD syntax PASS. Fixa904d93 build/delta exit0; isolated stage updated with
+backup independent-dream-devices-20261105-183835. User-requested P1/P2 startup
+18:39 MSK: run_20261105_183901.log / run_20261105_183858.log, native5772/27776,
+both34/34 baseline hooks, enemy/travel hooks ready and local relay connected.
+Main installation unchanged. New device travel/host flicker gameplay OPEN. Evidence:
 parent out/coop-dev/runs/independent-dream-devices-20261105-1830.
 
 ## 05.11.2026 — independent activation confirmed; lamp ABI and takeover crash fixed in source
