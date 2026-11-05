@@ -2,10 +2,11 @@
 
 python -I tools/gamedata/quest_event_rules.py [--check]
 
-Only add host-gated events whose effects write literal, known personal NPC flags
-and optional network/save settings. Object/character effects require explicit
-review below. Separately identify ItemLot get flags written by scripts: their
-value alone cannot prove that a player received that item.
+Localize personal flag workers and the original personal NPC state dispatchers.
+The latter reuse the existing original-data controller review, without adding
+runtime stage predicates or changing their character/object instructions.
+Separately identify ItemLot get flags written by scripts: their value alone
+cannot prove that a player received that item.
 """
 import argparse
 import os
@@ -66,11 +67,25 @@ def personal_writes(instructions, npc):
 def generate():
     source = CPP.read_text(encoding='utf-8')
     npc = numbers(source, 'BbscNpcQuestFlags')
+    # A personal quest's original visibility dispatcher must be local just like
+    # its flag workers. Otherwise native channel31 can move another player's
+    # dispatcher past THEIR conditions and replay character state here.
+    # Reuse reviewed original controllers, not the reward-allowed predicates:
+    # the game's own branches still decide every appearance/disappearance.
+    from quest_reward_rules import generate as generate_npc_rules
+    _, npc_rules, _ = generate_npc_rules(bbfiles.GAME)
+    controllers = {event for event, _ in npc_rules.values()}
     events = {}
     scripted = set()
     ranges = []
     for file in sorted((Path(bbfiles.GAME) / 'event').glob('*.emevd.dcx')):
         for eid, instructions in emevd.Emevd(file).events:
+            if eid in controllers:
+                # An explicit later SetNetworkSyncState(true) would undo the
+                # existing pre-step localization and needs a separate review.
+                assert not any(b == 2000 and n == 2 and any(a)
+                               for b, n, a in instructions), (file.name, eid)
+                events[eid] = file.name
             for b, n, a in instructions:
                 if b == 2003 and n == 2 and len(a) == 8:
                     scripted.add(struct.unpack_from('<I', a)[0])
@@ -93,6 +108,7 @@ def generate():
                            for b, n, a in instructions)
                 events[eid] = file.name
     assert {12410702, 12410713, 12410748, 12410761, 12410803, 12410804} <= events.keys()
+    assert controllers <= events.keys()
     layout, _, data, rows = param.load('ItemLotParam')
     get_flags = set()
     for offset in rows.values():
