@@ -12,7 +12,13 @@ Stop/Leave observers. Actual room0x0f05780968768890 matches P1/P2. Keep all64 bi
 in packed WorldId; presence/control v2 reject old v1 packets. Added native-room
 fixture, upper32-bit fencing and transient-controller case; targeted tests PASS.
 Explicit timeline records now report hook readiness/world binding/negotiation.
-Build pending; games still running; no replacement or computer-use performed.
+Fix sourcef398e01: DLL build/delta exit0. User closed both games; updated isolated
+staging and restarted2 profiles18:13:39 MSK. P1 run_20261105_181406.log and P2
+run_20261105_181403.log explicitly confirm `independent hooks: enemies=true
+travel=true`,34/34 baseline hooks, local relay connection. Native PIDs36560/37068.
+Await renewed admission/independent activation. Backup independent-native-room-
+20261105-181339; parent run independent-native-room-fix-20261105-1812.
+No computer-use or game inputs; saves/settings not edited by diagnostic tools.
 
 ## 05.11.2026 — independent travel: native integration, development branch
 

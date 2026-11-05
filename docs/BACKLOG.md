@@ -1,5 +1,11 @@
 ## 05.11.2026 — independent travel: native integration, development branch
 
+First user game check FAILED (legacy follow/closed lamps). Native room was
+incorrectly read from self endpoint fields (zero). Fixf398e01 reads actual full
+64-bit Matching2 room; targeted regression PASS, build/delta exit0, P1/P2
+restarted18:14 with explicit enemy/travel hook readiness. Recheck activation
+and personal travel; overall feature remains OPEN. Details in HANDOFF/fixes.
+
 Source73d84d3 implements native per-map ownership, scoped state transfer, local
 lamp loads and host altar travel. Targeted native/model fixtures PASS; final
 DLL build/delta exit0, isolated P1/P2 startup18:01 MSK and local relay connection
