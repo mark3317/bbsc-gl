@@ -1,3 +1,19 @@
+## 05.11.2026 — independent mode never activated: room binding corrected
+
+User reports P2 still follows P1 and guest lamps remain closed. Logs confirm
+successful admission18:03 and legacy FOLLOW18:04:15. Read-only live inspection
+confirmed the new staging DLL and both hook sites are installed. Root cause:
+MemberId+30/+34 is endpoint address/port, ZERO for the local member, not a room.
+Presence rejected world{host,0} before any publication or negotiation. Remote
+endpoint address2130706433 is127.0.0.1, further confirming the mistaken field.
+
+Use MatchingState[05540290]->controller[18]->room[400], already used by existing
+Stop/Leave observers. Actual room0x0f05780968768890 matches P1/P2. Keep all64 bits
+in packed WorldId; presence/control v2 reject old v1 packets. Added native-room
+fixture, upper32-bit fencing and transient-controller case; targeted tests PASS.
+Explicit timeline records now report hook readiness/world binding/negotiation.
+Build pending; games still running; no replacement or computer-use performed.
+
 ## 05.11.2026 — independent travel: native integration, development branch
 
 `codex/independent-world-travel`, source73d84d3: implemented per-map native enemy

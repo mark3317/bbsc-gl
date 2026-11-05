@@ -21537,12 +21537,21 @@ BbscMod::RegisterIdentity ReadBbscRegisterIdentity(u64 chr) {
     if (!ReadablePointer(chr,0x3F8)) return identity;
     const u64 member=ReadValue<u64>(chr,0x3D8);
     // ca22f0 and ca23b0 construct this concrete member type. Its equality ca29a0
-    // compares the NpId at +36, then the room/member pair at +30/+34.
+    // compares the NpId at +36, then endpoint address/port at +30/+34.
+    // RegisterIdentity retains its historical field names; these are NOT a room.
     if (!ReadablePointer(member,0x5A) || ReadValue<u64>(member,0)!=image_base+0x052C5C00) return identity;
     identity.room=ReadValue<u32>(member,0x30);
     identity.member=ReadValue<u16>(member,0x34);
     std::memcpy(identity.name,reinterpret_cast<const void*>(member+0x36),16);
     return identity;
+}
+
+// Native Matching2 controller: the same +400 room field observed by Stop/Leave
+// hooks. MemberId +30/+34 is an endpoint (zero for self), not this room ID.
+u64 ReadBbscWorldRoom() {
+    const u64 manager=ReadValue<u64>(image_base+MatchingStatePointerOffset,0);
+    const u64 controller=ReadablePointer(manager,0x20)?ReadValue<u64>(manager,0x18):0;
+    return ReadablePointer(controller,0x408)?ReadValue<u64>(controller,0x400):0;
 }
 
 // Room-scoped observations drive negotiated travel and per-map authority.
@@ -21554,7 +21563,7 @@ void TickBbscWorldPresence() {
     const u32 self = BbscMod::RegisterOwnId();
     const s32 state = GetSessionState();
     const u64 player = GetLocalPlayerCharacter();
-    const auto identity = ReadBbscRegisterIdentity(player);
+    const u64 native_room = ReadBbscWorldRoom();
     const u64 global = GetGlobalState();
     const bool departing = BbscQuitInProgress() || BbscReturningToTitle() || state == 7;
     World::Presence next;
@@ -21563,7 +21572,7 @@ void TickBbscWorldPresence() {
         // Loads can briefly hide the actor/identity. Keep its room binding, but
         // never report Playing until native state and a positioned actor agree.
         const auto previous = bbsc_world_presence_local.world;
-        const u32 room = identity.room ? identity.room :
+        const u64 room = native_room ? native_room :
                          (session == previous.host ? previous.room : 0);
         const World::WorldId world{session, room};
         if (!self || !World::Valid(world) || IsInvaderType(GetLocalPlayerType())) {
@@ -21578,6 +21587,7 @@ void TickBbscWorldPresence() {
             bbsc_world_place.Clear();
             LOG_INFO(Debug, "BBSC world presence: bound host={:08x} room={:08x}",
                      world.host, world.room);
+            BBSC_TIMELINE("WORLD", "native world bound host={:08x} room={:016x}",world.host,world.room);
         }
         bbsc_world_presence_book.Bind(world, self);
         const bool loading = state != 3 && state != 6 ||

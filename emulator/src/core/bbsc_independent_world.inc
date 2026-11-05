@@ -355,6 +355,15 @@ void TickBbscIndependentWorld() {
     // turn follow back on and undo an already negotiated independent journey.
     const bool active=World::Valid(current_world) && current_world==negotiated_world &&
                       !BbscQuitInProgress() && !BbscReturningToTitle();
+    if(!active && World::Valid(current_world)) {
+        const u32 count=GetBbscSessionMemberCount(GetGlobalState());
+        size_t heard=0;{std::scoped_lock lock{bbsc_world_presence_mutex};heard=bbsc_world_presence_book.Members().size();}
+        static std::tuple<World::WorldId,u32,size_t,bool,bool> previous{};
+        const auto status=std::make_tuple(current_world,count,heard,bbsc_independent_hooks.load(),bbsc_independent_travel_hooks.load());
+        if(status!=previous){previous=status;
+            BBSC_TIMELINE("WORLD","independent negotiation: native_members={} presence_peers={} enemy_hooks={} travel_hooks={}",
+                count,heard,bbsc_independent_hooks.load(),bbsc_independent_travel_hooks.load());}
+    }
     if(bbsc_independent_active.exchange(active)!=active) {
         LOG_INFO(Debug,"BBSC independent world: {} (all current members negotiated)",active?"active":"waiting");
         BBSC_TIMELINE("WORLD","independent world {}",active?"active":"waiting");
@@ -412,6 +421,7 @@ void InstallBbscIndependentWorld() {
     bbsc_independent_hooks=true;
     InstallBbscWorldTravel();
     LOG_INFO(Debug,"BBSC independent world: native enemy authority hooks installed");
+    BBSC_TIMELINE("START","independent hooks: enemies={} travel={}",bbsc_independent_hooks.load(),bbsc_independent_travel_hooks.load());
 }
 #else
 bool BbscIndependentActive(){return false;}
