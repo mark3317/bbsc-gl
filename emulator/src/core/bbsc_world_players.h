@@ -8,10 +8,11 @@ struct PlayerVisualInput {
     u64 local_visit=0,peer_visit=0,actor=0,model=0;
     bool loading=true,here=false,alive=false,actor_alive=false,actor_ready=false,task_ready=false;
     bool draw_off=false,faded=false,dead_visual=false;
+    bool disabled=false;
 };
 struct PlayerVisualAction {
     PlayerVisualPhase phase=PlayerVisualPhase::Loading;
-    bool hide=false,rebind=false,show=false,revive=false,insert=false;
+    bool hide=false,enable=false,rebind=false,show=false,revive=false,insert=false;
 };
 // One lifecycle per native peer. Actor/model addresses are observations, never
 // retained pointers to write after a load. Each input revalidates identity.
@@ -26,7 +27,8 @@ public:
         if(journey){retries_=0;last_insert_=0;}
         last_=in;
         if(in.loading){out.phase=PlayerVisualPhase::Loading;return out;}
-        if(!in.here){out.phase=PlayerVisualPhase::Apart;out.hide=in.actor && in.model && !in.draw_off;return out;}
+        if(!in.here){out.phase=PlayerVisualPhase::Apart;out.hide=in.actor && !in.disabled;return out;}
+        out.enable=in.actor && in.disabled;
         if(!in.task_ready){out.phase=PlayerVisualPhase::WaitingActor;return out;}
         if(in.actor && !in.actor_ready){out.phase=PlayerVisualPhase::WaitingModel;return out;}
         if(!in.actor || !in.model){

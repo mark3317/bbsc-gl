@@ -1,5 +1,44 @@
 # Independent travel — development branch, 05.11.2026
 
+## 05.11.2026 — late arrivals and native presence/travel corrections
+
+User run19:09-19:29 failed: absent host model/name remained, host could not see
+arriving guest, guest lamp return failed, host repeatedly returned to Dream
+about7s after Yharnam arrival (also solo19:24:02->19:24:09). No crash; old MODEL
+visible messages were not proof of a rendered mesh. Both games later closed.
+
+Source changes:
+- Native018C6390 presence switch replaces the insufficient render-byte hide;
+  pair disable/enable and reconcile every remote actor even without an insert
+  task. Retain native binding and bounded reconstruction. Render log now says
+  repair requested, not visibly confirmed. The previous blanket avoidance of
+  the native switch was too broad; its native cleanup needs paired enable.
+- Observe completed load generation and curtain in presence before map ownership
+  or rendering. Game tick may miss the entire load; the old map/visit must not
+  authorize actors or capture Yharnam enemies into Dream's snapshot. World capture
+  additionally requires agreement with the native current map and no load.
+- Native c1_11 has an executor flag-range gate before SetFlag. A scoped visitor
+  lamp request may pass that native gate to the local travel interceptor. Both
+  host and guest use independent native stage requests. Consume invalid travel
+  contexts locally, never broadcast them into another player's native event.
+  Intercept before personal journal hooks; one-shot travel flags are excluded
+  from quest journaling/replay and cleared through native SetFlag before a trip.
+  This removes competing old event requests; the precise earlier solo loop cause
+  was not conclusively observed and must be rechecked in game.
+- Enemy messages assemble atomically with separate sequence/epoch fences; retain
+  streamed-out kills. A follower seeds newly streamed actors once per visit and
+  owner epoch only after complete flags/enemies. Use native HP/warp and native
+  ForceCharacterDeath018BF9A0 with native2004[4]'s no-reward bit21 for historical
+  dead actors; never just leave a live-looking inert actor at HP0. Existing map
+  owner remains selected while present; native HP/hit routing stays in charge.
+
+Targeted production fixtures PASS (travel range/host+guest commands, missed-load
+presence, all-actor hide and reunion, multipart enemy reorder/incomplete/stale
+state, native no-reward death and one-time baseline, altar and authority). MOD
+syntax PASS; original ELF validates17 hook spans/7 calls; trampoline PASS.
+Code/build/deploy/game results are separate: new gameplay confirmation OPEN.
+
+
 Build/deploy/start result: source f8e7bf6 DLL build and isolated-stage delta
 both exit0. Backup independent-player-lifecycle-20261105-190858. Two profiles
 started19:08:58 MSK; native processes16252/12892, fresh run_20261105_190922.log

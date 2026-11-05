@@ -11,6 +11,7 @@ std::atomic<s64> bbsc_world_travel_talk_seen{0};
 alignas(16) std::array<u8,0x100> bbsc_world_live_talker{};
 alignas(16) std::array<u64,8> bbsc_world_live_talk{};
 alignas(16) std::array<u8,0x88> bbsc_world_bonfire_phase{};
+alignas(16) std::array<u8,0xC0> bbsc_world_lamp_command{};
 thread_local s32 bbsc_world_esd_function=-1;
 thread_local u64 bbsc_world_esd_actor=0;
 thread_local u32 bbsc_world_esd_talk=0;
@@ -36,6 +37,20 @@ bool BbscWorldTravelActorAllowed() {
 }
 
 bool BbscWorldTravelInFlight(){return bbsc_world_travel_inflight;}
+bool BbscWorldTalkAllowed(u32 talk);
+bool BbscWorldTravelFlag(u32 flag) {
+    return (flag>=70000200 && flag<70000210) ||
+        (flag>=72100420 && flag<72100427) || (flag>=72100300 && flag<72100310) ||
+        std::ranges::any_of(LampTravel::Returns,[&](const auto& p){return p.flag==flag;});
+}
+void PS4_SYSV_ABI BbscWorldLampCommandRange(u64,const GuestRegisterSnapshot* regs) {
+    if(!regs || !BbscIndependentTravelAllowed() || GetSessionState()!=6 ||
+       !BbscWorldTravelFlag(static_cast<u32>(regs->r15)) || !bbsc_world_command_actor ||
+       BbscRegisterRemotePlayer(bbsc_world_command_actor) || !BbscWorldTalkAllowed(bbsc_world_command_talk))return;
+    // c1_11 checks its executor's allowed flag range BEFORE SetFlag. A visitor's
+    // map-local executor must be allowed to reach our local travel interceptor.
+    const_cast<GuestRegisterSnapshot*>(regs)->rax=reinterpret_cast<u64>(bbsc_world_lamp_command.data());
+}
 bool BbscWorldTalkAllowed(u32 talk) {
     if(!BbscIndependentTravelAllowed() || GetSessionState()!=6 || !BbscOwnOpeningDone())return false;
     bool allow=std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end();
@@ -111,11 +126,14 @@ void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
 }
 
 bool QueueBbscWorldTravel(u32 flag,u8 value) {
-    if(!value || !BbscIndependentTravelAllowed())return false;
-    if(GetSessionState()==3)return false;
-    if(GetSessionState()!=6 || !bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return false;
+    if(!value || !BbscIndependentTravelAllowed() || !BbscWorldTravelFlag(flag))return false;
+    if(GetSessionState()!=3 && GetSessionState()!=6)return false;
+    if(!bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return true;
     const u32 talk=bbsc_world_command_talk;
-    if(SteadyNowMs()-bbsc_world_command_seen>1000 || !BbscWorldTalkAllowed(talk))return false;
+    const bool device=std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end() ||
+        (talk>=210050 && talk<=210110 && (talk-210050)%10==0) || (talk/10000==29 && talk%1000<100);
+    if(SteadyNowMs()-bbsc_world_command_seen>1000 || !device ||
+       (GetSessionState()==6 && !BbscWorldTalkAllowed(talk)))return true;
     s32 point=0,slot=-1;
     if(flag>=70000200 && flag<70000210)point=2102950;
     for(const auto& destination:LampTravel::Returns)if(destination.flag==flag){point=destination.point;break;}
@@ -175,7 +193,7 @@ void TickBbscWorldTravel() {
         }
     }
     if(!bbsc_world_travel_point && !bbsc_world_travel_inflight)return;
-    if(!BbscIndependentTravelAllowed() || world!=bbsc_world_travel_world || GetSessionState()!=6){
+    if(!BbscIndependentTravelAllowed() || world!=bbsc_world_travel_world || (GetSessionState()!=6 && GetSessionState()!=3)){
         bbsc_world_travel_point=0;bbsc_world_travel_inflight=false;return;
     }
     const s64 now=SteadyNowMs();const u64 global=GetGlobalState();
@@ -210,6 +228,17 @@ void TickBbscWorldTravel() {
     else RestoreBbscOwnDreamState("independent lamp travel");
     bbsc_world_travel_inflight=true;bbsc_world_travel_saw_load=false;
     bbsc_world_travel_load=bbsc_load_generation.load();bbsc_world_travel_since=now;
+    // A native travel flag is a one-shot command, not persistent world state.
+    // No old request may run after this explicitly selected native stage load.
+    using Clear=void PS4_SYSV_ABI (*)(u64,u32,u8);
+    const u64 flagman=ReadValue<u64>(image_base+WorldFlagManPointerOffset,0);
+    const auto clear=reinterpret_cast<Clear>(image_base+0x013CFCC0);
+    if(flagman){
+        for(u32 flag=70000200;flag<70000210;++flag)clear(flagman,flag,0);
+        for(const auto& destination:LampTravel::Returns)clear(flagman,destination.flag,0);
+        for(u32 flag=72100300;flag<72100310;++flag)clear(flagman,flag,0);
+        for(u32 flag=72100420;flag<72100427;++flag)clear(flagman,flag,0);
+    }
     bbsc_independent_role=0;
     ArmBbscReinsertV8();
     const u64 lamp_aux=scope.map==BbscDreamStateMap?101200:101163;
@@ -238,6 +267,7 @@ void InstallBbscWorldTravel() {
         Site{0x0203B7FB,{0x49,0x8B,0x47,0x18,0x48,0x85,0xC0},BbscWorldLampTalker},
         Site{0x0203AD95,{0x89,0xC1,0x83,0xF8,0x3E},BbscWorldEsdFunction},
         Site{0x02040002,{0x89,0xC1,0x83,0xF8,0x57},BbscWorldAltarCommand},
+        Site{0x0204232E,{0x8B,0x88,0xA0,0,0,0,0x83,0xF9,0xFF},BbscWorldLampCommandRange},
         Site{0x0203EECF,{0x41,0xC7,0x44,0x24,0x08,0x02,0,0,0},BbscWorldEsdResult},
         Site{0x0192997A,{0x83,0xB8,0x84,0,0,0,3},BbscWorldBonfirePhase}};
     for(const auto& site:sites)if(!ReadablePointer(image_base+site.offset,site.bytes.size()) ||
@@ -246,6 +276,7 @@ void InstallBbscWorldTravel() {
     // Preserve the host's old f52 behavior through the scoped hook rather than
     // globally patching every guest talk to pretend it is a solo game.
     bbsc_world_live_talk[3]=reinterpret_cast<u64>(bbsc_world_live_talker.data());
+    std::memset(bbsc_world_lamp_command.data()+0xA0,0xFF,8);
     for(const auto& site:sites)if(!InstallGuestCodeHook(reinterpret_cast<void*>(image_base+site.offset),site.bytes,0,site.hook))return;
     bbsc_independent_travel_hooks=true;
     LOG_INFO(Debug,"BBSC independent travel: scoped lamp/talker/bonfire hooks installed");

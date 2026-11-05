@@ -155,6 +155,10 @@ struct BbscWorldState {
     u32 parts=0;
     std::array<std::array<u8,125>,30> groups{};
     std::map<u32,BbscWorldEnemy> enemies;
+    std::map<u32,BbscWorldEnemy> incoming_enemies;
+    u64 enemy_epoch=0,enemy_sequence=0;
+    u32 enemy_parts=0,enemy_part_count=0;
+    bool enemies_ready=false;
     bool flags_ready=false;
 };
 std::map<World::Scope,BbscWorldState> bbsc_independent_states; // game thread only
@@ -251,6 +255,27 @@ bool BbscWorldEnemyValid(const BbscWorldEnemy& e) {
         e.fighting<=1 && e.padding==std::array<u8,3>{} &&
         std::isfinite(e.x)&&std::isfinite(e.y)&&std::isfinite(e.z)&&std::isfinite(e.heading);
 }
+bool BbscWorldReceiveEnemies(BbscWorldState& state,const World::Control& c,std::span<const u8> bytes) {
+    if(!c.parts || c.parts>22 || c.part>=c.parts || bytes.size()%sizeof(BbscWorldEnemy) ||
+       bytes.size()>48*sizeof(BbscWorldEnemy) || c.epoch<state.enemy_epoch ||
+       (c.epoch==state.enemy_epoch && c.sequence<state.enemy_sequence))return false;
+    std::vector<BbscWorldEnemy> entries;
+    for(size_t i=0;i<bytes.size();i+=sizeof(BbscWorldEnemy)){
+        BbscWorldEnemy e;std::memcpy(&e,bytes.data()+i,sizeof(e));
+        if(!BbscWorldEnemyValid(e))return false;
+        entries.push_back(e);
+    }
+    if(c.epoch!=state.enemy_epoch || c.sequence!=state.enemy_sequence){
+        state.incoming_enemies.clear();state.enemy_parts=0;state.enemy_part_count=c.parts;state.enemies_ready=false;
+        state.enemy_epoch=c.epoch;state.enemy_sequence=c.sequence;
+    }
+    if(state.enemy_part_count!=c.parts || (state.enemy_parts&(1u<<c.part)))return false;
+    for(const auto& e:entries)state.incoming_enemies[e.handle]=e;
+    state.enemy_parts|=1u<<c.part;
+    if(state.enemy_parts!=((1u<<c.parts)-1))return false;
+    state.enemies=std::move(state.incoming_enemies);state.enemies_ready=true;
+    return true;
+}
 void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
     const u64 modules=ReadValue<u64>(chr,0x3B0);
     const u64 stats=ReadablePointer(modules,0x28)?ReadValue<u64>(modules,0x20):0;
@@ -259,6 +284,16 @@ void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
     const s32 hp=static_cast<s32>(static_cast<std::int64_t>(e.hp)*maximum/e.max);
     using SetHp=void PS4_SYSV_ABI (*)(u64,s32);
     reinterpret_cast<SetHp>(image_base+0x018BCD40)(chr,hp);
+    if(hp==0 && !(ReadValue<u8>(chr,0x1E3)&0x25)) {
+        // Same no-reward ForceCharacterDeath path as native2004[4] at017BA95A:
+        // bit21 suppresses a historical kill's reward, then the game's kill
+        // starts its death transition. HP=0 alone leaves a frozen live model.
+        if(HasMemoryAccess(chr+0x1E1,4,MemoryProt::CpuWrite)){
+            WriteValue<u32>(chr,0x1E1,ReadValue<u32>(chr,0x1E1)|0x200000);
+            using Kill=void PS4_SYSV_ABI (*)(u64);
+            reinterpret_cast<Kill>(image_base+0x018BF9A0)(chr);
+        }
+    }
     if(position && hp>0) {
         const u64 vtable=ReadValue<u64>(chr,0),warp=ReadablePointer(vtable,0x600)?ReadValue<u64>(vtable,0x5F8):0;
         if(IsEbootCodeAddress(warp)){
@@ -278,6 +313,19 @@ void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
             }
         }
     }
+}
+size_t BbscWorldSeedEnemies(u64 world,const BbscWorldState& state,const std::set<u64>& players,u64 doll,std::map<u32,u64>& seeded) {
+    if(!state.flags_ready || !state.enemies_ready)return 0;
+    size_t count=0;
+    BbscWorldCharacters(world,[&](u64 chr){
+        if(players.contains(chr)||chr==doll)return;
+        const u32 id=ReadValue<u32>(chr,0x90);const auto it=state.enemies.find(id);
+        const u64 activation=ReadValue<u64>(chr,0x18);
+        if(it==state.enemies.end() || seeded[id]==chr || !ReadablePointer(activation,0x18) ||
+           ReadValue<s32>(activation,0x10)!=4 || ReadValue<s32>(activation,0x14)!=4)return;
+        BbscWorldTakeEnemy(chr,it->second,true);seeded[id]=chr;++count;
+    });
+    return count;
 }
 
 void BbscWorldReceiveAltar(const BbscWorldIncoming& message) {
@@ -347,7 +395,7 @@ void TickBbscWorldSnapshots() {
         {std::scoped_lock lock{bbsc_world_presence_mutex};const auto* lease=bbsc_independent_owners.Find(c.scope);if(lease)owner=*lease;}
         if(!from_host && (!host || !owner.owner || owner.owner!=message.sender || owner.epoch!=c.epoch))continue;
         auto& state=bbsc_independent_states[c.scope];
-        if(c.epoch<state.epoch || (c.epoch==state.epoch && c.sequence<state.sequence))continue;
+        if(c.kind==World::ControlKind::Flags && (c.epoch<state.epoch || (c.epoch==state.epoch && c.sequence<state.sequence)))continue;
         if(c.kind==World::ControlKind::Flags && message.payload.size()==sizeof(BbscWorldFlagPart)){
             BbscWorldFlagPart p;std::memcpy(&p,message.payload.data(),sizeof(p));
             if(c.parts!=4 || p.first!=c.part*8 || p.count!=std::min<unsigned>(8,30-p.first) || p.reserved || p.present>>30)continue;
@@ -356,17 +404,15 @@ void TickBbscWorldSnapshots() {
             for(size_t j=0;j<p.count;++j)state.groups[p.first+j]=p.groups[j];
             state.parts|=1u<<c.part;state.flags_ready=state.parts==15;
         } else if(c.kind==World::ControlKind::Enemies && message.payload.size()%sizeof(BbscWorldEnemy)==0){
-            for(size_t i=0;i<message.payload.size();i+=sizeof(BbscWorldEnemy)){
-                BbscWorldEnemy e;std::memcpy(&e,message.payload.data()+i,sizeof(e));
-                if(BbscWorldEnemyValid(e))state.enemies[e.handle]=e;
-            }
+            BbscWorldReceiveEnemies(state,c,message.payload);
         }else continue;
         if(host && !from_host){World::Control forwarded=c;BbscWorldSend(forwarded,message.payload);}
         if(c.kind==World::ControlKind::Flags && state.flags_ready)BbscWorldRememberProgress(c.scope,state);
         if(BbscIndependentActive() && World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,state.flags_ready))
             BbscWorldApplyFlags(c.scope,state);
     }
-    if(!BbscIndependentActive() || local.phase!=World::Phase::Playing || !World::Valid(World::ScopeOf(local)))return;
+    if(!BbscIndependentActive() || local.phase!=World::Phase::Playing || !World::Valid(World::ScopeOf(local)) ||
+       local.map!=GetCurrentPackedMap() || BbscCurtainActive() || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load())return;
     const auto scope=World::ScopeOf(local);const u32 role=bbsc_independent_role.load();
     World::OwnerLease lease;{std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* p=bbsc_independent_owners.Find(scope);p)lease=*p;}
     static World::Scope previous_scope;static u64 previous_epoch=0;
@@ -374,6 +420,15 @@ void TickBbscWorldSnapshots() {
     auto& saved=bbsc_independent_states[scope];
     const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
     const auto players=BbscWorldPlayers(world);const u64 doll=BbscWorldDoll(world);
+    static World::Scope seeded_scope;static u64 seeded_visit=0,seeded_epoch=0;
+    static std::map<u32,u64> seeded;
+    if(seeded_scope!=scope || seeded_visit!=local.visit || seeded_epoch!=lease.epoch){
+        seeded.clear();seeded_scope=scope;seeded_visit=local.visit;seeded_epoch=lease.epoch;
+    }
+    if(role==2 && saved.enemies_ready && saved.enemy_epoch==lease.epoch){
+        const size_t count=BbscWorldSeedEnemies(world,saved,players,doll,seeded);
+        if(count)BBSC_TIMELINE("WORLD","native enemy baseline map={:#x} owner={:08x} epoch={} applied={}",scope.map,lease.owner,lease.epoch,count);
+    }
     if(changed && role==1 && !saved.enemies.empty()) {
         BbscWorldCharacters(world,[&](u64 chr){if(players.contains(chr)||chr==doll)return;
             if(auto it=saved.enemies.find(ReadValue<u32>(chr,0x90));it!=saved.enemies.end()) BbscWorldTakeEnemy(chr,it->second,true);});
@@ -394,6 +449,8 @@ void TickBbscWorldSnapshots() {
         if(acknowledged)progress.mask.fill(0);
     }
     auto next=BbscWorldCaptureFlags(scope);next.epoch=lease.epoch;next.sequence=++bbsc_world_state_sequence;
+    // Streamed-out enemies (including kills) remain part of this area's world.
+    next.enemies=saved.enemies;
     BbscWorldCharacters(world,[&](u64 chr){if(players.contains(chr)||chr==doll||next.enemies.size()>=1024)return;
         const auto at=ReadCharacterTransform(chr);const s32 hp=GetCharacterHp(chr);
         const u64 modules=ReadValue<u64>(chr,0x3B0),stats=ReadablePointer(modules,0x28)?ReadValue<u64>(modules,0x20):0;
