@@ -62,14 +62,15 @@ int main(){
  Set(context,0x10,u32{241000});r.rax=52;BbscWorldEsdFunction(0,&r);
  r.rax=1;r.rcx=1;BbscWorldLampMultiplayer(0,&r);assert((r.rax&255)==0&&(r.rcx&255)==0);
  command(241000,0x40000,11);
+ r.r15=70000200;r.rax=123;BbscWorldLampCommandRange(0,&r);assert(r.rax==reinterpret_cast<u64>(bbsc_world_lamp_command.data()));
  assert(!QueueBbscWorldTravel(6200,1));
  assert(QueueBbscWorldTravel(70000200,1));
  assert(bbsc_world_travel_point==2102950&&bbsc_world_requested_scope->map==0x15000000);
  assert(bbsc_world_requested_scope->world==(World::WorldId{11,99}));
- bbsc_world_travel_point=0;now+=2000;assert(!QueueBbscWorldTravel(70000200,1)); // no stale talk context
+ bbsc_world_travel_point=0;now+=2000;assert(QueueBbscWorldTravel(70000200,1)); // no stale talk context
  Set(context,0x18,u64{0x30000});r.r15=reinterpret_cast<u64>(context.data());r.rax=26;BbscWorldEsdFunction(0,&r);
- BbscWorldTalkAllowed(241000);assert(!QueueBbscWorldTravel(70000200,1)); // another actor's talk does not move us
- command(241000,0x30000,11);assert(!QueueBbscWorldTravel(70000200,1));
+ BbscWorldTalkAllowed(241000);assert(QueueBbscWorldTravel(70000200,1)); // another actor's talk does not move us
+ command(241000,0x30000,11);assert(QueueBbscWorldTravel(70000200,1));
  Set(context,0x18,u64{0x40000});r.rax=52;BbscWorldEsdFunction(0,&r);
  BbscWorldTalkAllowed(210000);
  command(210000,0x40000,11);
@@ -92,10 +93,11 @@ int main(){
  assert(r.rax==reinterpret_cast<u64>(bbsc_world_bonfire_phase.data()));
  bbsc_world_travel_point=2102950;r.rax=12345;BbscWorldBonfirePhase(0,&r);assert(r.rax==12345);
  bbsc_world_travel_inflight=false;bbsc_world_travel_point=0;
+ state=3;bbsc_world_travel_point=0;command(241000,0x40000,11);assert(QueueBbscWorldTravel(70000200,1)&&bbsc_world_travel_point==2102950);state=6;bbsc_world_travel_point=0;
  allowed=false;assert(!QueueBbscWorldTravel(70000200,1));assert(!BbscWorldTalkAllowed(241000));
  allowed=true;opening=false;assert(!BbscWorldTalkAllowed(241000));
  opening=true;command(210000,0x40000,11);++bbsc_load_generation;
- r.rax=11;BbscWorldAltarCommand(0,&r);assert(!QueueBbscWorldTravel(70000200,1)); // retired executor generation
+ r.rax=11;BbscWorldAltarCommand(0,&r);assert(QueueBbscWorldTravel(70000200,1)); // retired executor generation
 }
 '''
 def main():

@@ -92,6 +92,7 @@ bool BbscWorldTravelInFlight();
 bool BbscWorldTalkAllowed(u32 talk);
 void NoteBbscWorldTalkRecord(u64 condition,u64 executor);
 bool QueueBbscWorldTravel(u32 flag, u8 value);
+bool BbscWorldTravelFlag(u32 flag);
 bool BbscWorldTaskHere(u64 task);
 u32 BbscWorldLivingHere();
 u32 BbscWorldParticipantsHere();
@@ -17020,6 +17021,7 @@ constexpr u64 BbscEventBank2003Begin = 0x017C0420;
 constexpr u64 BbscEventBank2003End = 0x017C1C80;
 
 void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event) {
+    if(BbscWorldTravelFlag(flag))return; // one-shot commands are never personal quest progress
     if (bbsc_talk_journal_applying) return;
     if (!BbscGuestInHostWorld()) {
         // While recovery is pending, home events may legitimately consume a gift
@@ -17123,6 +17125,7 @@ bool ApplyBbscTalkJournal(std::string_view when, bool finish) {
     {
         std::scoped_lock lock{bbsc_talk_journal_mutex};
         journal = bbsc_talk_journal;
+        std::erase_if(journal,[](const auto& entry){return BbscWorldTravelFlag(entry.first);});
         revision = bbsc_talk_journal_revision;
     }
     if (journal.empty() && !finish) return false;
@@ -17284,7 +17287,7 @@ bool LoadBbscTripJournal(const BbscSaveSlot& slot) {
         if (!get32(flag) || !get32(value)) {
             return false;
         }
-        journal[flag] = static_cast<u8>(value);
+        if(!BbscWorldTravelFlag(flag))journal[flag] = static_cast<u8>(value);
     }
     size_t moved = 0;
     if (version == 1) {
@@ -17801,6 +17804,11 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
     }
     const u64 caller = ReadablePointer(registers->rsp, 8) ? ReadValue<u64>(registers->rsp, 0) : 0;
     const u64 caller_offset = caller >= image_base ? caller - image_base : caller;
+    if (caller_offset == BbscTalkSetFlagReturnOffset &&
+        QueueBbscWorldTravel(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx))) {
+        bbsc_setflag_skip = 1;
+        return;
+    }
     if (BbscEventActionNotOurs(caller_offset)) { // every flag of a talk-driven event not ours
         bbsc_setflag_skip = 1;
         LOG_INFO(Debug, "BBSC own NPC quests: event {} would set flag {} = {} - not ours, skipped",
@@ -17819,11 +17827,6 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
         bbsc_action_owner[static_cast<u32>(registers->rsi)] = true;
     }
     NoteBbscNpcOwnFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
-    if (caller_offset == BbscTalkSetFlagReturnOffset &&
-        QueueBbscWorldTravel(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx))) {
-        bbsc_setflag_skip = 1;
-        return;
-    }
     if (caller_offset == BbscTalkSetFlagReturnOffset) {
         NoteBbscLocalTalkFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
     }
@@ -21567,6 +21570,7 @@ u64 ReadBbscWorldRoom() {
 void TickBbscWorldPresence() {
     static s64 last_send = 0;
     static u64 sequence = 0;
+    static u32 observed_load=0;
     const s64 now = SteadyNowMs();
     const u32 session = BbscMod::RegisterSessionKey();
     const u32 self = BbscMod::RegisterOwnId();
@@ -21601,12 +21605,18 @@ void TickBbscWorldPresence() {
         bbsc_world_presence_book.Bind(world, self);
         const bool loading = state != 3 && state != 6 ||
                              !ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 8) != 0 ||
-                             bbsc_world_load_pending.load() != 0 || bbsc_reload_finish_pending.load();
+                             bbsc_world_load_pending.load() != 0 || bbsc_reload_finish_pending.load() || BbscCurtainActive();
         const auto transform = ReadCharacterTransform(player);
         const bool positioned = transform && std::isfinite(transform->position[0]) &&
                                 std::isfinite(transform->position[1]) &&
                                 std::isfinite(transform->position[2]);
-        bbsc_world_place.Observe(GetCurrentPackedMap(), loading, positioned, now);
+        const u32 generation=bbsc_load_generation.load();
+        const u32 raw_map=GetCurrentPackedMap();
+        if(generation!=observed_load){
+            observed_load=generation;
+            bbsc_world_place.Observe(raw_map,true,false,now);
+        }
+        bbsc_world_place.Observe(raw_map, loading, positioned, now);
         next.world = world;
         next.capabilities = BbscIndependentCapabilities();
         next.phase = departing ? World::Phase::Leaving : bbsc_world_place.State();
@@ -21630,7 +21640,7 @@ void TickBbscWorldPresence() {
                              next.alive != bbsc_world_presence_local.alive ||
                              next.dungeon != bbsc_world_presence_local.dungeon;
         if (!changed && now - last_send < 1'000) return;
-        if (changed) LOG_INFO(Debug, "BBSC world presence: local phase={} map={:#x} visit={} alive={}",
+        if (changed) BBSC_TIMELINE("PLACE", "local phase={} map={:#x} visit={} alive={}",
                              static_cast<u8>(next.phase), next.map, next.visit, next.alive);
         next.sequence = ++sequence;
         bbsc_world_presence_local = next;

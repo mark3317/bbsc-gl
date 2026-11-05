@@ -324,8 +324,8 @@ bool BbscWorldAllMembersReady() {
     return bbsc_world_presence_book.AllSupportTravel(bbsc_world_presence_local,roster,SteadyNowMs());
 }
 
-// Rendering/residency is separate from enemy authority. SetDisabled tears down
-// character attachments and is never used to hide a remote player.
+// Native character presence is paired with native member binding/recreation.
+// Reconcile all resident actors, including copies whose insert task is absent.
 void TickBbscWorldPlayers() {
     static World::WorldId bound{};
     static std::map<u32,World::PlayerVisualLife> lives;
@@ -339,6 +339,18 @@ void TickBbscWorldPlayers() {
         ReadValue<u8>(global,8)!=0 || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load() || BbscCurtainActive();
     if(loading)return; // old character storage may already belong to another load
     const auto tasks=GetMultiPlayerInsTasks();const auto players=BbscWorldPlayers(world);
+    for(const u64 chr:players){
+        if(!chr || chr==GetLocalPlayerCharacter() || !ReadablePointer(chr,0x410))continue;
+        const u32 peer=BbscWorldPeer(chr+0x3D8);if(!peer)continue;
+        const auto it=members.find(peer);
+        const bool here=it!=members.end() && World::PresenceBook::Fresh(it->second,SteadyNowMs()) && World::SamePlace(local,it->second.presence);
+        const u64 activation=ReadValue<u64>(chr,0x18);
+        if(!here && ReadablePointer(activation,0x21) && !(ReadValue<u8>(activation,0x20)&1)){
+            using Disable=void PS4_SYSV_ABI (*)(u64,u8);
+            reinterpret_cast<Disable>(image_base+0x018C6390)(chr,1);
+            BBSC_TIMELINE("MODEL","native absent peer hidden peer={:08x} actor={:#x}",peer,chr);
+        }
+    }
     if(local_bound_visit!=local.visit){
         if(!RepairBbscLocalMemberBinding(GetSessionState(),tasks,true))return;
         local_bound_visit=local.visit;
@@ -362,11 +374,19 @@ void TickBbscWorldPlayers() {
         in.actor=chr;in.model=draw;in.actor_alive=chr && GetCharacterHp(chr)>0;
         const u64 activation=ReadablePointer(chr,0x20)?ReadValue<u64>(chr,0x18):0;
         in.actor_ready=ReadablePointer(activation,0x18) && ReadValue<s32>(activation,0x10)==4 && ReadValue<s32>(activation,0x14)==4;
+        in.disabled=ReadablePointer(activation,0x21) && (ReadValue<u8>(activation,0x20)&1);
         in.draw_off=draw && ReadValue<u8>(draw,0x0C)==0;
         in.faded=chr && (ReadValue<float>(chr,0x208)==0 || ReadValue<float>(chr,0x20C)==0);
         in.dead_visual=ReadablePointer(control,0x118) && (ReadValue<u16>(control,0x114)&1);
         const auto action=lives[peer].Observe(in,SteadyNowMs());
-        if(action.hide && HasMemoryAccess(draw+0x0C,1,MemoryProt::CpuWrite))WriteValue<u8>(draw,0x0C,0);
+        if(action.hide || action.enable){
+            // Native character presence hides the model, name and collision
+            // together. A render-node byte alone leaves a named phantom behind.
+            using Disable=void PS4_SYSV_ABI (*)(u64,u8);
+            reinterpret_cast<Disable>(image_base+0x018C6390)(chr,action.hide?1:0);
+            BBSC_TIMELINE("MODEL","native peer {} peer={:08x} local_map={:#x} peer_map={:#x}",
+                action.hide?"hidden":"enabled",peer,local.map,fresh?it->second.presence.map:0);
+        }
         if(action.rebind && ReadablePointer(chr,0x410) && IsValidMemberId(task+0xC8)){
             const u64 child=ReadValue<u64>(chr,0x60),vt=ReadablePointer(child,8)?ReadValue<u64>(child,0):0;
             if(ReadablePointer(vt,0xD8) && IsEbootCodeAddress(ReadValue<u64>(vt,0xD0))){
@@ -396,7 +416,7 @@ void TickBbscWorldPlayers() {
             }
             if(HasMemoryAccess(draw+0x0C,1,MemoryProt::CpuWrite))WriteValue<u8>(draw,0x0C,1);
             for(u64 offset:{0x208,0x20C})if(ReadValue<float>(chr,offset)==0)WriteValue<float>(chr,offset,1.0f);
-            BBSC_TIMELINE("MODEL","resident peer visible peer={:08x} restored_draw={} restored_fade={} revived={}",peer,in.draw_off,in.faded,action.revive);
+            BBSC_TIMELINE("MODEL","resident peer render repair requested peer={:08x} restored_draw={} restored_fade={} revived={}",peer,in.draw_off,in.faded,action.revive);
         }
     }
     std::erase_if(lives,[&](const auto& entry){return !present.contains(entry.first);});
@@ -508,6 +528,11 @@ bool BbscWorldHasSnapshot(u32){return false;}
 void ApplyBbscIndependentAtLoad(u32){}
 bool BbscWorldProtectAltar(u32,u32){return false;}
 bool BbscWorldTravelInFlight(){return false;}
+bool BbscWorldTravelFlag(u32 flag){
+    return (flag>=70000200 && flag<70000210) || (flag>=72100420 && flag<72100427) ||
+        (flag>=72100300 && flag<72100310) ||
+        std::ranges::any_of(LampTravel::Returns,[&](const auto& p){return p.flag==flag;});
+}
 void QueueBbscWorldAltarWrite(u32,u32,u32){}
 void TickBbscIndependentWorld(){}
 void InstallBbscIndependentWorld(){}

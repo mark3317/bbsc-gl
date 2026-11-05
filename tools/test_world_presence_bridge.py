@@ -46,6 +46,8 @@ template<class T>T ReadValue(u64 p,size_t offset){
  if(p==0x40000 && offset==0x400)return static_cast<T>(room);
  return static_cast<T>(loading);
 }
+bool BbscCurtainActive(){return false;}
+std::atomic<u32> bbsc_load_generation{1};
 std::atomic<u64> bbsc_world_load_pending{0};std::atomic<bool> bbsc_reload_finish_pending{false};
 struct Transform{std::array<float,4> position{1,2,3,1};};
 Transform transform;
@@ -77,8 +79,11 @@ int main(){
  assert(sent.back().capabilities==World::PresenceCapability);
  assert(!(sent.back().capabilities&World::IndependentTravelCapability));
  const auto initial_visit=sent.back().visit;
- now+=10;TickBbscWorldPresence();assert(sent.size()==1); // steady frame: no resend/scan
- now+=1000;TickBbscWorldPresence();assert(sent.size()==2);
+ ++bbsc_load_generation;map=0x18010000;now++;TickBbscWorldPresence();assert(sent.back().map==map&&sent.back().visit>initial_visit);
+ ++bbsc_load_generation;map=0x18000000;now++;TickBbscWorldPresence();
+ const auto baseline=sent.size();
+ now+=10;TickBbscWorldPresence();assert(sent.size()==baseline); // steady frame: no resend/scan
+ now+=1000;TickBbscWorldPresence();assert(sent.size()==baseline+1);
  hp=0;now++;TickBbscWorldPresence();assert(sent.back().alive==0);
  const auto before=sent.size();
  loading=true;now++;TickBbscWorldPresence();assert(sent.size()==before+1);

@@ -22,7 +22,7 @@ using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using 
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 #define BBSC_TIMELINE(...)
 constexpr u64 CandidateLocalStatePointerOffset=0x553e878,MultiPlayerInsSetStateOffset=0x1e52560;
-u64 image_base=0,remote=0; s64 now=10000;bool active=true,loading=false,missing_model=false;
+u64 image_base=0,remote=0; s64 now=10000;bool active=true,loading=false,missing_model=false,task_present=true;
 std::array<u8,0x500> actor1{},actor2{},local{},task{},control{},flags{};
 std::array<u8,0x20> draw{};std::array<u8,0xe0> child{},vtable{};
 std::atomic<bool> bbsc_reload_finish_pending{false};std::atomic<u64> bbsc_world_load_pending{0};
@@ -35,7 +35,7 @@ u64 GetLocalPlayerCharacter(){return reinterpret_cast<u64>(local.data());}
 u64 GetGlobalState(){return reinterpret_cast<u64>(local.data());}
 bool BbscIndependentActive(){return active;}bool BbscCurtainActive(){return loading;}
 s64 SteadyNowMs(){return now;}
-std::vector<u64> GetMultiPlayerInsTasks(){return {reinterpret_cast<u64>(task.data())};}
+std::vector<u64> GetMultiPlayerInsTasks(){return task_present?std::vector<u64>{reinterpret_cast<u64>(task.data())}:std::vector<u64>{};}
 std::set<u64> BbscWorldPlayers(u64){return {GetLocalPlayerCharacter(),remote};}
 u32 BbscWorldPeer(u64 member){return member==remote+0x3d8 || member==reinterpret_cast<u64>(task.data())+0xc8?22:0;}
 s32 GetSessionState(){return 3;}u32 GetBbscRelayHost(){return 22;}
@@ -47,6 +47,7 @@ int binds=0,inserts=0,resets=0;
 void PS4_SYSV_ABI Bind(u64 ch,u64 member){assert(ch==remote&&member==reinterpret_cast<u64>(task.data())+0xc8);++binds;}
 void PS4_SYSV_ABI Insert(u64 member,s32 state){assert(member==reinterpret_cast<u64>(task.data())&&state==4);++inserts;}
 void PS4_SYSV_ABI Reset(u64 ch,u8 value){assert(ch==remote&&value==1);++resets;}
+void PS4_SYSV_ABI Disable(u64 ch,u8 value){assert(ch==remote);WriteValue(reinterpret_cast<u64>(control.data()),0x20,value);}
 void MarkBbscRecreatedMember(u64){}
 bool RepairBbscLocalMemberBinding(s32,const std::vector<u64>&,bool){return true;}
 void Link(u64 offset,void* target){auto* p=reinterpret_cast<u8*>(image_base+offset);p[0]=0x48;p[1]=0xb8;const u64 a=reinterpret_cast<u64>(target);std::memcpy(p+2,&a,8);p[10]=0xff;p[11]=0xe0;}
@@ -57,7 +58,7 @@ void Hear(){peer.sequence++;assert(bbsc_world_presence_book.Hear(22,peer.world,p
 MAIN=r'''
 int main(){
  image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,0x2000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));assert(image_base);
- Link(0x18f27c0,reinterpret_cast<void*>(&Bind));Link(0x18bcf30,reinterpret_cast<void*>(&Reset));Link(MultiPlayerInsSetStateOffset,reinterpret_cast<void*>(&Insert));
+ Link(0x18c6390,reinterpret_cast<void*>(&Disable));Link(0x18f27c0,reinterpret_cast<void*>(&Bind));Link(0x18bcf30,reinterpret_cast<void*>(&Reset));Link(MultiPlayerInsSetStateOffset,reinterpret_cast<void*>(&Insert));
  WriteValue(reinterpret_cast<u64>(child.data()),0,reinterpret_cast<u64>(vtable.data()));WriteValue(reinterpret_cast<u64>(vtable.data()),0xd0,image_base+0x18f27c0);
  const u64 t=reinterpret_cast<u64>(task.data());WriteValue(t,0xe8,s32{1});WriteValue(t,0x50,s32{6});WriteValue(t,0x54,s32{6});
  WriteValue(reinterpret_cast<u64>(control.data()),0x38,reinterpret_cast<u64>(flags.data()));
@@ -67,9 +68,9 @@ int main(){
  remote=reinterpret_cast<u64>(actor1.data());Actor(remote);
  TickBbscWorldPlayers();assert(binds==1&&draw[0xc]==0);
  now+=750;Hear();TickBbscWorldPlayers();assert(draw[0xc]==1&&ReadValue<float>(remote,0x208)==1&&resets==0);
- // Apart hides ONLY rendering; it cannot tear down character attachments.
- peer.map=0x18000000;now++;Hear();TickBbscWorldPlayers();assert(draw[0xc]==0);
- peer.map=0x15000000;peer.visit++;now++;Hear();TickBbscWorldPlayers();assert(draw[0xc]==0);
+ // Apart uses the native presence switch; a return enables the same actor before repair.
+ peer.map=0x18000000;now++;Hear();TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==1);
+ peer.map=0x15000000;peer.visit++;now++;Hear();TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==0);
  now+=750;Hear();TickBbscWorldPlayers();assert(draw[0xc]==1);
  // Native load owns old storage; reused addresses/new graph get a fresh binding.
  loading=true;draw[0xc]=0xa5;now++;TickBbscWorldPlayers();assert(draw[0xc]==0xa5);
@@ -85,6 +86,8 @@ int main(){
  // Independent lifecycles cover all room peers without a hardcoded host/guest slot.
  for(int i=0;i<4;++i){World::PlayerVisualLife life;World::PlayerVisualInput in;in.loading=false;in.here=true;in.alive=in.actor_alive=in.actor_ready=in.task_ready=true;in.local_visit=1;in.peer_visit=i+1;in.actor=i+100;in.model=i+200;in.draw_off=true;
   assert(life.Observe(in,1000).rebind);assert(life.Observe(in,1750).show);in.actor_ready=false;assert(!life.Observe(in,2000).show);assert(!life.Observe(in,6000).insert);in.loading=true;assert(!life.Observe(in,7000).show);}
+ remote=reinterpret_cast<u64>(actor1.data());Actor(remote);WriteValue(reinterpret_cast<u64>(control.data()),0x20,u8{0});
+ peer.map=0x18000000;now++;Hear();task_present=false;TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==1);
  active=false;TickBbscWorldPlayers();VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
 '''
