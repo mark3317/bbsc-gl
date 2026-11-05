@@ -73,6 +73,20 @@ on meeting. Their server selects an enemy owner per map and routes native game
 channels. Their team altars replicate rituals to teammates, which is incompatible
 with the agreed personal-altar model and must NOT be copied unchanged.
 
+## Native build and startup
+
+Final native build exit0; delta preparation/copy exit0. Code73d84d3, packaged
+source5c42b3b (documentation-only successor). Existing isolated staging updated,
+main D: installation unchanged. Backup:
+`D:/Games/Bloodborne/coop-dev/backups/independent-native-20261105-180114`.
+Existing Player1/2 shortcuts launched18:01:14 MSK. Fresh native logs:
+P1 `run_20261105_180143.log`, P2 `run_20261105_180138.log`, under each profile's
+`user` directory. Both report34/34 baseline selected hooks and a connection to
+their local compatibility relay. This does not establish player-to-player
+admission or native independent travel. User explicitly declined computer-use
+and will inspect gameplay manually; no game-window inputs were sent.
+Parent record: `out/coop-dev/runs/independent-native-20261105-1800/run.md`.
+
 ## Historical first integration gate
 
 - `bbsc_world_presence.h`: fixed-size/versioned presence wire format, room/world

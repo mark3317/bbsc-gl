@@ -1,9 +1,10 @@
 ## 05.11.2026 — independent travel: native integration, development branch
 
 Source73d84d3 implements native per-map ownership, scoped state transfer, local
-lamp loads and host altar travel. Targeted native/model fixtures PASS; first
-DLL build exit0, negotiation-fix rebuild and isolated two-profile connection
-test pending. Full game scenarios remain OPEN. See
+lamp loads and host altar travel. Targeted native/model fixtures PASS; final
+DLL build/delta exit0, isolated P1/P2 startup18:01 MSK and local relay connection
+confirmed. Player-to-player admission/full game scenarios OPEN; user tests
+manually, no computer-use. See
 [implementation](fixes/2026-11-05-independent-world-travel.md).
 
 ### Historical first gate
