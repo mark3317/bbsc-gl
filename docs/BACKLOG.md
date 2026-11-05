@@ -1,5 +1,12 @@
 ## 05.11.2026 — independent travel: native integration, development branch
 
+18:25 run: host travel no longer moves guest (user confirmed), both exits0,
+no Warp crash recurrence. Remaining guest Dream refusal traced to device actor
+!=PlayerIns. Fixa904d93 admits audited devices, blocks remote player copies,
+isolates Dream phase and owner flag echoes, makes object corrections owner-only.
+Targeted tests/build/delta PASS; P1/P2 restarted18:39 MSK with hooks ready.
+Guest travel and host headstone prompt flicker still require game confirmation.
+
 Second game check: activation CONFIRMED18:15:12, guest lamps FAILED and both
 profiles crashed. Fixd6bd1f6 corrects real ESD evaluator/result register context
 and16-byte native Warp argument alignment. Targeted production fixtures/syntax

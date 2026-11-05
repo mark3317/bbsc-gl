@@ -24,6 +24,12 @@ are owner-only. Visual result remains OPEN. Catalog/gate readiness gains one-sho
 timeline records, not per-frame logging. Targeted production fixtures/syntax PASS.
 Evidence: parent out/coop-dev/runs/independent-dream-devices-20261105-1830.
 
+Fixa904d93 DLL build/delta exit0; isolated staging backup
+independent-dream-devices-20261105-183835. P1/P2 restarted by request18:39 MSK,
+fresh run_20261105_183901.log / run_20261105_183858.log confirm34/34 baseline
+and both independent hook sets ready, local relay connected. Native5772/27776.
+New travel/prompt visual result OPEN; no computer-use or game inputs sent.
+
 ## Second gameplay failure: lamp dispatch ABI and aligned Warp
 
 Both profiles negotiate active18:15:12 after the room fix; guest lamp requests
