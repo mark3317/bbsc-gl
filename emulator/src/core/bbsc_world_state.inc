@@ -217,7 +217,10 @@ void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
     if(position && hp>0) {
         const u64 vtable=ReadValue<u64>(chr,0),warp=ReadablePointer(vtable,0x600)?ReadValue<u64>(vtable,0x5F8):0;
         if(IsEbootCodeAddress(warp)){
-            std::array<float,4> at{e.x,e.y,e.z,1},rotation{0,e.heading,0,0};
+            // Native Warp -> 018CD600 -> 01517200 uses VMOVAPS on BOTH
+            // arguments. std::array<float,4> alone guarantees only4-byte alignment.
+            alignas(16) std::array<float,4> at{e.x,e.y,e.z,1};
+            alignas(16) std::array<float,4> rotation{0,e.heading,0,0};
             using Warp=void PS4_SYSV_ABI (*)(u64,float*,float*,u32);
             reinterpret_cast<Warp>(warp)(chr,at.data(),rotation.data(),1);
         }

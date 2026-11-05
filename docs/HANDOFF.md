@@ -1,3 +1,21 @@
+## 05.11.2026 — independent activation confirmed; lamp ABI and takeover crash fixed in source
+
+P1 host/P2 guest18:14 run: both `independent world active`18:15:12. No guest
+travel request recorded. P2 exits3 at18:15:47; P1 exits3 at18:16:05 after returning
+to Dream. SAME native Fault01517213, return018CD62C, DLL caller13F136. Both RDX
+rotation pointers are8 mod16;01517213 is VMOVAPS. New takeover code passed an
+unaligned std::array rotation. Position AND rotation now explicitly alignas(16).
+Production regression executes SysV Warp callback and real VMOVAPS on both.
+
+Lamp callbacks incorrectly treated R12 as condition evaluator. Original203AD60
+saves RDI=result variant in R12 and RSI=evaluator in R15. Capture validated talk
+and actor from R15 at dispatch entry; use thread-local context after switch
+register reuse. Corrected production ABI fixture passes with R12=result, and
+with R15 clobbered at common exit. Earlier fixture was wrong and masked this bug.
+Both fixtures/full MOD syntax PASS. DLL build pending; no game launch requested
+for this diagnostic turn. Evidence: parent out/coop-dev/runs/independent-lamp-
+crash-20261105-1817 (both complete run logs copied, no saves/settings).
+
 ## 05.11.2026 — independent mode never activated: room binding corrected
 
 User reports P2 still follows P1 and guest lamps remain closed. Logs confirm
