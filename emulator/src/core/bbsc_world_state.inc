@@ -357,6 +357,7 @@ void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
     if(!ReadablePointer(stats,0x100)) return;
     const s32 maximum=ReadValue<s32>(stats,0xFC);if(maximum<=0) return;
     const s32 hp=static_cast<s32>(static_cast<std::int64_t>(e.hp)*maximum/e.max);
+    const u8 death_before=hp==0?ReadValue<u8>(chr,0x1E3):0;
     using SetHp=void PS4_SYSV_ABI (*)(u64,s32);
     reinterpret_cast<SetHp>(image_base+0x018BCD40)(chr,hp);
     if(hp==0 && !(ReadValue<u8>(chr,0x1E3)&0x25)) {
@@ -368,6 +369,15 @@ void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
             using Kill=void PS4_SYSV_ABI (*)(u64);
             reinterpret_cast<Kill>(image_base+0x018BF9A0)(chr);
         }
+    }
+    if(hp==0){
+        const u64 control=ReadValue<u64>(chr,0x18);
+        const u64 proxy=ReadablePointer(control,0x38)?ReadValue<u64>(control,0x30):0;
+        // One line per baseline application, never per game frame. A call to
+        // native Kill is not proof its proxy guard permitted a death transition.
+        BBSC_TIMELINE("WORLD","historical enemy death index={} actor={:#x} hp_after={} death_before={:#x} death_after={:#x} proxy_flags={:#x}",
+            e.handle,chr,ReadValue<s32>(stats,0xF8),death_before,ReadValue<u8>(chr,0x1E3),
+            ReadablePointer(proxy,0x19)?ReadValue<u8>(proxy,0x18):0);
     }
     if(position && hp>0) {
         const u64 vtable=ReadValue<u64>(chr,0),warp=ReadablePointer(vtable,0x600)?ReadValue<u64>(vtable,0x5F8):0;
