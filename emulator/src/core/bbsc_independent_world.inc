@@ -5,6 +5,7 @@
 #ifdef BBSC_MOD
 std::atomic<bool> bbsc_independent_hooks{false}, bbsc_independent_active{false};
 std::atomic<bool> bbsc_independent_travel_hooks{false};
+std::atomic<bool> bbsc_world_native_warp_hook{false};
 std::atomic<u32> bbsc_independent_role{0}, bbsc_independent_owner{0};
 World::OwnerBook bbsc_independent_owners; // protected by presence mutex
 std::map<World::Scope,World::OwnerLease> bbsc_independent_elected;
@@ -15,6 +16,7 @@ std::mutex bbsc_independent_incoming_mutex;
 std::deque<BbscWorldIncoming> bbsc_independent_incoming;
 thread_local u8 bbsc_independent_send_depth = 0;
 u8 bbsc_independent_send_skip = 0;
+bool BbscWorldSceneReady();
 
 bool BbscIndependentActive() {return bbsc_independent_active.load(std::memory_order_acquire);}
 bool BbscIndependentTravelAllowed() {
@@ -54,7 +56,7 @@ u64 BbscWorldNativeMember(u32 peer) {
 bool BbscWorldPeerHere(u32 peer) {
     if (!BbscIndependentActive()) return true;
     std::scoped_lock lock{bbsc_world_presence_mutex};
-    const auto* m=bbsc_world_presence_book.Find(peer,SteadyNowMs());
+    const auto* m=bbsc_world_presence_book.Resident(peer);
     return m && World::SamePlace(bbsc_world_presence_local,m->presence);
 }
 bool BbscWorldActorHere(u64 chr) {
@@ -63,7 +65,7 @@ bool BbscWorldActorHere(u64 chr) {
 bool BbscWorldSendHere(u32 peer) {
     std::scoped_lock lock{bbsc_world_presence_mutex};
     if(!peer || !bbsc_world_presence_book.Known(peer)) return true; // native first-sync bootstrap
-    const auto* m=bbsc_world_presence_book.Find(peer,SteadyNowMs());
+    const auto* m=bbsc_world_presence_book.Resident(peer);
     return m && World::SamePlace(bbsc_world_presence_local,m->presence);
 }
 u32 BbscWorldLivingHere() {
@@ -73,7 +75,7 @@ u32 BbscWorldLivingHere() {
 u32 BbscWorldParticipantsHere() {
     std::scoped_lock lock{bbsc_world_presence_mutex};u32 count=0;
     for(const auto& [peer,m]:bbsc_world_presence_book.Members())
-        count+=World::PresenceBook::Fresh(m,SteadyNowMs()) && World::SamePlace(bbsc_world_presence_local,m.presence);
+        count+=World::SamePlace(bbsc_world_presence_local,m.presence);
     return count;
 }
 bool BbscWorldTaskHere(u64 task) {
@@ -251,7 +253,7 @@ u64 BbscWorldDoll(u64 world) {
 }
 void PS4_SYSV_ABI BbscWorldOwnership(u64,const GuestRegisterSnapshot* regs) {
     if(!regs || !BbscIndependentActive()) return;
-    const u32 role=bbsc_independent_role.load();if(!role) return;
+    const bool owning=bbsc_independent_role.load()==1 && BbscWorldSceneReady();
     const u64 world=regs->rdi;if(!ReadablePointer(world,0xA48)) return;
     const auto players=BbscWorldPlayers(world);const u64 doll=BbscWorldDoll(world);
     BbscWorldCharacters(world,[&](u64 chr){
@@ -261,7 +263,7 @@ void PS4_SYSV_ABI BbscWorldOwnership(u64,const GuestRegisterSnapshot* regs) {
         const bool awake=ReadValue<s32>(control,0x14)==4 || ReadValue<s32>(control,0x10)==4;
         if(chr==doll) {WriteValue<u16>(word,0,1);return;}
         if(!awake) return;
-        WriteValue<u16>(word,0,role==1?u16{1}:u16{0xFFFF});
+        WriteValue<u16>(word,0,owning?u16{1}:u16{0xFFFF});
     });
 }
 
@@ -343,7 +345,7 @@ void TickBbscWorldPlayers() {
         if(!chr || chr==GetLocalPlayerCharacter() || !ReadablePointer(chr,0x410))continue;
         const u32 peer=BbscWorldPeer(chr+0x3D8);if(!peer)continue;
         const auto it=members.find(peer);
-        const bool here=it!=members.end() && World::PresenceBook::Fresh(it->second,SteadyNowMs()) && World::SamePlace(local,it->second.presence);
+        const bool here=it!=members.end() && World::SamePlace(local,it->second.presence);
         const u64 activation=ReadValue<u64>(chr,0x18);
         if(!here && ReadablePointer(activation,0x21) && !(ReadValue<u8>(activation,0x20)&1)){
             using Disable=void PS4_SYSV_ABI (*)(u64,u8);
@@ -361,7 +363,7 @@ void TickBbscWorldPlayers() {
         const u32 peer=mode==2 && GetSessionState()==6?GetBbscRelayHost():BbscWorldPeer(task+0xC8);
         if(!peer)continue;present.insert(peer);
         const auto it=members.find(peer);
-        const bool fresh=it!=members.end() && World::PresenceBook::Fresh(it->second,SteadyNowMs());
+        const bool fresh=it!=members.end(); // native residency survives movie silence
         World::PlayerVisualInput in;in.loading=false;in.local_visit=local.visit;
         in.peer_visit=fresh?it->second.presence.visit:0;
         in.here=fresh && World::SamePlace(local,it->second.presence);
@@ -528,6 +530,9 @@ bool BbscWorldHasSnapshot(u32){return false;}
 void ApplyBbscIndependentAtLoad(u32){}
 bool BbscWorldProtectAltar(u32,u32){return false;}
 bool BbscWorldTravelInFlight(){return false;}
+bool GuardBbscWorldBootstrap(u64){return false;}
+void EnableBbscNativeTravelEvent(u64){}
+void BbscWorldNativeWarpBegin(const GuestRegisterSnapshot*){}
 bool BbscWorldTravelFlag(u32 flag){
     return (flag>=70000200 && flag<70000210) || (flag>=72100420 && flag<72100427) ||
         (flag>=72100300 && flag<72100310) ||

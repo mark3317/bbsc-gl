@@ -93,6 +93,8 @@ bool BbscWorldTalkAllowed(u32 talk);
 void NoteBbscWorldTalkRecord(u64 condition,u64 executor);
 bool QueueBbscWorldTravel(u32 flag, u8 value);
 bool BbscWorldTravelFlag(u32 flag);
+bool GuardBbscWorldBootstrap(u64 instance);
+void EnableBbscNativeTravelEvent(u64 instance);
 bool BbscWorldTaskHere(u64 task);
 u32 BbscWorldLivingHere();
 u32 BbscWorldParticipantsHere();
@@ -4596,6 +4598,7 @@ s64 bbsc_boss_killed_ms = 0;
 // death step can arrive more than 15 seconds later; a time-limited bar cache is insufficient.
 bool bbsc_boss_at_own_death = false;
 std::atomic<u32> bbsc_load_generation{0}; // incremented after an actual load completes
+std::atomic<u64> bbsc_world_native_load{0}; // before destination events, not the next game tick
 std::atomic<u64> bbsc_world_load_pending{0}; // spawn-resolution callback also runs on ordinary Continue
 std::atomic<bool> bbsc_reload_finish_pending{false}; // native load callback; ticks may pause in loads
 u32 bbsc_spectate_load_generation = 0;
@@ -6537,6 +6540,11 @@ bool bbsc_npc_pass_due = false;
 void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscNpcPassHook");
     bbsc_transition_event_skip = 0;
+    if(registers && GuardBbscWorldBootstrap(registers->rdi)){
+        bbsc_transition_event_skip=1;
+        return;
+    }
+    if(registers)EnableBbscNativeTravelEvent(registers->rdi);
     if (registers && (GuardBbscTransitionDoorEvent(registers->rdi) ||
                       GuardBbscSharedFinaleEvent(registers->rdi))) {
         bbsc_transition_event_skip = 1;
@@ -21605,7 +21613,7 @@ void TickBbscWorldPresence() {
         bbsc_world_presence_book.Bind(world, self);
         const bool loading = state != 3 && state != 6 ||
                              !ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 8) != 0 ||
-                             bbsc_world_load_pending.load() != 0 || bbsc_reload_finish_pending.load() || BbscCurtainActive();
+                             bbsc_world_load_pending.load() != 0 || bbsc_reload_finish_pending.load();
         const auto transform = ReadCharacterTransform(player);
         const bool positioned = transform && std::isfinite(transform->position[0]) &&
                                 std::isfinite(transform->position[1]) &&
@@ -22940,6 +22948,7 @@ bool BbscFunctionalTraceSite(const TraceSite& site) {
     if (site.offset == 0x018F9720 || site.offset == 0x018C9160) return true;
 #endif
     return site.kind == TraceKind::LuaSessionEvent || site.offset == 0x01873269 ||
+           site.offset == 0x0132E050 ||
            site.offset == MultiPlayStopRequestOffset ||
            site.offset == ItemUsableResultOffset || site.offset == SummonBuildEntryOffset ||
            site.offset == CrossMapGuestHandoffOffset ||
@@ -22973,6 +22982,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     BbscPerfScope perf_scope{perf_site};
 
     const auto& site = Sites[tag];
+    if(site.offset==0x0132E050)BbscWorldNativeWarpBegin(registers);
     if (site.offset == SosStatusUpdateOffset) {
         CompleteBbscResidentSummons(registers->rdi);
     }
@@ -23058,7 +23068,9 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     if (site.offset == 0x01938F65) { // Warp.RespawnPoint.Resolve: a load picks its spawn point
         // Observe construction even when the ordinary tick misses the whole load.
         // Apply/cleanup stays on the first ready game tick, after native initialization.
-        if (!BbscReturningToTitle()) bbsc_world_load_pending = GetGlobalState();
+        if (!BbscReturningToTitle()) {
+            if(!bbsc_world_load_pending.exchange(GetGlobalState()))++bbsc_world_native_load;
+        }
         RestoreBbscOwnWorldAtLoad();
         ApplyBbscSharedProgressAtLoad();
     }
@@ -25797,6 +25809,9 @@ void InstallReverseEngineeringTrace() {
             continue;
         }
         ++hook_count;
+#ifdef BBSC_MOD
+        if(site.offset==0x0132E050)bbsc_world_native_warp_hook=true;
+#endif
     }
 
     installed = hook_count == selected_count;

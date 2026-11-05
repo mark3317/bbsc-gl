@@ -1,5 +1,53 @@
 # Independent travel — development branch, 05.11.2026
 
+## 05.11.2026 — native travel events and pre-event native admission
+
+User requires original stone/lamp animation, loading and admission to the
+already-resident player's world; chalice transition also failed in last run.
+
+Travel now releases the original LOCAL native EMEVD command after destination
+state is available. Original12107000/common7200 own animation, native wait,
+menu completion and WarpNextStage_Bonfire. Removed direct StageTransition,
+forced summon coordinates, manual respawn/aux writes, mass trigger clearing
+and artificial enemy aggro. Native12107100 selects/prepares an occupied altar
+and clears its first-half flag before ESD can request a layer; it is no longer
+short-circuited. Four audited native travel events use native local sync and
+verified EndIfClient->WaitFrames(0) in loaded memory; no game asset is edited.
+Event identity is cached per native load, not linearly rescanned every frame.
+
+Native WarpNextStage_Bonfire is now a functional entry hook. Arm the existing
+native FirstSync reinsertion at the game's actual stage request, AFTER its
+animation. Travel capability requires that hook. Ordinary host/guest bonfire
+point selection uses the native path; no coordinate approximation. Native
+completion generation is recorded before destination event updates.
+
+The existing native event-update hook now holds destination instructions until
+owner flags, complete enemy state (for an existing ordinary-map owner), and
+native member FirstSync/CreateWait are ready. Apply flags ONCE before original
+initialization, not after its cutscene/doors already started. Suppress new AI
+authority and owner snapshot capture until the scene is ready; subsequent event
+changes are not rewound. New travel prompts wait for that admission as well.
+Native historical death seeding remains for newly streamed copies, without
+position warps; live positions/combat remain the native owner's responsibility.
+
+A movie/heartbeat pause no longer erases residency, changes the existing owner,
+hides teammates or counts them as dead. Observed map load/leave/native departure
+still changes residency. Curtain visibility is not a map departure. Cached world
+responses preserve the actual owner's sequence/epoch; never invent a higher
+coordinator sequence which would reject later legitimate owner updates.
+
+Chalice geometry IDs now resolve to native m29_00 event-state scope, distinguished
+by complete dungeon key and host ritual. A first unvisited ritual is initialized
+by the game's own mounted host altar record, not unrelated live m29 flags. A
+resident ritual requires its current owner's state. Personal altars/home policy
+unchanged. Fixtures cover native FirstSync wait, missing/old owner state, story
+before events, no repeated initialization, mounted ritual identity, silence and
+explicit departure, actual native event release and animation-before-warp assets.
+35 functional baseline sites; original native entry bytes/trampoline and targeted
+fixtures PASS. New DLL build/deploy/start/game verification recorded separately;
+all preceding gameplay failures remain OPEN pending the next manual run.
+
+
 Final source c5b3b54: DLL rebuild and isolated-stage delta exit0. Backup
 independent-native-arrival-20261105-194509. Requested two-profile startup
 19:45:09 MSK: P1 run_20261105_194536.log/native16036, P2 run_20261105_194532.log/

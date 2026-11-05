@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #ifdef BBSC_MOD
 s32 bbsc_world_travel_point=0,bbsc_world_travel_layer=0;
+u32 bbsc_world_travel_flag=0;
 s32 bbsc_world_travel_altar_pending=-1;
 s64 bbsc_world_travel_since=0,bbsc_world_travel_request_sent=0;
 bool bbsc_world_travel_inflight=false,bbsc_world_travel_saw_load=false;
+bool bbsc_world_travel_native_armed=false;
 u32 bbsc_world_travel_load=0;
 World::WorldId bbsc_world_travel_world{};
 std::atomic<u32> bbsc_world_travel_talk{0};
@@ -52,7 +54,7 @@ void PS4_SYSV_ABI BbscWorldLampCommandRange(u64,const GuestRegisterSnapshot* reg
     const_cast<GuestRegisterSnapshot*>(regs)->rax=reinterpret_cast<u64>(bbsc_world_lamp_command.data());
 }
 bool BbscWorldTalkAllowed(u32 talk) {
-    if(!BbscIndependentTravelAllowed() || GetSessionState()!=6 || !BbscOwnOpeningDone())return false;
+    if(!BbscIndependentTravelAllowed() || !BbscWorldSceneReady() || GetSessionState()!=6 || !BbscOwnOpeningDone())return false;
     bool allow=std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end();
     if(talk>=210050 && talk<=210110 && (talk-210050)%10==0){
         const size_t slot=(talk-210050)/10;
@@ -120,13 +122,14 @@ void PS4_SYSV_ABI BbscWorldAltarCommand(u64,const GuestRegisterSnapshot* regs){
         talk,(talk-210050)/10,r->rax,bbsc_world_catalog_ready.load() && bbsc_world_altars[(talk-210050)/10].entry.occupied);
 }
 void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
-    if(regs && bbsc_world_travel_inflight && GetSessionState()==6 &&
-       bbsc_world_travel_point>=2902950 && bbsc_world_travel_point<2902960)
+    if(regs && bbsc_world_travel_inflight &&
+       bbsc_world_travel_point>0)
         const_cast<GuestRegisterSnapshot*>(regs)->rax=reinterpret_cast<u64>(bbsc_world_bonfire_phase.data());
 }
 
 bool QueueBbscWorldTravel(u32 flag,u8 value) {
     if(!value || !BbscIndependentTravelAllowed() || !BbscWorldTravelFlag(flag))return false;
+    if(!BbscWorldSceneReady())return true;
     if(GetSessionState()!=3 && GetSessionState()!=6)return false;
     if(!bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return true;
     const u32 talk=bbsc_world_command_talk;
@@ -139,7 +142,16 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
     for(const auto& destination:LampTravel::Returns)if(destination.flag==flag){point=destination.point;break;}
     // Native helper first sets the selected altar, waits for it to clear, THEN
     // sets the chosen layer. Do not start a load from the first half-command.
-    if(flag>=72100420 && flag<72100427){bbsc_world_travel_altar_pending=flag-72100420;return true;}
+    if(flag>=72100420 && flag<72100427){
+        const size_t chosen=flag-72100420;
+        if((GetSessionState()==6 && !bbsc_world_catalog_ready.load()) || !bbsc_world_altars[chosen].entry.occupied)
+            return GetSessionState()==6;
+        bbsc_world_travel_altar_pending=chosen;
+        bbsc_world_altar_visiting=chosen;bbsc_world_requested_mount=bbsc_world_altars[chosen].mount;
+        // Native12107100 prepares the selected altar, plays its animation and
+        // clears this flag. Only then does the ESD offer the layer request.
+        return false;
+    }
     if(flag>=72100300 && flag<72100310){
         bbsc_world_travel_layer=flag-72100300;slot=bbsc_world_travel_altar_pending;
         bbsc_world_travel_altar_pending=-1;
@@ -153,7 +165,7 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
     World::Scope scope;
     {std::scoped_lock lock{bbsc_world_presence_mutex};scope.world=bbsc_world_presence_local.world;}
     if(slot>=0){
-        if(!bbsc_world_catalog_ready.load() || !bbsc_world_altars[slot].entry.occupied ||
+        if((GetSessionState()==6 && !bbsc_world_catalog_ready.load()) || !bbsc_world_altars[slot].entry.occupied ||
            bbsc_world_travel_layer<0 || bbsc_world_travel_layer>9)return true;
         // Hall is unconditional; subsequent layers use the original native
         // lamp flags, which the guest menu already reads from the host view.
@@ -165,12 +177,51 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
     }else{
         const auto it=std::ranges::find(LampPoints,point,&LampPoint::warp_point);
         if(it==LampPoints.end())return true;scope.map=it->packed_map;
+        bbsc_world_requested_mount.reset();bbsc_world_altar_visiting=-1;
     }
     bbsc_world_requested_scope=scope;
-    bbsc_world_travel_world=scope.world;bbsc_world_travel_point=point;
+    bbsc_world_travel_world=scope.world;bbsc_world_travel_point=point;bbsc_world_travel_flag=flag;
+    bbsc_world_travel_native_armed=false;
     bbsc_world_travel_since=SteadyNowMs();bbsc_world_travel_request_sent=0;
     BBSC_TIMELINE("TRAVEL","independent lamp request point={} map={:#x} ritual={}",point,scope.map,scope.ritual);
     return true;
+}
+
+void EnableBbscNativeTravelEvent(u64 instance) {
+    if(!BbscIndependentTravelAllowed() || !ReadablePointer(instance,0xC0))return;
+    static u64 generation=~u64{0};
+    static std::map<u64,std::pair<u64,s64>> events;
+    const u64 load=bbsc_world_native_load.load();
+    if(generation!=load){generation=load;events.clear();}
+    const u64 ref=ReadValue<u64>(instance,0xA8);
+    auto it=events.find(instance);
+    if(it==events.end() || it->second.first!=ref)
+        it=events.insert_or_assign(instance,std::pair{ref,BbscEventIdOf(instance)}).first;
+    const s64 event=it->second.second;
+    if(event!=7200 && event!=12107000 && event!=12107100 && event!=12107200)return;
+    // Original events remain native, but their local trip must not execute in
+    // another room member's game. This is native SetNetworkSyncState(false).
+    WriteValue<u8>(instance,0x78,0);
+    const u64 instruction=ReadValue<u64>(instance,0xB0);
+    if(!ReadablePointer(instruction,0x20) || ReadValue<s32>(instruction,0)!=1003 ||
+       ReadValue<s32>(instruction,4)!=6 || ReadValue<u64>(instruction,8)!=4)return;
+    const u64 file=ReadablePointer(ref,0x10)?ReadValue<u64>(ref,8):0;
+    if(!ReadablePointer(file,0x80))return;
+    const u64 args=file+ReadValue<u64>(file,0x78)+ReadValue<u64>(instruction,0x10);
+    if(!ReadablePointer(args,4) || ReadValue<u32>(args,0)!=256)return;
+    // Verified first EndIfClient has no parameter substitutions in these EVDs.
+    // A native WaitFrames(0) lets this visitor run its own original travel.
+    if(!HasMemoryAccess(instruction,8,MemoryProt::CpuWrite) || !HasMemoryAccess(args,4,MemoryProt::CpuWrite))return;
+    WriteValue<u32>(args,0,0);WriteValue<s32>(instruction,0,1001);WriteValue<s32>(instruction,4,1);
+    BBSC_TIMELINE("TRAVEL","native local travel event enabled event={}",event);
+}
+
+void BbscWorldNativeWarpBegin(const GuestRegisterSnapshot* regs) {
+    if(!regs || !BbscIndependentTravelAllowed() || !bbsc_world_travel_inflight || bbsc_world_travel_native_armed)return;
+    bbsc_world_travel_native_armed=true;
+    ArmBbscReinsertV8(); // native FirstSync begins with the stage request, never during its animation
+    BBSC_TIMELINE("TRAVEL","native stage request point={} selected={} map={:#x}",static_cast<s32>(regs->rsi),
+        bbsc_world_travel_point,bbsc_world_requested_scope?bbsc_world_requested_scope->map:0);
 }
 
 void TickBbscWorldTravel() {
@@ -187,6 +238,7 @@ void TickBbscWorldTravel() {
             // A removed/replaced host ritual can no longer accept progress.
             // Finish an already running load, then return its visitor to Dream.
             bbsc_world_travel_point=Chalice::IsMap(GetCurrentPackedMap())?2102950:0;
+            bbsc_world_travel_flag=70000200;
             bbsc_world_requested_mount.reset();
             bbsc_world_requested_scope=World::Scope{world,0x15000000,{},0};
             bbsc_world_travel_world=world;bbsc_world_travel_since=SteadyNowMs();bbsc_world_travel_request_sent=0;
@@ -214,6 +266,7 @@ void TickBbscWorldTravel() {
     if(now-bbsc_world_travel_since>30000 || GetCharacterHp(GetLocalPlayerCharacter())<=0){bbsc_world_travel_point=0;return;}
     if(loading || !bbsc_world_requested_scope)return;
     const auto scope=*bbsc_world_requested_scope;
+    BbscWorldEnsureSeed(scope);
     if(!BbscWorldHasSnapshot(scope.map)){
         if(now-bbsc_world_travel_request_sent>=500){
             World::Control request;request.kind=World::ControlKind::Request;request.scope=scope;
@@ -222,45 +275,22 @@ void TickBbscWorldTravel() {
         }
         return;
     }
-    ApplyBbscIndependentAtLoad(scope.map);
-    ApplyBbscGuestLootView(scope.map,"independent lamp travel");
-    if(scope.map==BbscDreamStateMap)ApplyBbscHostDreamState("independent lamp travel");
-    else RestoreBbscOwnDreamState("independent lamp travel");
+    // Release the ORIGINAL local event. It owns the menu, animation, delay,
+    // stage request and point selection; no synthesized summon/coordinate warp.
+    if(Chalice::IsMap(scope.map) && !PrepareBbscChaliceLoad(scope.map))return;
+    const u64 flagman=ReadValue<u64>(image_base+WorldFlagManPointerOffset,0);
+    if(!flagman || !bbsc_world_travel_flag)return;
     bbsc_world_travel_inflight=true;bbsc_world_travel_saw_load=false;
     bbsc_world_travel_load=bbsc_load_generation.load();bbsc_world_travel_since=now;
-    // A native travel flag is a one-shot command, not persistent world state.
-    // No old request may run after this explicitly selected native stage load.
-    using Clear=void PS4_SYSV_ABI (*)(u64,u32,u8);
-    const u64 flagman=ReadValue<u64>(image_base+WorldFlagManPointerOffset,0);
-    const auto clear=reinterpret_cast<Clear>(image_base+0x013CFCC0);
-    if(flagman){
-        for(u32 flag=70000200;flag<70000210;++flag)clear(flagman,flag,0);
-        for(const auto& destination:LampTravel::Returns)clear(flagman,destination.flag,0);
-        for(u32 flag=72100300;flag<72100310;++flag)clear(flagman,flag,0);
-        for(u32 flag=72100420;flag<72100427;++flag)clear(flagman,flag,0);
-    }
-    bbsc_independent_role=0;
-    ArmBbscReinsertV8();
-    const u64 lamp_aux=scope.map==BbscDreamStateMap?101200:101163;
-    WriteValue<s64>(global,0x1528,static_cast<s64>((lamp_aux<<32)|static_cast<u32>(bbsc_world_travel_point)));
-    reinterpret_cast<void PS4_SYSV_ABI (*)(s32)>(image_base+BbscQuitCloseMenusOffset)(3);
-    if(Chalice::IsMap(scope.map)){
-        if(!PrepareBbscChaliceLoad(scope.map)){bbsc_world_travel_inflight=false;return;}
-        const u64 rules=ReadValue<u64>(image_base+SummonSessionRulesPointerOffset,0);
-        if(!HasMemoryAccess(rules+0x84,4,MemoryProt::CpuWrite)){bbsc_world_travel_inflight=false;return;}
-        WriteValue<s32>(rules,0x84,3);WriteValue<u8>(global,0x1520,0);
-        WriteValue<u32>(global,0x14C4,scope.map);
-        reinterpret_cast<void PS4_SYSV_ABI (*)(u64,s32)>(image_base+0x0132E050)(0,bbsc_world_travel_point);
-    }else{
-        const auto it=std::ranges::find(LampPoints,bbsc_world_travel_point,&LampPoint::warp_point);
-        if(it==LampPoints.end()){bbsc_world_travel_inflight=false;return;}
-        SummonPlacementDescriptor to{};to.packed_region=it->packed_map;
-        to.x=it->x;to.y=it->y;to.z=it->z;to.heading=it->heading;
-        if(!RequestBbscSessionWarp(global,to,"independent lamp"))bbsc_world_travel_inflight=false;
-    }
+    using Set=void PS4_SYSV_ABI (*)(u64,u32,u8);
+    reinterpret_cast<Set>(image_base+0x013CFCC0)(flagman,bbsc_world_travel_flag,1);
+    BBSC_TIMELINE("TRAVEL","native travel event released flag={} point={} map={:#x}",bbsc_world_travel_flag,bbsc_world_travel_point,scope.map);
 }
 
 void InstallBbscWorldTravel() {
+    if(!bbsc_world_native_warp_hook.load()){
+        LOG_ERROR(Debug,"BBSC native stage request hook unavailable; independent travel remains closed");return;
+    }
     struct Site{u64 offset;std::vector<u8> bytes;GuestCodeHook hook;};
     const std::array sites{
         Site{0x0203C564,{0x08,0xC1,0x0F,0xB6,0xC1},BbscWorldLampMultiplayer},

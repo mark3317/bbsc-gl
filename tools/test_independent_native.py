@@ -137,6 +137,7 @@ def check_original_sites(elf):
     prologue=bytes.fromhex('55 48 89 e5 41 57')
     for address in [0x1AB2A40,0x1AB1DB0,0x1AB3070,0x1AB31C0,0x18C6390,0x18BCD40,0x12B2960]:
         assert original(address,len(prologue))==prologue,f'Native callable mismatch {address:x}'
+    assert original(0x0132E050,7)==bytes.fromhex('55 48 89 e5 48 63 c6')
     print(f'PASS original 1.09 ELF: {total} native hook spans + 7 callable prologues')
 
 def main():

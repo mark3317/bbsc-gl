@@ -21,7 +21,11 @@ struct Scope {
     }
 };
 #pragma pack(pop)
-inline Scope ScopeOf(const Presence& p) { return {p.world,p.map,p.dungeon,p.ritual}; }
+inline Scope ScopeOf(const Presence& p) {
+    // Layout IDs (m29_XX_YY) identify geometry, not a different event namespace.
+    // All mounted dungeons use m29_00 flags; key+ritual distinguish their worlds.
+    return {p.world,Chalice::IsMap(p.map)?0x1D000000u:p.map,p.dungeon,p.ritual};
+}
 inline bool Valid(const Scope& s) {
     if (!Valid(s.world) || !ValidMap(s.map)) return false;
     return Chalice::IsMap(s.map) ? Chalice::Valid(s.dungeon) && s.ritual != 0 :
