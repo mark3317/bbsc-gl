@@ -135,7 +135,7 @@ World::WorldId bbsc_world_states_world{};
 
 void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) {
     if(!state.flags_ready) return;
-    if(scope.map==BbscDreamStateMap){ApplyBbscHostDreamState("independent Dream");return;}
+    if(scope.map==BbscDreamStateMap)return; // dedicated host Dream phase, never guest map state
     const bool guest=GetSessionState()==6;
     for(size_t i=0;i<30;++i) {
         if(!(state.present&(u64{1}<<i))) continue;
@@ -179,6 +179,7 @@ void ApplyBbscIndependentAtLoad(u32 map) {
     if(bbsc_world_requested_scope) scope=*bbsc_world_requested_scope;
     scope.map=map;
     if(auto it=bbsc_independent_states.find(scope);it!=bbsc_independent_states.end()) BbscWorldApplyFlags(scope,it->second);
+    if(map==BbscDreamStateMap && GetSessionState()==6)ApplyBbscHostDreamState("independent arrival");
     if(Chalice::IsMap(map)) CompleteBbscChaliceLoad(map);
     ApplyBbscHostTime("independent world arrival");
 }
@@ -258,7 +259,10 @@ void BbscWorldReceiveAltar(const BbscWorldIncoming& message) {
     if(!bbsc_world_guest_altars.Take(message.sender,std::move(catalog)))return;
     {std::scoped_lock lock{bbsc_world_presence_mutex};bbsc_world_altars=bbsc_world_altars_assembling;
         bbsc_world_altar_current=p.current==0xFF?-1:p.current;}
-    bbsc_world_catalog_ready=true;
+    if(!bbsc_world_catalog_ready.exchange(true)) {
+        const auto occupied=std::ranges::count_if(bbsc_world_altars,[](const auto& a){return a.entry.occupied;});
+        BBSC_TIMELINE("TRAVEL","host altar catalog ready occupied={}",occupied);
+    }
 }
 
 void TickBbscWorldSnapshots() {
@@ -314,8 +318,8 @@ void TickBbscWorldSnapshots() {
             }
         }else continue;
         if(host && !from_host){World::Control forwarded=c;BbscWorldSend(forwarded,message.payload);}
-        const bool current=World::ScopeOf(local)==c.scope;
-        if(BbscIndependentActive() && state.flags_ready && (current || host && !Chalice::IsMap(c.scope.map))) BbscWorldApplyFlags(c.scope,state);
+        if(BbscIndependentActive() && World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,state.flags_ready))
+            BbscWorldApplyFlags(c.scope,state);
     }
     if(!BbscIndependentActive() || local.phase!=World::Phase::Playing || !World::Valid(World::ScopeOf(local)))return;
     const auto scope=World::ScopeOf(local);const u32 role=bbsc_independent_role.load();

@@ -64,6 +64,14 @@ inline std::optional<Control> DecodeControl(std::span<const u8> bytes) {
     Control c;std::memcpy(&c,bytes.data(),sizeof(c));
     return Valid(c)&&bytes.size()==sizeof(c)+c.size ? std::optional{c}:std::nullopt;
 }
+// A current owner must not reapply its own delayed coordinator echo. Dream
+// phase/services use their existing host-only protocol, not a map owner's view.
+inline bool ShouldApplyFlags(const Control& c,const Scope& local,u32 self,u32 owner,
+                             bool host,bool complete) {
+    if(!self || c.scope.world!=local.world || c.kind!=ControlKind::Flags || !complete || c.scope.map==0x15000000)return false;
+    if(c.scope==local)return owner!=self;
+    return host && !Chalice::IsMap(c.scope.map);
+}
 struct OwnerLease {u32 owner=0;u64 epoch=0;s64 received=0;};
 class OwnerBook {
 public:

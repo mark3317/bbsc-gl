@@ -23,6 +23,7 @@ u64 GetLocalPlayerCharacter(){return 0x20000;}
 s32 GetLocalPlayerType(){return state==3?0:1;}
 s32 GetSessionState(){return state;}
 s32 GetCharacterHp(u64){return hp;}
+bool BbscRegisterRemotePlayer(u64 p){return p==0x30000;}
 bool BbscIndependentTravelAllowed(){return allowed;}
 bool BbscOwnOpeningDone(){return opening;}
 s64 SteadyNowMs(){return now;}
@@ -44,7 +45,7 @@ int main(){
  bbsc_world_presence_local.world={11,99};
  std::array<u8,128> result{},context{};
  Set(context,0,image_base+TalkConditionVtableOffset);Set(context,0x10,u32{210000});
- Set(context,0x18,u64{0x20000});
+ Set(context,0x18,u64{0x40000}); // actual device actor differs from local PlayerIns
  // Actual203AD60: R12=RDI=result variant, R15=RSI=condition evaluator.
  // The old fixture incorrectly put the evaluator in R12 and missed closed lamps.
  GuestRegisterSnapshot r;r.r12=reinterpret_cast<u64>(result.data());r.r15=reinterpret_cast<u64>(context.data());
@@ -63,7 +64,7 @@ int main(){
  bbsc_world_travel_point=0;now+=2000;assert(!QueueBbscWorldTravel(70000200,1)); // no stale talk context
  Set(context,0x18,u64{0x30000});r.r15=reinterpret_cast<u64>(context.data());r.rax=26;BbscWorldEsdFunction(0,&r);
  BbscWorldTalkAllowed(241000);assert(!QueueBbscWorldTravel(70000200,1)); // another actor's talk does not move us
- Set(context,0x18,u64{0x20000});r.rax=52;BbscWorldEsdFunction(0,&r);
+ Set(context,0x18,u64{0x40000});r.rax=52;BbscWorldEsdFunction(0,&r);
  BbscWorldTalkAllowed(210000);
  const auto destination=LampTravel::Returns[0];assert(QueueBbscWorldTravel(destination.flag,1));
  assert(bbsc_world_travel_point==destination.point&&bbsc_world_requested_scope->map!=0x15000000);

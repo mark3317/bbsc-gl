@@ -157,7 +157,9 @@ void PS4_SYSV_ABI BbscWorldPacketSend(u64,const GuestRegisterSnapshot* regs) {
                 if(target){r->rsi=target;drop=false;}else drop=true;
             }
         }
-        if(channel==0x04 || channel==0x05 || channel==0x29 || channel==0x36)
+        // Native host object corrections must not override the map owner after
+        // the host leaves/returns. Otherwise two copies keep resetting objects.
+        if(channel==0x04 || channel==0x05 || channel==0x29 || channel==0x36 || channel==0x2F)
             drop=drop || role!=1;
     }
     if(drop){r->rax=0;bbsc_independent_send_skip=1;}
