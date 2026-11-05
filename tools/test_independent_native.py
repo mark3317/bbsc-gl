@@ -135,9 +135,15 @@ def check_original_sites(elf):
             assert original(int(addr,16),len(expected))==expected,f'Native hook mismatch {addr}'
             total+=1
     prologue=bytes.fromhex('55 48 89 e5 41 57')
-    for address in [0x1AB2A40,0x1AB1DB0,0x1AB3070,0x1AB31C0,0x18C6390,0x18BCD40,0x12B2960]:
+    for address in [0x1AB2A40,0x1AB1DB0,0x1AB3070,0x1AB31C0,0x18C6390,0x19186E0,0x12B2960]:
         assert original(address,len(prologue))==prologue,f'Native callable mismatch {address:x}'
     assert original(0x013CDF30,6)==bytes.fromhex('55 48 89 e5 41 57')
+    # Native per-character cleanup used by CSMultiPlayerIns.Delete: world in RDI,
+    # the matched remote PlayerIns (NOT its member id) in RSI.
+    assert original(0x01E50C51,3)==bytes.fromhex('4c 89 f6')
+    remove_call=0x01E50C54
+    assert original(remove_call,1)==b'\xe8'
+    assert remove_call+5+struct.unpack('<i',original(remove_call+1,4))[0]==0x019186E0
     # Validate the real EMEVD2003[49] dispatch and its EDI argument ABI.
     table=0x017C2C38
     case=table+struct.unpack('<i',original(table+48*4,4))[0]

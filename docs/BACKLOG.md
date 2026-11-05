@@ -1,3 +1,33 @@
+## 05.11.2026 — player lamp-reunion recreation, SOURCE ONLY
+
+User reports models missing when a player travels by lamp to other residents.
+Installed25405ed run: guest Yharnam21:06:43.246; host21:07:01.674; host binds
+peer21:07:02.656; guest requests missing actor insertion21:07:04.194 and binds
+21:07:04.474. Both log render repair, which does NOT prove a visible mesh.
+Later read-only inspection found both sessions already solo, no remote actors;
+it cannot establish the model failure's live fields.
+
+Confirmed lifecycle defects corrected: actor-present/not-ready branch returned
+forever before bounded recovery; retained actor across local/peer visit/reunion
+was reused solely because its pointer/draw state existed. Retained same-address
+actors now receive native per-character removal019186E0(world,PlayerIns), used
+by original CSMultiPlayerIns.Delete at01E50C54, then existing native insertion4.
+Keep member/session; never bulk cleanup or disconnect. Re-enumerate live native
+players per task after removals and continue immediately after invalidating an
+actor; never touch removed render storage. Recovery for unfinished actors is
+bounded. New actors naturally created by the game are not recycled every tick.
+
+Removed manual draw+0C/opacity/death/animation repair: opaque draw pointer is not
+mesh visibility and +0C=0 can be normal on a visible local player. Native creation
+owns those fields. Per-peer native hide/enable/member binding remains. Log native
+recreation request with old actor and both visit generations, without claiming
+visibility. Targeted fixture covers stale/reused addresses, local/remote travel,
+unfinished actor recovery, bounds, four peers and NO render/opacity writes.
+Original ELF verifies cleanup callsite/RSI ABI and callable prologue. Authority
+fixture and full MOD syntax-only check PASS. Gameplay remains OPEN; no DLL build,
+deployment/restart, computer-use, save changes or live memory writes. User's
+NO BUILD instruction still applies; installed25405ed unchanged.
+
 ## 05.11.2026 — USER REQUIREMENT: native enemy initial state, no mod enemy cache
 
 User explicitly rejects mod-maintained enemy state: entering an occupied map

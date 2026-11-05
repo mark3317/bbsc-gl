@@ -369,17 +369,13 @@ void TickBbscWorldPlayers() {
         in.here=fresh && World::SamePlace(local,it->second.presence);
         in.alive=fresh && it->second.presence.alive;
         in.task_ready=ReadValue<s32>(task,0x50)==6 && ReadValue<s32>(task,0x54)==6 && !(ReadValue<u8>(task,0xED)&2);
-        u64 chr=0;for(const auto candidate:players)
+        u64 chr=0;for(const auto candidate:BbscWorldPlayers(world))
             if(candidate && candidate!=GetLocalPlayerCharacter() && BbscWorldPeer(candidate+0x3D8)==peer){chr=candidate;break;}
-        const u64 control=ReadablePointer(chr,0x410)?ReadValue<u64>(chr,0x58):0;
         const u64 draw=BbscCharacterDrawState(chr);
         in.actor=chr;in.model=draw;in.actor_alive=chr && GetCharacterHp(chr)>0;
         const u64 activation=ReadablePointer(chr,0x20)?ReadValue<u64>(chr,0x18):0;
         in.actor_ready=ReadablePointer(activation,0x18) && ReadValue<s32>(activation,0x10)==4 && ReadValue<s32>(activation,0x14)==4;
         in.disabled=ReadablePointer(activation,0x21) && (ReadValue<u8>(activation,0x20)&1);
-        in.draw_off=draw && ReadValue<u8>(draw,0x0C)==0;
-        in.faded=chr && (ReadValue<float>(chr,0x208)==0 || ReadValue<float>(chr,0x20C)==0);
-        in.dead_visual=ReadablePointer(control,0x118) && (ReadValue<u16>(control,0x114)&1);
         const auto action=lives[peer].Observe(in,SteadyNowMs());
         if(action.hide || action.enable){
             // Native character presence hides the model, name and collision
@@ -399,27 +395,19 @@ void TickBbscWorldPlayers() {
         }
         if(action.insert){
             if(HasMemoryAccess(task+0xED,1,MemoryProt::CpuWrite)){
+                // Same per-character removal used by native CSMultiPlayerIns.Delete
+                // at01E50C54. Keep the session/member task; never run bulk cleanup.
+                if(chr && chr!=GetLocalPlayerCharacter()){
+                    using Remove=void PS4_SYSV_ABI (*)(u64,u64);
+                    reinterpret_cast<Remove>(image_base+0x019186E0)(world,chr);
+                }
                 WriteValue<u8>(task,0xED,ReadValue<u8>(task,0xED)|1);MarkBbscRecreatedMember(task);
                 using Set=void PS4_SYSV_ABI (*)(u64,s32);reinterpret_cast<Set>(image_base+MultiPlayerInsSetStateOffset)(task,4);
-                BBSC_TIMELINE("MODEL","resident peer insertion requested peer={:08x} actor={} model={}",peer,chr!=0,draw!=0);
+                BBSC_TIMELINE("MODEL","native peer recreation requested peer={:08x} previous_actor={:#x} local_visit={} peer_visit={}",peer,chr,local.visit,in.peer_visit);
             }
+            continue; // native removal invalidated this actor and its render graph
         }
-        if(action.show){
-            if(action.revive){
-                using Reset=void PS4_SYSV_ABI (*)(u64,u8);reinterpret_cast<Reset>(image_base+0x018BCF30)(chr,1);
-                const u64 modules=ReadValue<u64>(chr,0x3B0),behaviour=ReadablePointer(modules,0x38)?ReadValue<u64>(modules,0x30):0;
-                if(ReadablePointer(behaviour,0x388) && ReadValue<u8>(behaviour,0x384)){
-                    using Play=void PS4_SYSV_ABI (*)(u64,u64);
-                    reinterpret_cast<Play>(image_base+0x01A19F60)(behaviour,image_base+0x04992C40);
-                }
-                const u64 flags=ReadablePointer(control,0x40)?ReadValue<u64>(control,0x38):0;
-                if(HasMemoryAccess(flags+0x48,1,MemoryProt::CpuWrite))WriteValue<u8>(flags,0x48,ReadValue<u8>(flags,0x48)&0xFC);
-                if(HasMemoryAccess(control+0x114,2,MemoryProt::CpuWrite))WriteValue<u16>(control,0x114,ReadValue<u16>(control,0x114)&0xFFFE);
-            }
-            if(HasMemoryAccess(draw+0x0C,1,MemoryProt::CpuWrite))WriteValue<u8>(draw,0x0C,1);
-            for(u64 offset:{0x208,0x20C})if(ReadValue<float>(chr,offset)==0)WriteValue<float>(chr,offset,1.0f);
-            BBSC_TIMELINE("MODEL","resident peer render repair requested peer={:08x} restored_draw={} restored_fade={} revived={}",peer,in.draw_off,in.faded,action.revive);
-        }
+
     }
     std::erase_if(lives,[&](const auto& entry){return !present.contains(entry.first);});
 }
@@ -495,7 +483,7 @@ void InstallBbscIndependentWorld() {
     }
     static constexpr std::array<u8,6> GetterPrologue{0x55,0x48,0x89,0xE5,0x41,0x57};
     for(u64 offset:{0x01AB2A40ull,0x01AB1DB0ull,0x01AB3070ull,0x01AB31C0ull,
-                    0x018C6390ull,0x018BCD40ull,0x012B2960ull})
+                    0x018C6390ull,0x019186E0ull,0x012B2960ull})
         if(!ReadablePointer(image_base+offset,GetterPrologue.size()) ||
            std::memcmp(reinterpret_cast<const void*>(image_base+offset),GetterPrologue.data(),GetterPrologue.size())){
             LOG_ERROR(Debug,"BBSC independent world: native callable {:#x} differs",offset);return;
