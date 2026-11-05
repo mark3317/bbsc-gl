@@ -40,6 +40,10 @@ bool BbscWorldTravelActorAllowed() {
 
 bool BbscWorldTravelInFlight(){return bbsc_world_travel_inflight;}
 bool BbscWorldTalkAllowed(u32 talk);
+bool BbscWorldLampTalk(u32 talk) {
+    return std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end() ||
+        std::ranges::find(LampTravel::DungeonTalks,talk)!=LampTravel::DungeonTalks.end();
+}
 bool BbscWorldTravelFlag(u32 flag) {
     return (flag>=70000200 && flag<70000210) ||
         (flag>=72100420 && flag<72100427) || (flag>=72100300 && flag<72100310) ||
@@ -54,13 +58,14 @@ void PS4_SYSV_ABI BbscWorldLampCommandRange(u64,const GuestRegisterSnapshot* reg
     const_cast<GuestRegisterSnapshot*>(regs)->rax=reinterpret_cast<u64>(bbsc_world_lamp_command.data());
 }
 bool BbscWorldTalkAllowed(u32 talk) {
-    if(!BbscIndependentTravelAllowed() || !BbscWorldSceneReady() || GetSessionState()!=6 || !BbscOwnOpeningDone())return false;
-    bool allow=std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end();
+    if(!BbscIndependentTravelAllowed() || GetSessionState()!=6)return false;
+    // Every original lamp is usable by a guest, including unlit dungeon lamps.
+    // Story ownership/admission determines world state, not access to this UI.
+    bool allow=BbscWorldLampTalk(talk);
     if(talk>=210050 && talk<=210110 && (talk-210050)%10==0){
         const size_t slot=(talk-210050)/10;
         allow=bbsc_world_catalog_ready.load() && bbsc_world_altars[slot].entry.occupied;
     }
-    if(talk/10000==29 && talk%1000<100) allow=true; // native dungeon lamps
     if(allow){bbsc_world_travel_talk=talk;bbsc_world_travel_talk_seen=SteadyNowMs();}
     return allow;
 }
@@ -69,7 +74,12 @@ void PS4_SYSV_ABI BbscWorldLampMultiplayer(u64,const GuestRegisterSnapshot* regs
     const bool host=GetSessionState()==3 && GetLocalPlayerType()==0 &&
         Core::Bbsc::SwitchEnabled("SHADPS4_BBSC_LAMP");
     const bool guest=BbscWorldTravelActorAllowed() && BbscWorldTalkAllowed(bbsc_world_esd_talk);
-    if(guest){static std::atomic<bool> logged{false};if(!logged.exchange(true))
+    if(guest){
+        static thread_local u32 generation=~u32{0};
+        static thread_local std::map<u32,bool> logged;
+        const u32 load=bbsc_load_generation.load();
+        if(generation!=load){generation=load;logged.clear();}
+        if(logged.emplace(bbsc_world_esd_talk,true).second)
         BBSC_TIMELINE("TRAVEL","guest lamp gate admitted talk={} actor={}",bbsc_world_esd_talk,
             bbsc_world_esd_actor==GetLocalPlayerCharacter()?"player":"device");}
     if(host || guest){auto* r=const_cast<GuestRegisterSnapshot*>(regs);r->rax&=~u64{0xFF};r->rcx&=~u64{0xFF};}
@@ -133,12 +143,11 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
         BBSC_TIMELINE("TRAVEL","local travel rejected flag={} talk={} reason={}",flag,bbsc_world_command_talk,reason);
         return true;
     };
-    if(!BbscWorldSceneReady())return reject("scene-not-ready");
     if(GetSessionState()!=3 && GetSessionState()!=6)return false;
     if(!bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return reject("missing-local-executor");
     const u32 talk=bbsc_world_command_talk;
-    const bool device=std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end() ||
-        (talk>=210050 && talk<=210110 && (talk-210050)%10==0) || (talk/10000==29 && talk%1000<100);
+    const bool device=BbscWorldLampTalk(talk) ||
+        (talk>=210050 && talk<=210110 && (talk-210050)%10==0);
     if(SteadyNowMs()-bbsc_world_command_seen>1000 || !device ||
        (GetSessionState()==6 && !BbscWorldTalkAllowed(talk)))return reject("device-context");
     s32 point=0,slot=-1;

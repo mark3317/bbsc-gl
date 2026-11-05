@@ -3,6 +3,12 @@
 #include <array>
 #include <cstdint>
 namespace Core::Bloodborne::LampTravel {
+// Original m29_00 lamp ESDs, shared by every generated chalice layout.
+// Their IDs are110..119, not the guessed000..099 range.
+inline constexpr std::array<std::uint32_t, 10> DungeonTalks{
+    290110, 290111, 290112, 290113, 290114,
+    290115, 290116, 290117, 290118, 290119,
+};
 inline constexpr std::array<std::uint32_t, 50> Talks{
     210000,
     210001,
