@@ -4,8 +4,11 @@
 authority, scoped HP/hits/state, independent local lamp requests, seven host
 altar records and guest layer selection. Remote native task modes1/2 are used
 for capability negotiation (self tasks0/3 excluded). Native fixtures, original
-ELF hook spans and full MOD syntax PASS. First native DLL build exit0; rebuilding
-the negotiation fix before isolated two-profile connection testing. Gameplay OPEN.
+ELF hook spans and full MOD syntax PASS. Final DLL build/delta exit0; isolated
+staging P1/P2 started18:01 MSK (native launch PID23180/33784). Fresh logs
+run_20261105_180143.log / run_20261105_180138.log:34/34 base selected hooks,
+local compatibility relay connected on both. Player-to-player admission and
+independent gameplay OPEN. User requested no computer-use and will inspect.
 See [implementation and verification](fixes/2026-11-05-independent-world-travel.md).
 Personal altar view is journaled, special ritual mutation UI remains host-only;
 host exit still ends the session. Do not infer gameplay PASS from fixture/build.
