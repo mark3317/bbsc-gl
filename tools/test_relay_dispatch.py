@@ -38,6 +38,7 @@ void OnBbscChaliceMountPacket(const void*,size_t){++mount;}
 void OnBbscWorldPresencePacket(u32 sender,u32 session,const void*,size_t){
  ++world_presence;world_sender=sender;world_session=session;
 }
+void OnBbscWorldControlPacket(u32,u32,const void*,size_t){++world_presence;}
 Follow::Arrival last_arrival;
 void OnBbscHostFollowPacket(u32,float,float,float,float,u32,s32,const Chalice::Key&,const Follow::Arrival& a){++follow;last_arrival=a;}
 void NoteBbscRelayHost(u32,u32,float,float,float){}

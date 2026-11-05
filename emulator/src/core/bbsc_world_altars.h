@@ -8,6 +8,7 @@ namespace Core::Bloodborne::World {
 // for the guest's personal altar flags or cached native ritual objects. Full
 // records are committed atomically; OR-merging record bits corrupts map IDs.
 inline constexpr std::size_t AltarCount = 7, AltarRecordBytes = 750;
+inline constexpr std::size_t AltarProgressAt = 625;
 using AltarRecord = std::array<u8, AltarRecordBytes>;
 struct AltarEntry {
     bool occupied = false;
@@ -46,7 +47,8 @@ public:
             const auto& after = c.altars[i];
             if (after.ritual < before.ritual ||
                 (after.ritual == before.ritual &&
-                 (after.occupied != before.occupied || after.record != before.record ||
+                 (after.occupied != before.occupied ||
+                  !std::equal(after.record.begin(),after.record.begin()+AltarProgressAt,before.record.begin()) ||
                   after.dungeon != before.dungeon || after.form != before.form))) return false;
         }
         catalog_ = std::move(c);

@@ -4,6 +4,10 @@
 #include "core/bbsc_stop_policy.h"
 #include "core/bbsc_dream_finale.h"
 #include "core/bbsc_world_presence.h"
+#include "core/bbsc_world_control.h"
+#include "core/bbsc_world_altars.h"
+#include "core/bbsc_world_lamp_points.h"
+#include "core/bbsc_lamp_travel_data.h"
 #include "core/bloodborne_re.h"
 
 #include <algorithm>
@@ -80,6 +84,31 @@ std::mutex bbsc_world_presence_mutex;
 World::PresenceBook bbsc_world_presence_book;
 World::Presence bbsc_world_presence_local;
 World::PlaceTracker bbsc_world_place;
+// Independent-world native integration, defined below after the legacy helpers.
+bool BbscIndependentActive();
+bool BbscIndependentTravelAllowed();
+bool BbscWorldTravelInFlight();
+bool BbscWorldTalkAllowed(u32 talk);
+bool QueueBbscWorldTravel(u32 flag, u8 value);
+bool BbscWorldTaskHere(u64 task);
+u32 BbscWorldLivingHere();
+u32 BbscWorldParticipantsHere();
+bool BbscWorldPeerHere(u32 peer);
+bool BbscWorldActorHere(u64 chr);
+void DiscardBbscWorldScenes();
+u32 BbscIndependentCapabilities();
+u64 BbscIndependentRitual(const Chalice::Key& key);
+Chalice::Key BbscIndependentDungeonKey(const Chalice::Key& key);
+bool BbscWorldMountFor(u32 map, Chalice::Mount& mount);
+bool BbscWorldHasSnapshot(u32 map);
+void ApplyBbscIndependentAtLoad(u32 map);
+bool BbscWorldProtectAltar(u32 flag,u32 width);
+void QueueBbscWorldAltarWrite(u32 flag,u32 width,u32 value);
+void TickBbscIndependentWorld();
+void InstallBbscIndependentWorld();
+void ProcessBbscWorldControl(u32 sender, const World::Control& control, std::span<const u8> payload);
+void BbscWorldCoordinate();
+
 
 void QueueBbscWork(BbscWork work) {
     bbsc_pending_work.fetch_or(static_cast<u32>(work), std::memory_order_release);
@@ -4108,6 +4137,7 @@ void TickBbscReinsertV8() {
     for (const u64 task : tasks) {
         const s32 mode = ReadValue<s32>(task, 0xE8);
         const s32 current = ReadValue<s32>(task, 0x50);
+        if (!BbscWorldTaskHere(task)) continue;
         if ((mode != 1 && mode != 2) || current != 6 || ReadValue<s32>(task, 0x54) != 6 ||
             (ReadValue<u8>(task, 0xED) & 2) != 0 || RemotePlayerExists(task) ||
             !HasMemoryAccess(task + 0xED, 1, MemoryProt::CpuWrite)) {
@@ -4173,6 +4203,7 @@ void TickBbscSelfHeal() {
     }
     for (const u64 task : tasks) {
         const s32 mode = ReadValue<s32>(task, 0xE8);
+        if (!BbscWorldTaskHere(task)) continue;
         if ((mode != 1 && mode != 2) || ReadValue<s32>(task, 0x50) != 6 ||
             ReadValue<s32>(task, 0x54) != 6 || (ReadValue<u8>(task, 0xED) & 2) != 0) {
             // A pending native create/leave breaks the continuous missing interval.
@@ -4372,6 +4403,7 @@ void NotifyBbscHostDeathReload() {
 }
 
 bool BbscHostReportsDeathReload() {
+    if (BbscIndependentActive() && !BbscWorldPeerHere(GetBbscRelayHost())) return false;
     std::scoped_lock lock{bbsc_life_mutex};
     for (const auto& [player, life] : bbsc_peer_life) {
         if (life.host_reloading) return true;
@@ -4394,6 +4426,7 @@ std::pair<u32, u32> BbscPeerLifeCounts() {
     u32 fresh = 0;
     u32 dead = 0;
     for (const auto& [player, life] : bbsc_peer_life) {
+        if (BbscIndependentActive() && !BbscWorldPeerHere(player)) continue;
         if (life.received_ms != 0) { // life changes only on an explicit report, never on a timeout
             ++fresh;
             dead += life.dead != 0 ? 1 : 0;
@@ -4425,6 +4458,7 @@ int RemoteInvaderCount(); // below
 // vanilla rules - the invader goes home whether they win or lose - so the kept-session death
 // rules only count co-op players.
 bool LivingPartnerExists() {
+    if (BbscIndependentActive()) return BbscWorldLivingHere() != 0;
     if (BbscAllPartnersReportDead()) {
         return false; // their copies may still show HP; they said they are dead
     }
@@ -4700,7 +4734,7 @@ u64 FindLivingPartnerCharacter() {
     }
     for (s32 i = 0; i < count; ++i) {
         const u64 player = ReadValue<u64>(entries, static_cast<size_t>(i) * 0x38);
-        if (player != 0 && player != local && GetCharacterHp(player) > 0) {
+        if (player != 0 && player != local && GetCharacterHp(player) > 0 && BbscWorldActorHere(player)) {
             return player;
         }
     }
@@ -5254,7 +5288,7 @@ u32 BbscChaliceInitialJoinMap() {
 // Initial summons, death/home loads, invaders and our own explicit requests keep their path.
 void PS4_SYSV_ABI BbscChaliceTransitionHook(u64, const GuestRegisterSnapshot* registers) {
     NotifyBbscHostDeathReload(); // native StageTransition, including death reloads
-    if (!registers || bbsc_chalice_transition_owned || !bbsc_join_teleport_done ||
+    if (!registers || bbsc_chalice_transition_owned || BbscWorldTravelInFlight() || !bbsc_join_teleport_done ||
         GetSessionState() != 6 || GetLocalPlayerType() != 1) return;
     const u64 global = GetGlobalState();
     if (!ReadablePointer(global, 0x1593) || ReadValue<u8>(global, 0x1592) != 0 ||
@@ -5333,6 +5367,7 @@ void TickBbscChaliceSummon() {
 }
 
 bool BbscProtectChaliceAltar(u32 flag, u32 width = 1) {
+    if (BbscIndependentActive()) return BbscWorldProtectAltar(flag,width);
     const bool lamp = Chalice::TouchesLampUnlock(flag, width);
     if (!lamp && !Chalice::TouchesAltar(flag, width)) return false;
     const s32 state = GetSessionState();
@@ -5420,6 +5455,7 @@ void PS4_SYSV_ABI BbscChaliceContextHook(u64, const GuestRegisterSnapshot* regis
 }
 
 void PS4_SYSV_ABI BbscChaliceValueHook(u64, const GuestRegisterSnapshot* registers) {
+    if(registers) QueueBbscWorldAltarWrite(static_cast<u32>(registers->rsi),static_cast<u32>(registers->rdx),static_cast<u32>(registers->rcx));
     if (registers && BbscProtectChaliceAltar(static_cast<u32>(registers->rsi),
                                            static_cast<u32>(registers->rdx)))
         bbsc_chalice_value_skip = 1;
@@ -5444,6 +5480,7 @@ void InstallBbscChaliceHooks() {
 }
 
 bool BbscLatestChaliceMount(u32 map, Chalice::Mount& out) {
+    if (BbscWorldMountFor(map, out)) return true;
     if (!bbsc_chalice_context_hook_ready || !bbsc_chalice_value_hook_ready ||
         !bbsc_chalice_flag_hook_ready) return false;
     BbscFollowMessage follow;
@@ -5730,6 +5767,7 @@ BbscFollowSpot BbscFollowSpotOf(const BbscFollowMessage& host) {
 constexpr s64 BbscFollowAfterLoadMs = 5'000;
 
 void TickBbscFollowHost() {
+    if (BbscIndependentActive()) return;
     if (BbscQuitInProgress() || BbscDreamFinaleHolding()) return;
     static s64 last_check_ms = 0;
     static bool warping = false;
@@ -6816,6 +6854,7 @@ bool BbscChaliceSnapshotMatches(const BbscWorldSnapshot& host) {
 }
 
 bool BbscChaliceLoadReady(u32 map) {
+    if (BbscIndependentActive() && BbscWorldHasSnapshot(map)) return true;
     if (!Chalice::IsMap(map)) return true;
     BbscWorldSnapshot host;
     return BbscHostBlockSnapshot(map, host) && BbscChaliceSnapshotMatches(host);
@@ -6823,6 +6862,11 @@ bool BbscChaliceLoadReady(u32 map) {
 
 // Guest side: puts the host's flags for that map into our live table. Game thread.
 bool ApplyBbscHostWorldFlags(u32 packed_map, std::string_view why) {
+    if (BbscIndependentActive()) {
+        if (!BbscWorldHasSnapshot(packed_map)) return false;
+        ApplyBbscIndependentAtLoad(packed_map);
+        return true;
+    }
     if (!BbscWorldSyncEnabled() || image_base == 0) {
         return false;
     }
@@ -7229,16 +7273,17 @@ void TickBbscDreamStateRestore() {
 // Guest side: the load into the host's map has created our character (0x0178D9C0 entry). The map's
 // events have not run yet; make sure they see the host's flags.
 void ApplyBbscHostWorldFlagsAtLoad() {
-    if (!BbscWorldSyncEnabled() || image_base == 0 || GetSessionState() != 6) {
+    if (!BbscWorldSyncEnabled() || image_base == 0 || (GetSessionState() != 6 && !BbscIndependentActive())) {
         return;
     }
     const u64 global = GetGlobalState();
-    if (!ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 0x1592) != 0) {
+    if (!ReadablePointer(global, 0x1598) || (ReadValue<u8>(global, 0x1592) != 0 && !BbscIndependentActive())) {
         return;
     }
     // The load's destination: the summoned placement map this reload goes to (see
     // RequestBbscSessionWarp); the current map may still be the one we left.
-    const u32 map = ReadValue<u32>(global, 0x14C4);
+    const u32 map = ReadValue<u32>(global, GetSessionState()==3 ? 0x0C : 0x14C4);
+    if (BbscIndependentActive()) { ApplyBbscIndependentAtLoad(map); return; }
     if (!IsUsablePackedMap(map)) {
         return;
     }
@@ -9798,6 +9843,11 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
         bbsc_request_death_reload = true;
         return;
     }
+    if (BbscIndependentActive() && !LivingPartnerExists()) {
+        bbsc_spectate_active = false;
+        bbsc_request_death_reload = true;
+        return;
+    }
     const bool guest_waits_for_host = session_state == 6 && !LivingPartnerExists();
     if (!guest_waits_for_host && !LivingPartnerExists()) {
         // No partner: ask for the reload the retargeted call site no longer performs, so a solo
@@ -11153,7 +11203,8 @@ void TickBbscLampRole() {
     // both required, not only the session state.
     const u64 global = GetGlobalState();
     const bool own_world = ReadablePointer(global, 0x1593) && ReadValue<u8>(global, 0x1592) != 0;
-    const int hosting = GetSessionState() == 3 && own_world && GetLocalPlayerType() == 0 ? 1 : 0;
+    const bool independent_guest = BbscIndependentTravelAllowed() && GetSessionState() == 6;
+    const int hosting = (GetSessionState() == 3 && own_world && GetLocalPlayerType() == 0) || independent_guest ? 1 : 0;
     if (hosting != last) {
         last = hosting;
         Core::Bbsc::SetHostLampPatches(hosting == 1);
@@ -12603,6 +12654,10 @@ void PS4_SYSV_ABI BbscDreamTalkHook(u64 /*tag*/, const GuestRegisterSnapshot* re
         return; // host, solo, or no evaluator: nothing was refused
     }
     const u32 talk = ReadValue<u32>(condition, 0x10);
+    if (BbscWorldTalkAllowed(talk)) {
+        WriteValue<u8>(condition, 0x25, 0);
+        return;
+    }
     if (BbscDreamOwnEnabled() && BbscGuestInHostWorld()) {
         for (size_t i = 0; i < BbscDreamOwnGuestTalks.size(); ++i) {
             if (BbscDreamOwnGuestTalks[i].id != talk) {
@@ -17734,6 +17789,7 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
     if (registers == nullptr) {
         return;
     }
+    QueueBbscWorldAltarWrite(static_cast<u32>(registers->rsi),1,static_cast<u32>(registers->rdx));
     if (BbscProtectChaliceAltar(static_cast<u32>(registers->rsi))) {
         bbsc_setflag_skip = 1;
         return;
@@ -17758,6 +17814,11 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
         bbsc_action_owner[static_cast<u32>(registers->rsi)] = true;
     }
     NoteBbscNpcOwnFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
+    if (caller_offset == BbscTalkSetFlagReturnOffset &&
+        QueueBbscWorldTravel(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx))) {
+        bbsc_setflag_skip = 1;
+        return;
+    }
     if (caller_offset == BbscTalkSetFlagReturnOffset) {
         NoteBbscLocalTalkFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
     }
@@ -19791,6 +19852,7 @@ s32 GetBbscGuestCount() {
 // so enemies spawned in that window got no scaling. Outside a session it is 0; inside, the higher of
 // the game's count and the member count ([[global+0x16F8]+0x18], self included) minus one.
 s32 GetBbscScalingGuests() {
+    if (BbscIndependentActive()) return static_cast<s32>(BbscWorldParticipantsHere());
     const s32 state = GetSessionState();
     if (state != 3 && state != 6) {
         return 0;
@@ -21483,8 +21545,7 @@ BbscMod::RegisterIdentity ReadBbscRegisterIdentity(u64 chr) {
     return identity;
 }
 
-// First integration gate for independent travel: real P2P world/map observations
-// without changing the native session, lamps, saves or current follow policy.
+// Room-scoped observations drive negotiated travel and per-map authority.
 void TickBbscWorldPresence() {
     static s64 last_send = 0;
     static u64 sequence = 0;
@@ -21515,7 +21576,7 @@ void TickBbscWorldPresence() {
         }
         if (world != previous) {
             bbsc_world_place.Clear();
-            LOG_INFO(Debug, "BBSC world presence: bound host={:08x} room={:08x} (metadata only)",
+            LOG_INFO(Debug, "BBSC world presence: bound host={:08x} room={:08x}",
                      world.host, world.room);
         }
         bbsc_world_presence_book.Bind(world, self);
@@ -21528,12 +21589,15 @@ void TickBbscWorldPresence() {
                                 std::isfinite(transform->position[2]);
         bbsc_world_place.Observe(GetCurrentPackedMap(), loading, positioned, now);
         next.world = world;
+        next.capabilities = BbscIndependentCapabilities();
         next.phase = departing ? World::Phase::Leaving : bbsc_world_place.State();
         next.map = bbsc_world_place.Map();
         next.visit = bbsc_world_place.Visit();
-        if (Chalice::IsMap(next.map)) next.dungeon = ReadBbscChaliceKey();
-        // Ritual identity is supplied by the forthcoming host altar catalog;
-        // until then an m29 observation cannot authorize shared simulation.
+        if (Chalice::IsMap(next.map)) {
+            next.dungeon = BbscIndependentDungeonKey(ReadBbscChaliceKey());
+            next.ritual = BbscIndependentRitual(next.dungeon);
+        }
+        // m29 authority needs the complete catalog identity and ritual incarnation.
         if (positioned && next.phase == World::Phase::Playing) {
             next.x = transform->position[0];
             next.y = transform->position[1];
@@ -22864,6 +22928,8 @@ bool BbscEssentialDiagnosticSite(const TraceSite& site) {
            (site.kind == TraceKind::MatchingLeaveDecision && !site.name.starts_with("BBSC.Items."));
 }
 
+#include "core/bbsc_independent_world.inc"
+
 void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     if (tag >= Sites.size() || registers == nullptr) {
         return;
@@ -22997,6 +23063,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         RefreshBbscLocalOnlineIdentity(); // current login before signs and insertion replication
 #ifdef BBSC_MOD
         TickBbscWorldPresence();
+        TickBbscIndependentWorld();
         if (BbscMod::PartyEnabled()) {
             TickBbscPartyRole();
             TickBbscPartyItem();
@@ -24233,6 +24300,7 @@ void OnBbscCutsceneRequestHook(u64 offset, const GuestRegisterSnapshot& register
 } // namespace
 
 void OnBbscCutscenePacket(const void* data, std::size_t size) {
+    if (BbscIndependentActive() && !BbscWorldPeerHere(GetBbscRelayHost())) return;
     if (data == nullptr || size < sizeof(BbscCutscenePacket) || !BbscCutscenesEnabled()) {
         return;
     }
@@ -24357,6 +24425,11 @@ void TickBbscCainhurstReveal() {
 }
 
 namespace {
+void DiscardBbscWorldScenes() {
+    std::scoped_lock lock{bbsc_cutscene_mutex};
+    bbsc_cutscene_queue.clear();
+}
+
 void TickBbscCutsceneReplay() {
     // A fast host may finish an intro before the guest. Do not arm an ending on
     // top of the guest's previous scene, or its completion would end the trip early.
@@ -24530,11 +24603,25 @@ void OnBbscExplicitSessionLeave(std::uint32_t player, bool host) {
     OnBbscPeerLeft(player,host);
 }
 
+void OnBbscWorldControlPacket(std::uint32_t sender, std::uint32_t session,
+                              const void* data, std::size_t size) {
+    if(!data || !sender || !session) return;
+    const std::span<const u8> bytes{static_cast<const u8*>(data),size};
+    const auto control=World::DecodeControl(bytes);
+    if(!control || control->scope.world.host!=session) return;
+    {
+        std::scoped_lock lock{bbsc_world_presence_mutex};
+        if(control->scope.world!=bbsc_world_presence_local.world) return;
+    }
+    ProcessBbscWorldControl(sender,*control,bytes.subspan(sizeof(World::Control)));
+}
+
 void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,
                                const void* data, std::size_t size) {
     if (!data || !sender || !session) return;
     const auto decoded = World::Decode({static_cast<const u8*>(data), size});
     if (!decoded || decoded->world.host != session) return;
+    {
     std::scoped_lock lock{bbsc_world_presence_mutex};
     const auto* previous = bbsc_world_presence_book.Find(sender, SteadyNowMs());
     const bool changed = !previous || previous->presence.map != decoded->map ||
@@ -24544,6 +24631,8 @@ void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,
     if (bbsc_world_presence_book.Hear(sender, decoded->world, *decoded, SteadyNowMs()) && changed)
         LOG_INFO(Debug, "BBSC world presence: peer={:08x} phase={} map={:#x} visit={} alive={}",
                  sender, static_cast<u8>(decoded->phase), decoded->map, decoded->visit, decoded->alive);
+    }
+    BbscWorldCoordinate();
 }
 
 void OnBbscPeerLeft(std::uint32_t player, bool host) {
@@ -25695,6 +25784,7 @@ void InstallReverseEngineeringTrace() {
                               std::span<const u8>{RemoStartStore}, 0, BbscRemoStartedHook))
         LOG_ERROR(Debug, "BBSC Dream finale: native Remo start hook unavailable");
     InstallBbscChaliceHooks();
+    InstallBbscIndependentWorld();
     InstallBbscFloorGuardAndPickupTrace();
     InstallBbscLocalKeyBankHook();
     InstallBbscItemResearchHooks();

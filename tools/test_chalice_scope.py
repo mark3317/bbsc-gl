@@ -98,6 +98,13 @@ s64 SteadyNowMs() { return now; }
 constexpr s64 BbscFollowStaleMs=15000;
 bool BbscWarpTogetherEnabled() { return true; }
 bool quitting=false; bool BbscQuitInProgress(){return quitting;}
+bool BbscIndependentActive(){return false;}
+bool BbscWorldTravelInFlight(){return false;}
+bool BbscWorldMountFor(u32,Chalice::Mount&){return false;}
+bool BbscWorldHasSnapshot(u32){return false;}
+bool BbscWorldProtectAltar(u32,u32){return false;}
+void QueueBbscWorldAltarWrite(u32,u32,u32){}
+
 bool BbscMapResident(u32){return false;}
 u32 relay_host=9; u32 GetBbscRelayHost(){return relay_host;}
 bool IsSprjLuaEventManReady(){return true;}
