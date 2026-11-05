@@ -18,6 +18,12 @@ cross-room differences in the upper32 bits, rather than stubbing an invented
 nonzero local member room. Added release-visible timeline gate diagnostics.
 This corrects activation; a new game result is still required.
 
+Fixf398e01 built and staged exit0, both old profiles closed by user. Restart
+18:13:39 MSK; P1 run_20261105_181406.log/P2 run_20261105_181403.log confirm
+both new hook sets ready, plus34/34 baseline hooks and local relay connection.
+Backup independent-native-room-20261105-181339. Native activation/admission after
+restart remains to be observed; no computer-use or game input sent.
+
 Branch (parent and BBSC): `codex/independent-world-travel`, based on BBSC `bdd59b7`.
 User authorized implementation and a two-profile launch on this PC.
 
