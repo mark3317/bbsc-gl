@@ -79,3 +79,10 @@ First gate: `tools/test_world_presence.py`, `tools/test_world_presence_bridge.py
 `tools/test_relay_dispatch.py`, `tools/test_session_register.py` PASS.
 Build, isolated two-profile startup and gameplay statuses are recorded separately
 in the parent run record; no successful fixture closes the feature.
+
+First-gate DLL build and delta preparation exit=0. Started from the isolated
+parent `out/stage/Bloodborne Game Launcher` runtime with existing Player 1/2
+profiles at16:58:42 MSK. Native PID25140/11776, fresh user/run logs16:59:11/09,
+34/34 selected hooks on both. Main installation unchanged; backup
+`D:/Games/Bloodborne/coop-dev/backups/independent-world-stage-20261105-165841`.
+Connection/presence exchange and the full independent-travel feature remain OPEN.

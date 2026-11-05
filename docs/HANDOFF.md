@@ -2,7 +2,9 @@
 
 User authorized implementation on `codex/independent-world-travel` and a two-profile
 PC launch. World/place presence bridge and pure owner/routing/guest-altar rules
-are implemented and targeted fixtures PASS. Live capability is metadata ONLY:
+are implemented and targeted fixtures PASS. DLL build/delta exit0; isolated staging Player1/2 startup confirmed16:59 MSK
+(PID25140/11776,34/34 hooks each); connection unconfirmed. Main install unchanged.
+Live capability is metadata ONLY:
 free travel, native AI handover and the host altar UI are NOT implemented yet.
 Host-world guests must see host chalices; own world keeps personal altars.
 [Implementation and remaining work](fixes/2026-11-05-independent-world-travel.md).
