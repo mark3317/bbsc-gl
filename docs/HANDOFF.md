@@ -1,5 +1,14 @@
 ## 05.11.2026 — correct native warp entry and original altar commands
 
+Source25405ed DLL build exit0; isolated stage delta exit0. Backup:
+D:/Games/Bloodborne/coop-dev/backups/native-entry-20261105-205005.
+Both requested profiles launched20:50:06 MSK: P1 run_20261105_205032.log
+(native19808), P2 run_20261105_205028.log (native9172). Both independent
+enemy/travel hooks true and local relay connected. Startup only confirmed;
+altar menu/transition, actual native warp callback, reunion models and late
+world admission still require gameplay verification. Main installation unchanged.
+Evidence: parent out/coop-dev/runs/independent-native-entry-20261105.
+
 Fixes the two confirmed native-flow defects from20:33 run. Functional travel
 entry is013CDF30, actual EMEVD2003[49] target, point argument EDI. FirstSync
 reinsertion arms at that native stage request, including original unqueued
