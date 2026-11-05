@@ -1,5 +1,13 @@
 # Independent travel — development branch, 05.11.2026
 
+Final source c5b3b54: DLL rebuild and isolated-stage delta exit0. Backup
+independent-native-arrival-20261105-194509. Requested two-profile startup
+19:45:09 MSK: P1 run_20261105_194536.log/native16036, P2 run_20261105_194532.log/
+native14328. Both enemy/travel hooks ready, local relay connected; no startup
+fault. Native menu opening, independent return, actual models and late-join enemy
+state still require manual gameplay confirmation. Main installation unchanged.
+Evidence: parent out/coop-dev/runs/independent-native-arrival-20261105.
+
 Altar menu follow-up: checked original installed m21 ESDs read-only. t210050
 uses c1_78; t210060..210110 use c1_79 for occupied as well as empty altars.
 The previous79->no-op rule directly blocked ordinary altar menus. Occupied
