@@ -1,4 +1,16 @@
-## 05.11.2026 — independent travel: first integration gate, development branch
+## 05.11.2026 — independent travel: native integration, development branch
+
+`codex/independent-world-travel`, source73d84d3: implemented per-map native enemy
+authority, scoped HP/hits/state, independent local lamp requests, seven host
+altar records and guest layer selection. Remote native task modes1/2 are used
+for capability negotiation (self tasks0/3 excluded). Native fixtures, original
+ELF hook spans and full MOD syntax PASS. First native DLL build exit0; rebuilding
+the negotiation fix before isolated two-profile connection testing. Gameplay OPEN.
+See [implementation and verification](fixes/2026-11-05-independent-world-travel.md).
+Personal altar view is journaled, special ritual mutation UI remains host-only;
+host exit still ends the session. Do not infer gameplay PASS from fixture/build.
+
+### Historical first gate
 
 User authorized implementation on `codex/independent-world-travel` and a two-profile
 PC launch. World/place presence bridge and pure owner/routing/guest-altar rules
