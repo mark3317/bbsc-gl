@@ -28,6 +28,7 @@ PREFIX=r'''
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
+#define BBSC_TIMELINE(...)
 struct BbscWorldEnemy {u32 handle=0;s32 hp=0,max=0;float x=0,y=0,z=0,heading=0;u8 fighting=0;std::array<u8,3> padding{};};
 u64 image_base=0;int kills=0;int hp_calls=0,warps=0; s32 latest_hp=-1;
 bool ReadablePointer(u64 p,size_t){return p>=0x10000;}

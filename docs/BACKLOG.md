@@ -1,3 +1,30 @@
+## 05.11.2026 — delayed historical enemy death, diagnosis/logging ONLY
+
+User reports first Yharnam resident killed one enemy; late arrival sees a living,
+inert/invulnerable model, which later falls dead WHILE BOTH remain nearby. Thus
+20:58:01 owner departure/takeover does not explain that recovery. Run25405ed:
+guest P2 arrives20:54:29.870; host P1 arrives20:54:52.034, baseline40 at20:54:53.301.
+No per-enemy index/HP/death result was logged in that build, so exact actor and
+time of recovery cannot be reconstructed. Do not claim a proven actor-specific
+cause or that actor-count batches imply repeated resets of the same enemy.
+
+Confirmed code hazards: TakeEnemy sets HP and calls018BF9A0, then SeedEnemies
+unconditionally marks actor seeded. Original native Kill returns at018BFAC6
+when [[chr+18]+30]+18 bit0 is set, BEFORE setting death byte1E3 at018BFAD3.
+Thus calling Kill does not prove death began on a network proxy. Seeded actor
+is never rechecked; later live->dead owner snapshot also cannot revise its
+already-seeded status. These defects can produce a frozen HP0 model until a
+native update completes death; the current logs cannot prove which path fired.
+
+Added source-only per-historical-dead-actor index/pointer, resulting HP,
+before/after death byte and native proxy flags. No behaviour change in this
+turn: do not add blind repeated kills, hide models or steal AI authority.
+Existing takeover ABI/alignment/dead-path fixture PASS; it stubs Kill and is NOT
+proof of the game's proxy death behaviour. Needs exact next-run evidence/native
+initial-state investigation. User's NO BUILD instruction remains active; no
+DLL build, deployment, restart, game inputs or memory writes. Read-only current
+inspection happened after owner moved to Dream, not during the reported ghost.
+
 ## 05.11.2026 — chalice lamp access corrected, SOURCE ONLY / build deferred
 
 User still testing25405ed; explicitly requests NO build yet. Do not build/deploy
