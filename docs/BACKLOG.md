@@ -1,4 +1,12 @@
-## 05.11.2026 — independent travel: first integration gate, development branch
+## 05.11.2026 — independent travel: native integration, development branch
+
+Source73d84d3 implements native per-map ownership, scoped state transfer, local
+lamp loads and host altar travel. Targeted native/model fixtures PASS; first
+DLL build exit0, negotiation-fix rebuild and isolated two-profile connection
+test pending. Full game scenarios remain OPEN. See
+[implementation](fixes/2026-11-05-independent-world-travel.md).
+
+### Historical first gate
 
 User authorized implementation on `codex/independent-world-travel` and a two-profile
 PC launch. World/place presence bridge and pure owner/routing/guest-altar rules
