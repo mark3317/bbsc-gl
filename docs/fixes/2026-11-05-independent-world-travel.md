@@ -1,5 +1,13 @@
 # Independent travel — development branch, 05.11.2026
 
+Build/deploy/start result: source f8e7bf6 DLL build and isolated-stage delta
+both exit0. Backup independent-player-lifecycle-20261105-190858. Two profiles
+started19:08:58 MSK; native processes16252/12892, fresh run_20261105_190922.log
+(P2) and run_20261105_190926.log (P1). Both report enemy/travel hooks ready and
+local relay connected. Startup succeeds; actual co-op interaction/model/flicker
+confirmation remains OPEN. No computer-use, save edits, or game termination.
+Evidence: parent out/coop-dev/runs/independent-player-lifecycle-20261105.
+
 ## 05.11.2026 — Dream lamps, command ownership and per-peer model lifecycle
 
 18:39 check: no-follow remains confirmed, but guest headstone list is empty,
