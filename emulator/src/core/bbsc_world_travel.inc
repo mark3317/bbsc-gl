@@ -114,11 +114,11 @@ void PS4_SYSV_ABI BbscWorldAltarCommand(u64,const GuestRegisterSnapshot* regs){
     if(talk<210050 || talk>210110 || (talk-210050)%10)return;
     auto* r=const_cast<GuestRegisterSnapshot*>(regs);
     if(r->rax!=78 && r->rax!=79)return;
-    // Original t210050 uses78; all six ordinary altars use79 EVEN WHEN
-    // occupied. Both scripts already build the layer choices with c1_19.
-    // Native headstone41 opens those choices without ritual-edit actions.
-    r->rax=BbscWorldTalkAllowed(talk)?41:88;
-    BBSC_TIMELINE("TRAVEL","guest altar menu talk={} slot={} command={} occupied={}",
+    // Preserve the original zero-argument command and native async result.
+    // 41 requires ONE argument: changing only the id exits at02040E1B
+    // before opening anything. It is not an interchangeable list opener.
+    if(!BbscWorldTalkAllowed(talk))r->rax=88;
+    BBSC_TIMELINE("TRAVEL","guest native altar menu talk={} slot={} command={} occupied={}",
         talk,(talk-210050)/10,r->rax,bbsc_world_catalog_ready.load() && bbsc_world_altars[(talk-210050)/10].entry.occupied);
 }
 void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
@@ -129,14 +129,18 @@ void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
 
 bool QueueBbscWorldTravel(u32 flag,u8 value) {
     if(!value || !BbscIndependentTravelAllowed() || !BbscWorldTravelFlag(flag))return false;
-    if(!BbscWorldSceneReady())return true;
+    const auto reject=[&](const char* reason){
+        BBSC_TIMELINE("TRAVEL","local travel rejected flag={} talk={} reason={}",flag,bbsc_world_command_talk,reason);
+        return true;
+    };
+    if(!BbscWorldSceneReady())return reject("scene-not-ready");
     if(GetSessionState()!=3 && GetSessionState()!=6)return false;
-    if(!bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return true;
+    if(!bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return reject("missing-local-executor");
     const u32 talk=bbsc_world_command_talk;
     const bool device=std::ranges::find(LampTravel::Talks,talk)!=LampTravel::Talks.end() ||
         (talk>=210050 && talk<=210110 && (talk-210050)%10==0) || (talk/10000==29 && talk%1000<100);
     if(SteadyNowMs()-bbsc_world_command_seen>1000 || !device ||
-       (GetSessionState()==6 && !BbscWorldTalkAllowed(talk)))return true;
+       (GetSessionState()==6 && !BbscWorldTalkAllowed(talk)))return reject("device-context");
     s32 point=0,slot=-1;
     if(flag>=70000200 && flag<70000210)point=2102950;
     for(const auto& destination:LampTravel::Returns)if(destination.flag==flag){point=destination.point;break;}
@@ -150,18 +154,19 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
         bbsc_world_altar_visiting=chosen;bbsc_world_requested_mount=bbsc_world_altars[chosen].mount;
         // Native12107100 prepares the selected altar, plays its animation and
         // clears this flag. Only then does the ESD offer the layer request.
+        BBSC_TIMELINE("TRAVEL","native altar selected slot={} flag={} ritual={}",chosen,flag,bbsc_world_altars[chosen].entry.ritual);
         return false;
     }
     if(flag>=72100300 && flag<72100310){
         bbsc_world_travel_layer=flag-72100300;slot=bbsc_world_travel_altar_pending;
         bbsc_world_travel_altar_pending=-1;
-        if(slot<0)return true;
+        if(slot<0)return reject("layer-without-altar");
         point=2902950+bbsc_world_travel_layer;
     }
     if(!point)return false;
     // Consume duplicates/rejected local travel commands as well. They must not
     // replicate into the host's native event script and move another player.
-    if(bbsc_world_travel_point || bbsc_world_travel_inflight || GetCharacterHp(GetLocalPlayerCharacter())<=0)return true;
+    if(bbsc_world_travel_point || bbsc_world_travel_inflight || GetCharacterHp(GetLocalPlayerCharacter())<=0)return reject("busy-or-dead");
     World::Scope scope;
     {std::scoped_lock lock{bbsc_world_presence_mutex};scope.world=bbsc_world_presence_local.world;}
     if(slot>=0){
@@ -169,7 +174,7 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
            bbsc_world_travel_layer<0 || bbsc_world_travel_layer>9)return true;
         // Hall is unconditional; subsequent layers use the original native
         // lamp flags, which the guest menu already reads from the host view.
-        if(bbsc_world_travel_layer && !BbscEventFlag(12907810+bbsc_world_travel_layer*20))return true;
+        if(bbsc_world_travel_layer && !BbscEventFlag(12907810+bbsc_world_travel_layer*20))return reject("layer-locked");
         bbsc_world_altar_visiting=slot;
         bbsc_world_requested_mount=bbsc_world_altars[slot].mount;
         scope.map=0x1D000000;scope.dungeon=bbsc_world_requested_mount->key;
@@ -217,11 +222,14 @@ void EnableBbscNativeTravelEvent(u64 instance) {
 }
 
 void BbscWorldNativeWarpBegin(const GuestRegisterSnapshot* regs) {
-    if(!regs || !BbscIndependentTravelAllowed() || !bbsc_world_travel_inflight || bbsc_world_travel_native_armed)return;
+    if(!regs || !BbscIndependentTravelAllowed() || (GetSessionState()!=3 && GetSessionState()!=6))return;
+    if(bbsc_world_travel_inflight && bbsc_world_travel_native_armed)return;
+    // EMEVD2003[49] calls013CDF30(point in EDI), bypassing the Lua wrapper
+    // 0132E050(point in ESI). Cover original unqueued returns to Dream too.
     bbsc_world_travel_native_armed=true;
     ArmBbscReinsertV8(); // native FirstSync begins with the stage request, never during its animation
-    BBSC_TIMELINE("TRAVEL","native stage request point={} selected={} map={:#x}",static_cast<s32>(regs->rsi),
-        bbsc_world_travel_point,bbsc_world_requested_scope?bbsc_world_requested_scope->map:0);
+    BBSC_TIMELINE("TRAVEL","native stage request point={} selected={} queued={} map={:#x}",static_cast<s32>(regs->rdi),
+        bbsc_world_travel_point,bbsc_world_travel_inflight,bbsc_world_requested_scope?bbsc_world_requested_scope->map:0);
 }
 
 void TickBbscWorldTravel() {

@@ -1,3 +1,23 @@
+## 05.11.2026 — correct native warp entry and original altar commands
+
+Fixes the two confirmed native-flow defects from20:33 run. Functional travel
+entry is013CDF30, actual EMEVD2003[49] target, point argument EDI. FirstSync
+reinsertion arms at that native stage request, including original unqueued
+returns to Dream; original animation/waits remain untouched. Guest occupied
+altars retain original zero-argument78/79 and native asynchronous menu result.
+Removed incompatible78/79->41 substitution: native41 requires one argument
+and rejected the original command before opening any UI. Empty/unready guest
+altars remain denied; host commands unchanged.
+
+Added bounded-by-command logs: native altar selection/ritual, local travel
+rejection reason, actual warp point and queued/untracked status. Existing
+native event release/arrival/admission logs give the remaining sequence.
+Production fixtures, all seven original zero-argument altar ESDs, original
+animation order, actual2003[49] jump-table/call target/EDI ABI, native41 argument
+check and trampoline PASS. These checks do not establish visible UI/models or
+successful gameplay. Build/deploy/start and game results recorded separately.
+No computer-use, game asset edits, save rollback or process termination.
+
 ## 05.11.2026 — native travel events and pre-event native admission
 
 Source420c200 DLL build/delta exit0. Backup independent-native-flow-20261105-
