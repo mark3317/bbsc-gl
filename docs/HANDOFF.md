@@ -1,3 +1,26 @@
+## 05.11.2026 — independent travel partial game confirmation; Dream device admission corrected
+
+18:25 run (P1 host/P2 guest): active18:26:26; host left Dream for Yharnam and
+returned, later entered a chalice, guest remained in Dream. User confirms no
+follow. Guest took Dream authority with30 retained enemies; no recurrence of
+Warp crash. Both exit0 at18:36 after explicit host leave18:35:49; relay drops0.
+Guest devices still refused; host Yharnam headstone prompt flickered (user).
+
+Read-only live proof: talk210000 evaluator1013BD9A30 has device actor1013BD9940,
+NOT local PlayerIns1013C69060. The actor==local gate wrongly refused lamps,
+headstones and altars. Admit audited device actors, exclude resident REMOTE
+PlayerIns, keep existing quest/empty-altar gates. Fixture now uses device actor.
+
+World updates also replayed dedicated Dream state twice per500ms on both sides,
+and could apply an owner's returned flag echo. Dream phase stays on its existing
+host-only path; flags apply only from completed flag messages to followers,
+not enemy messages/current-owner echoes. Native object correction2F is owner-
+only so a returning host cannot reset the guest map owner's objects. These
+changes address competing state; visual flicker confirmation still OPEN.
+Device/remote-player, catalog/Dream isolation, native object owner/echo fixtures
+and MOD syntax PASS. Preparing DLL + two-profile launch per user. Evidence:
+parent out/coop-dev/runs/independent-dream-devices-20261105-1830.
+
 ## 05.11.2026 — independent activation confirmed; lamp ABI and takeover crash fixed in source
 
 P1 host/P2 guest18:14 run: both `independent world active`18:15:12. No guest

@@ -15,6 +15,12 @@ thread_local s32 bbsc_world_esd_function=-1;
 thread_local u64 bbsc_world_esd_actor=0;
 thread_local u32 bbsc_world_esd_talk=0;
 
+bool BbscWorldTravelActorAllowed() {
+    // A lamp/headstone/altar has its OWN native actor; it is not PlayerIns.
+    // Only a resident remote PLAYER copy must not issue our local journey.
+    return bbsc_world_esd_actor && !BbscRegisterRemotePlayer(bbsc_world_esd_actor);
+}
+
 bool BbscWorldTravelInFlight(){return bbsc_world_travel_inflight;}
 bool BbscWorldTalkAllowed(u32 talk) {
     if(!BbscIndependentTravelAllowed() || GetSessionState()!=6 || !BbscOwnOpeningDone())return false;
@@ -31,13 +37,16 @@ void PS4_SYSV_ABI BbscWorldLampMultiplayer(u64,const GuestRegisterSnapshot* regs
     if(!regs)return;
     const bool host=GetSessionState()==3 && GetLocalPlayerType()==0 &&
         Core::Bbsc::SwitchEnabled("SHADPS4_BBSC_LAMP");
-    const bool guest=bbsc_world_esd_actor==GetLocalPlayerCharacter() && BbscWorldTalkAllowed(bbsc_world_esd_talk);
+    const bool guest=BbscWorldTravelActorAllowed() && BbscWorldTalkAllowed(bbsc_world_esd_talk);
+    if(guest){static std::atomic<bool> logged{false};if(!logged.exchange(true))
+        BBSC_TIMELINE("TRAVEL","guest lamp gate admitted talk={} actor={}",bbsc_world_esd_talk,
+            bbsc_world_esd_actor==GetLocalPlayerCharacter()?"player":"device");}
     if(host || guest){auto* r=const_cast<GuestRegisterSnapshot*>(regs);r->rax&=~u64{0xFF};r->rcx&=~u64{0xFF};}
 }
 void PS4_SYSV_ABI BbscWorldLampTalker(u64,const GuestRegisterSnapshot* regs) {
     // The dispatcher saved its evaluator (RSI) in R15 and its result (RDI)
     // in R12. Use the entry snapshot: the switch also reuses R15 as scratch.
-    if(!regs || bbsc_world_esd_actor!=GetLocalPlayerCharacter())return;
+    if(!regs || !BbscWorldTravelActorAllowed())return;
     if(BbscWorldTalkAllowed(bbsc_world_esd_talk))
         const_cast<GuestRegisterSnapshot*>(regs)->r15=reinterpret_cast<u64>(bbsc_world_live_talk.data());
 }
@@ -54,12 +63,12 @@ void PS4_SYSV_ABI BbscWorldEsdResult(u64,const GuestRegisterSnapshot* regs){
     // The altar's sole f47 is the missing Ritual Blood Workshop Tool check.
     // A visitor uses the occupied host altar, without receiving a personal item.
     if(bbsc_world_esd_function==47 && !(talk>=210050 && talk<=210110 && (talk-210050)%10==0))return;
-    if(bbsc_world_esd_actor==GetLocalPlayerCharacter() && BbscWorldTalkAllowed(talk))
+    if(BbscWorldTravelActorAllowed() && BbscWorldTalkAllowed(talk))
         const_cast<GuestRegisterSnapshot*>(regs)->rax&=~u64{0xFF};
 }
 void PS4_SYSV_ABI BbscWorldAltarCommand(u64,const GuestRegisterSnapshot* regs){
     if(!regs || GetSessionState()!=6 || !BbscIndependentTravelAllowed() ||
-       bbsc_world_esd_actor!=GetLocalPlayerCharacter())return;
+       !BbscWorldTravelActorAllowed())return;
     const u32 talk=bbsc_world_travel_talk.load();
     if(talk<210050 || talk>210110 || (talk-210050)%10 ||
        SteadyNowMs()-bbsc_world_travel_talk_seen.load()>1000 || !BbscWorldTalkAllowed(talk))return;
@@ -80,7 +89,7 @@ void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
 bool QueueBbscWorldTravel(u32 flag,u8 value) {
     if(!value || !BbscIndependentTravelAllowed())return false;
     if(GetSessionState()==3)return false;
-    if(GetSessionState()!=6 || bbsc_world_esd_actor!=GetLocalPlayerCharacter())return false;
+    if(GetSessionState()!=6 || !BbscWorldTravelActorAllowed())return false;
     const u32 talk=bbsc_world_travel_talk.load();
     if(SteadyNowMs()-bbsc_world_travel_talk_seen.load()>1000 || !BbscWorldTalkAllowed(talk))return false;
     s32 point=0,slot=-1;

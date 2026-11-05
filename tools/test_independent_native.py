@@ -78,6 +78,10 @@ int main(){
     assert(bbsc_independent_send_skip); // own hit already applied
     bbsc_independent_send_skip=0;r.rdx=0x04;bbsc_independent_role=2;BbscWorldPacketSend(0,&r);
     assert(bbsc_independent_send_skip); // followers don't send another HP/position authority
+    r.rdx=0x2F;bbsc_independent_send_skip=0;BbscWorldPacketSend(0,&r);
+    assert(bbsc_independent_send_skip); // a returning native host cannot reset the map owner's objects
+    bbsc_independent_role=1;bbsc_independent_send_skip=0;BbscWorldPacketSend(0,&r);
+    assert(!bbsc_independent_send_skip);bbsc_independent_role=2;
     for(u32 ch:{0x16u,0x17u,0x2Cu}){r.rdx=ch;bbsc_independent_send_skip=0;BbscWorldPacketSend(0,&r);assert(bbsc_independent_send_skip);}
     const s32 host=3,guest=6;std::memcpy(bbsc_world_host_state.data()+0x124,&host,4);
     std::memcpy(bbsc_world_guest_state.data()+0x124,&guest,4);
@@ -100,6 +104,16 @@ int main(){
     bad=c;bad.epoch=6;assert(!owners.Take(11,bad,12));
     bad=c;bad.epoch=8;bad.owner=33;assert(owners.Take(11,bad,13));
     owners.Bind({11,100});assert(!owners.Find(c.scope));assert(!owners.Take(11,c,14));
+    c.kind=World::ControlKind::Flags;const auto current=c.scope;
+    assert(World::ShouldApplyFlags(c,current,11,22,false,true)); // follower applies complete owner flags
+    assert(!World::ShouldApplyFlags(c,current,22,22,false,true)); // owner ignores its returned echo
+    assert(!World::ShouldApplyFlags(c,current,11,22,false,false)); // incomplete snapshot
+    c.kind=World::ControlKind::Enemies;assert(!World::ShouldApplyFlags(c,current,11,22,false,true));
+    c.kind=World::ControlKind::Flags;c.scope.map=0x15000000;
+    assert(!World::ShouldApplyFlags(c,current,11,22,true,true)); // host also keeps dedicated Dream authority
+    c.scope.map=0x19000000;assert(World::ShouldApplyFlags(c,current,11,22,true,true));
+    assert(!World::ShouldApplyFlags(c,current,11,22,false,true)); // off-map guest
+    c.scope.world.room++;assert(!World::ShouldApplyFlags(c,current,11,22,true,true));
 }
 '''
 

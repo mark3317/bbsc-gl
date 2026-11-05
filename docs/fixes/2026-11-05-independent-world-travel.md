@@ -1,5 +1,29 @@
 # Independent travel — development branch, 05.11.2026
 
+## Third gameplay check: actual device actors and competing state
+
+18:25 run reaches active18:26:26. P1 travels out/back and to a chalice, P2 stays
+in Dream; user confirms independent separation. P2 takes Dream authority and
+restores30 enemies without the previous Warp fault. Both native exits0 after
+explicit host leave18:35:49, no relay drops/new native faults. Stubbed NP/SSL
+messages are existing API placeholders; guest own-world warning belongs to
+recovery from the preceding crash, and leave warning to the eventual home load.
+
+Read-only inspection of guest talk210000 shows its evaluator at1013BD9A30 points
+to device actor1013BD9940, distinct from local player1013C69060. Real devices
+were excluded by actor==local. Guard now permits audited non-remote actors,
+retaining rejection of resident remote PlayerIns/quest scripts/empty host altars.
+Fixture uses a separate device object and still exercises remote-player rejection.
+
+Host prompt flicker is reported, not captured visually. Competing writes were
+found: owner snapshot echoes reapplied to their producer, Dream services replayed
+twice every500ms (also from enemy messages), and native host object corrections
+could reset another map owner's objects. Dedicated Dream phase stays host-only,
+flag application rejects owner echoes and enemy packets, native2F corrections
+are owner-only. Visual result remains OPEN. Catalog/gate readiness gains one-shot
+timeline records, not per-frame logging. Targeted production fixtures/syntax PASS.
+Evidence: parent out/coop-dev/runs/independent-dream-devices-20261105-1830.
+
 ## Second gameplay failure: lamp dispatch ABI and aligned Warp
 
 Both profiles negotiate active18:15:12 after the room fix; guest lamp requests

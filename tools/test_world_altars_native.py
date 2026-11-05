@@ -23,6 +23,7 @@ using namespace Core::Bloodborne;
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 #define LOG_INFO(...)
+#define BBSC_TIMELINE(...)
 constexpr u64 WorldFlagManPointerOffset=0x553B100;
 constexpr u32 BbscDreamStateMap=0x15000000;
 bool active=true;s32 session=6;
@@ -85,7 +86,7 @@ int main(){
  World::Scope scope{{11,99},0x18000000,{},0};BbscWorldApplyFlags(scope,state);
  assert(own_kept[20000][0]==0x80&&groups[20000][0]==0x91&&groups[20000][1]==0x11);
  const auto personal=own_kept;scope.map=0x15000000;BbscWorldApplyFlags(scope,state);
- assert(dream_calls==1&&own_kept==personal); // Dream gifts remain on the existing personal path
+ assert(dream_calls==0&&own_kept==personal); // map snapshots never replay Dream services/phase
  bbsc_world_presence_local.world={11,99};bbsc_world_guest_altars.Bind({11,99});
  for(u8 slot=0;slot<7;++slot){
   BbscWorldAltarWire wire;wire.slot=slot;wire.current=3;wire.revision=10;wire.ritual=8+slot+1;
