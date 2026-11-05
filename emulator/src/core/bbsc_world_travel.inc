@@ -13,6 +13,7 @@ alignas(16) std::array<u64,8> bbsc_world_live_talk{};
 alignas(16) std::array<u8,0x88> bbsc_world_bonfire_phase{};
 thread_local s32 bbsc_world_esd_function=-1;
 thread_local u64 bbsc_world_esd_actor=0;
+thread_local u32 bbsc_world_esd_talk=0;
 
 bool BbscWorldTravelInFlight(){return bbsc_world_travel_inflight;}
 bool BbscWorldTalkAllowed(u32 talk) {
@@ -28,34 +29,32 @@ bool BbscWorldTalkAllowed(u32 talk) {
 }
 void PS4_SYSV_ABI BbscWorldLampMultiplayer(u64,const GuestRegisterSnapshot* regs) {
     if(!regs)return;
-    const u64 condition=regs->r12;
     const bool host=GetSessionState()==3 && GetLocalPlayerType()==0 &&
         Core::Bbsc::SwitchEnabled("SHADPS4_BBSC_LAMP");
-    const bool guest=ReadablePointer(condition,0x30) &&
-        ReadValue<u64>(condition,0)==image_base+TalkConditionVtableOffset &&
-        BbscWorldTalkAllowed(ReadValue<u32>(condition,0x10));
+    const bool guest=bbsc_world_esd_actor==GetLocalPlayerCharacter() && BbscWorldTalkAllowed(bbsc_world_esd_talk);
     if(host || guest){auto* r=const_cast<GuestRegisterSnapshot*>(regs);r->rax&=~u64{0xFF};r->rcx&=~u64{0xFF};}
 }
 void PS4_SYSV_ABI BbscWorldLampTalker(u64,const GuestRegisterSnapshot* regs) {
-    // R12 is the condition evaluator; R15 is the actor context, whose +10 is
-    // an ENTITY id rather than the ESD talk id (verified in 0203AD60).
-    if(!regs || !ReadablePointer(regs->r12,0x30) ||
-       ReadValue<u64>(regs->r12,0)!=image_base+TalkConditionVtableOffset)return;
-    if(BbscWorldTalkAllowed(ReadValue<u32>(regs->r12,0x10)))
+    // The dispatcher saved its evaluator (RSI) in R15 and its result (RDI)
+    // in R12. Use the entry snapshot: the switch also reuses R15 as scratch.
+    if(!regs || bbsc_world_esd_actor!=GetLocalPlayerCharacter())return;
+    if(BbscWorldTalkAllowed(bbsc_world_esd_talk))
         const_cast<GuestRegisterSnapshot*>(regs)->r15=reinterpret_cast<u64>(bbsc_world_live_talk.data());
 }
 void PS4_SYSV_ABI BbscWorldEsdFunction(u64,const GuestRegisterSnapshot* regs){
     bbsc_world_esd_function=regs?static_cast<s32>(regs->rax):-1;
-    bbsc_world_esd_actor=regs && ReadablePointer(regs->r15,0x20)?ReadValue<u64>(regs->r15,0x18):0;
+    const u64 evaluator=regs?regs->r15:0;
+    const bool valid=ReadablePointer(evaluator,0x30) && ReadValue<u64>(evaluator,0)==image_base+TalkConditionVtableOffset;
+    bbsc_world_esd_actor=valid?ReadValue<u64>(evaluator,0x18):0;
+    bbsc_world_esd_talk=valid?ReadValue<u32>(evaluator,0x10):0;
 }
 void PS4_SYSV_ABI BbscWorldEsdResult(u64,const GuestRegisterSnapshot* regs){
     if(!regs || (bbsc_world_esd_function!=26 && bbsc_world_esd_function!=47) || !BbscIndependentTravelAllowed())return;
-    const u32 talk=ReadablePointer(regs->r12,0x30)?ReadValue<u32>(regs->r12,0x10):0;
+    const u32 talk=bbsc_world_esd_talk;
     // The altar's sole f47 is the missing Ritual Blood Workshop Tool check.
     // A visitor uses the occupied host altar, without receiving a personal item.
     if(bbsc_world_esd_function==47 && !(talk>=210050 && talk<=210110 && (talk-210050)%10==0))return;
-    if(ReadablePointer(regs->r12,0x30) && ReadValue<u64>(regs->r12,0)==image_base+TalkConditionVtableOffset &&
-       bbsc_world_esd_actor==GetLocalPlayerCharacter() && BbscWorldTalkAllowed(ReadValue<u32>(regs->r12,0x10)))
+    if(bbsc_world_esd_actor==GetLocalPlayerCharacter() && BbscWorldTalkAllowed(talk))
         const_cast<GuestRegisterSnapshot*>(regs)->rax&=~u64{0xFF};
 }
 void PS4_SYSV_ABI BbscWorldAltarCommand(u64,const GuestRegisterSnapshot* regs){

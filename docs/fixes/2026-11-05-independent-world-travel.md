@@ -1,5 +1,26 @@
 # Independent travel — development branch, 05.11.2026
 
+## Second gameplay failure: lamp dispatch ABI and aligned Warp
+
+Both profiles negotiate active18:15:12 after the room fix; guest lamp requests
+remain absent. Original203AD60 has `R12=RDI` (output variant) and `R15=RSI`
+(condition evaluator). R12 is not an evaluator, despite the prior comment/test.
+Scoped talk checks therefore never admitted guest lamps. Capture the actual
+R15 evaluator identity/actor at entry, before switch scratch-register reuse;
+f14/f26/f47/f52 hooks now use that thread-local context. Test fixture corrected
+to the real native calling convention, including clobbered R15 at common exit.
+
+Both CPU crashes are the same new takeover defect: P2 at18:15:47, P1 at18:16:05,
+native01517213 (`VMOVAPS [RDX]`), return018CD62C, bbsc.dll13F136 (our virtual Warp
+call). RDX ends608/9B8,8 mod16. Position and rotation arguments require16-byte
+alignment. Both are explicitly aligned now; new production fixture invokes a
+SysV Warp stand-in with actual VMOVAPS and checks scaled HP/dead/no-warp paths.
+These are concrete CPU faults; no GPU attribution is needed for these exits.
+
+Production ESD ABI/takeover fixtures and full MOD syntax PASS. Build/deploy and
+new gameplay result are separate. Evidence in parent
+`out/coop-dev/runs/independent-lamp-crash-20261105-1817`.
+
 ## First gameplay failure: native room binding (18:04 MSK)
 
 P1 hosted/P2 joined successfully, but P2 followed the host Dream->Central Yharnam

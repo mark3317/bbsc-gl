@@ -42,17 +42,19 @@ std::optional<World::Scope> bbsc_world_requested_scope;
 MAIN=r'''
 int main(){
  bbsc_world_presence_local.world={11,99};
- std::array<u8,128> condition{},context{};
- Set(condition,0,image_base+TalkConditionVtableOffset);Set(condition,0x10,u32{210000});
- Set(context,0x10,u32{2100950}); // entity id is deliberately NOT the ESD talk id
+ std::array<u8,128> result{},context{};
+ Set(context,0,image_base+TalkConditionVtableOffset);Set(context,0x10,u32{210000});
  Set(context,0x18,u64{0x20000});
- GuestRegisterSnapshot r;r.r12=reinterpret_cast<u64>(condition.data());r.r15=reinterpret_cast<u64>(context.data());
- r.rax=26;BbscWorldEsdFunction(0,&r);r.rax=1;BbscWorldEsdResult(0,&r);assert(r.rax==0);
+ // Actual203AD60: R12=RDI=result variant, R15=RSI=condition evaluator.
+ // The old fixture incorrectly put the evaluator in R12 and missed closed lamps.
+ GuestRegisterSnapshot r;r.r12=reinterpret_cast<u64>(result.data());r.r15=reinterpret_cast<u64>(context.data());
+ r.rax=26;BbscWorldEsdFunction(0,&r);r.r15=7;r.rax=1;BbscWorldEsdResult(0,&r);assert(r.rax==0);
+ assert((result==std::array<u8,128>{})); // result pointer must never be treated as an evaluator
  r.r15=reinterpret_cast<u64>(context.data());BbscWorldLampTalker(0,&r);
  assert(r.r15==reinterpret_cast<u64>(bbsc_world_live_talk.data()));
- Set(condition,0x10,u32{210699});r.r15=reinterpret_cast<u64>(context.data());
+ Set(context,0x10,u32{210699});r.r15=reinterpret_cast<u64>(context.data());r.rax=14;BbscWorldEsdFunction(0,&r);
  BbscWorldLampTalker(0,&r);assert(r.r15==reinterpret_cast<u64>(context.data())); // no spoofed NPC quests
- Set(condition,0x10,u32{241000});r.rax=52;BbscWorldEsdFunction(0,&r);
+ Set(context,0x10,u32{241000});r.rax=52;BbscWorldEsdFunction(0,&r);
  r.rax=1;r.rcx=1;BbscWorldLampMultiplayer(0,&r);assert((r.rax&255)==0&&(r.rcx&255)==0);
  assert(!QueueBbscWorldTravel(6200,1));
  assert(QueueBbscWorldTravel(70000200,1));
@@ -93,6 +95,6 @@ def main():
         subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
-    print('PASS production ESD scope, local actor, actual evaluator/entity distinction, lamps/headstones, selected host ritual/layer, native phase guard')
+    print('PASS production ESD dispatcher ABI: R12=result/R15=evaluator, saved context, local actor, scoped lamps/headstones, host ritual/layer, native phase guard')
 
 if __name__=='__main__':main()
