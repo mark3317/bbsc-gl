@@ -19,6 +19,7 @@ PREFIX=r'''
 #include <mutex>
 #include "core/bbsc_world_altars.h"
 #include "core/bbsc_world_control.h"
+#include "core/bbsc_lamp_travel_data.h"
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
@@ -31,6 +32,11 @@ u64 image_base=0;
 std::array<u8,64> manager{};
 std::map<u32,std::array<u8,125>> groups;
 std::map<u32,std::array<u8,125>> own_kept;
+std::mutex bbsc_progress_mutex;std::map<u32,std::array<u8,125>> bbsc_progress_groups;
+bool share=true;bool BbscSharedProgressEnabled(){return share;}
+s32 GetLocalPlayerType(){return 1;}
+bool BbscBossCompletionBitsAdded(u32,size_t,u8 added){return (added&1)!=0;}
+int reward_checks=0;void RequestBbscRewardCheck(){++reward_checks;}
 bool BbscIndependentActive(){return active;}
 s32 GetSessionState(){return session;}
 bool ReadablePointer(u64 p,size_t){return p>=0x10000;}
@@ -39,8 +45,9 @@ template<class T>T ReadValue(u64 p,size_t offset){
  T result;std::memcpy(&result,reinterpret_cast<void*>(p+offset),sizeof(T));return result;
 }
 u64 BbscFlagGroupStorage(u32 key){auto it=groups.find(key);return it==groups.end()?0:reinterpret_cast<u64>(it->second.data());}
+bool BbscEventFlag(u32 flag){const u64 p=BbscFlagGroupStorage(flag/1000);return p&&(reinterpret_cast<u8*>(p)[flag%1000/8]&(0x80>>(flag%8)));}
 u32 BbscWorldGroupKey(u32,size_t i){return static_cast<u32>(20000+i);}
-void KeepBbscOwnWorldGroup(u32 key,const u8* p){std::memcpy(own_kept[key].data(),p,125);}
+void KeepBbscOwnWorldGroup(u32 key,const u8* p){if(!own_kept.contains(key))std::memcpy(own_kept[key].data(),p,125);}
 void KeepBbscGuestTalkBits(u32,const u8*,u8*){}
 void KeepBbscNpcOwnBits(u32,const u8* before,u8* live){live[0]=(live[0]&0x7f)|(before[0]&0x80);}
 int dream_calls=0;void ApplyBbscHostDreamState(const char*){++dream_calls;}
@@ -99,6 +106,18 @@ int main(){
  assert(bbsc_world_guest_altars.Destination(3,12,0));
  assert(!bbsc_world_guest_altars.Destination(3,11,0));
  assert(groups[94300]==before.at(94300)); // receiving a guest view does not install it into a save
+ groups[12417]={};groups[12417][0]=0xA5;
+ bbsc_world_shared_lamps=(u64{1}<<8)|(u64{1}<<9);
+ BbscWorldApplyLamps();assert(BbscEventFlag(12417810)&&BbscEventFlag(12417830));
+ assert(groups[12417][0]==0xA5&&own_kept[12417][101]==0);
+ assert(bbsc_progress_groups[12417][101]&0x20); // same shared kind1 progress, persists through normal home merge
+ assert(!bbsc_progress_groups.contains(12907)); // ritual lamps remain in their own namespace
+ BbscWorldState shared;shared.flags_ready=true;shared.present=1;shared.groups[0][2]=1;
+ World::Scope ordinary{{11,99},0x18010000,{},0};BbscWorldRememberProgress(ordinary,shared);
+ assert(bbsc_progress_groups[20000][2]==1&&reward_checks==1);
+ ordinary.map=0x1D000000;shared.groups[0][3]=1;BbscWorldRememberProgress(ordinary,shared);
+ assert(bbsc_progress_groups[20000][3]==0); // no chalice leakage into ordinary shared progress
+ ordinary.map=0x18010000;share=false;BbscWorldRememberProgress(ordinary,shared);assert(bbsc_progress_groups[20000][3]==0);
  VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
 '''
@@ -106,7 +125,7 @@ int main(){
 def main():
     section=SOURCE[SOURCE.index('struct BbscWorldAltar {'):SOURCE.index('struct BbscWorldState {')]
     state=SOURCE[SOURCE.index('struct BbscWorldState {'):SOURCE.index('std::map<World::Scope,BbscWorldState>')]
-    code=PREFIX+section+state+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+MAIN
+    code=PREFIX+section+state+function('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+MAIN
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-world-altars-') as tmp:
         cpp=Path(tmp)/'altars.cpp';exe=Path(tmp)/'altars.exe';cpp.write_text(code,encoding='utf-8')

@@ -17,6 +17,33 @@ World::WorldId bbsc_world_altar_world{};
 std::optional<Chalice::Mount> bbsc_world_requested_mount;
 std::optional<World::Scope> bbsc_world_requested_scope;
 std::atomic<bool> bbsc_world_catalog_ready{false};
+u64 bbsc_world_shared_lamps=0;
+
+u32 BbscWorldLampFlag(s32 point) {
+    const u32 layer=static_cast<u32>(point)%10000-2950;
+    return 10'000'000+static_cast<u32>(point/10000)*10000+7810+layer*20;
+}
+u64 BbscWorldReadLamps() {
+    u64 bits=0;
+    for(size_t i=0;i<LampTravel::Returns.size();++i)
+        if(BbscEventFlag(BbscWorldLampFlag(LampTravel::Returns[i].point)))bits|=u64{1}<<i;
+    return bits;
+}
+void BbscWorldApplyLamps() {
+    if(!BbscIndependentActive() || GetSessionState()!=6 || !bbsc_world_catalog_ready.load())return;
+    // Same kind1 shared progress as doors/bosses. Only lamp bits are exposed in
+    // Dream; personal services/items and chalice ritual namespaces stay separate.
+    for(size_t i=0;i<LampTravel::Returns.size();++i){
+        const u32 flag=BbscWorldLampFlag(LampTravel::Returns[i].point),key=flag/1000;
+        const u64 p=BbscFlagGroupStorage(key);if(!p)continue;
+        auto* bytes=reinterpret_cast<u8*>(p);KeepBbscOwnWorldGroup(key,bytes);
+        const size_t byte=flag%1000/8;const u8 mask=0x80u>>(flag%8);
+        if(bbsc_world_shared_lamps&(u64{1}<<i)){
+            bytes[byte]|=mask;
+            if(BbscSharedProgressEnabled()) {std::scoped_lock lock{bbsc_progress_mutex};bbsc_progress_groups[key][byte]|=mask;}
+        }else bytes[byte]&=~mask;
+    }
+}
 
 std::vector<u8> BbscWorldLayoutProof(const Chalice::Mount& m) {
     std::vector<u8> bytes(88);
@@ -91,6 +118,7 @@ bool BbscWorldReadAltar(s32 slot,BbscWorldAltar& out) {
 struct BbscWorldAltarWire {
     u8 slot=0,occupied=0,current=0xFF,lamps=0;
     u64 revision=0,ritual=0;
+    u64 shared_lamps=0;
     World::AltarRecord record{};
     Chalice::Mount mount{};
 };
@@ -132,6 +160,22 @@ struct BbscWorldState {
 std::map<World::Scope,BbscWorldState> bbsc_independent_states; // game thread only
 u64 bbsc_world_state_sequence=0;
 World::WorldId bbsc_world_states_world{};
+
+void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state) {
+    if(!state.flags_ready || !BbscSharedProgressEnabled() || GetSessionState()!=6 ||
+       GetLocalPlayerType()!=1 || scope.map==BbscDreamStateMap || Chalice::IsMap(scope.map))return;
+    bool rewards=false;
+    {std::scoped_lock lock{bbsc_progress_mutex};
+        for(size_t i=0;i<10;++i)if(state.present&(u64{1}<<i)){
+            const u32 key=BbscWorldGroupKey(scope.map,i);auto& merged=bbsc_progress_groups[key];
+            for(size_t j=0;j<125;++j){
+                rewards|=BbscBossCompletionBitsAdded(key,j,state.groups[i][j]&~merged[j]);
+                merged[j]|=state.groups[i][j];
+            }
+        }
+    }
+    if(rewards)RequestBbscRewardCheck();
+}
 
 void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) {
     if(!state.flags_ready) return;
@@ -258,7 +302,7 @@ void BbscWorldReceiveAltar(const BbscWorldIncoming& message) {
     bbsc_world_guest_altars.Bind(world);
     if(!bbsc_world_guest_altars.Take(message.sender,std::move(catalog)))return;
     {std::scoped_lock lock{bbsc_world_presence_mutex};bbsc_world_altars=bbsc_world_altars_assembling;
-        bbsc_world_altar_current=p.current==0xFF?-1:p.current;}
+        bbsc_world_altar_current=p.current==0xFF?-1:p.current;bbsc_world_shared_lamps=p.shared_lamps;}
     if(!bbsc_world_catalog_ready.exchange(true)) {
         const auto occupied=std::ranges::count_if(bbsc_world_altars,[](const auto& a){return a.entry.occupied;});
         BBSC_TIMELINE("TRAVEL","host altar catalog ready occupied={}",occupied);
@@ -318,6 +362,7 @@ void TickBbscWorldSnapshots() {
             }
         }else continue;
         if(host && !from_host){World::Control forwarded=c;BbscWorldSend(forwarded,message.payload);}
+        if(c.kind==World::ControlKind::Flags && state.flags_ready)BbscWorldRememberProgress(c.scope,state);
         if(BbscIndependentActive() && World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,state.flags_ready))
             BbscWorldApplyFlags(c.scope,state);
     }
@@ -361,6 +406,7 @@ void TickBbscWorldSnapshots() {
         if(BbscWorldEnemyValid(e))next.enemies[e.handle]=e;
     });
     saved=std::move(next);
+    BbscWorldRememberProgress(scope,saved);
     BbscWorldPublishFlags(scope,saved,self,lease.epoch,saved.sequence);
     BbscWorldPublishEnemies(scope,saved,self,lease.epoch,saved.sequence);
 }
@@ -372,6 +418,7 @@ void TickBbscWorldAltars() {
         bbsc_world_altar_revision=bbsc_world_altar_receiving=0;bbsc_world_altar_parts=0;
         bbsc_world_altars={};bbsc_world_catalog_ready=false;bbsc_world_altar_visiting=-1;
         bbsc_world_altar_progress={};
+        bbsc_world_shared_lamps=0;
         bbsc_world_requested_mount.reset();bbsc_world_requested_scope.reset();bbsc_world_guest_altars.Bind(local.world);
     }
     if(!World::Valid(local.world))return;
@@ -392,13 +439,16 @@ void TickBbscWorldAltars() {
         s32 current=-1;for(s32 i=0;i<7;++i)if(BbscEventFlag(9020+i))current=i;
         {std::scoped_lock lock{bbsc_world_presence_mutex};bbsc_world_altars=next;bbsc_world_altar_current=current;}
         ++bbsc_world_altar_revision;bbsc_world_catalog_ready=true;
+        const u64 lamps=BbscWorldReadLamps();
         for(u8 i=0;i<7;++i){BbscWorldAltarWire p;p.slot=i;p.occupied=next[i].entry.occupied;p.current=current<0?0xFF:current;
             p.revision=bbsc_world_altar_revision;p.ritual=next[i].entry.ritual;p.record=next[i].entry.record;p.mount=next[i].mount;
+            p.shared_lamps=lamps;
             for(size_t j=0;j<4;++j)if(next[i].entry.lamps[j])p.lamps|=1u<<j;
             World::Control c;c.kind=World::ControlKind::Altar;c.scope={local.world,0x15000000,{},0};c.part=i;c.parts=7;
             BbscWorldSend(c,{reinterpret_cast<const u8*>(&p),sizeof(p)});
         }
     }else if(GetSessionState()==6 && BbscIndependentActive() && GetCurrentPackedMap()==0x15000000 && bbsc_world_catalog_ready.load()) {
+        BbscWorldApplyLamps();
         for(size_t i=0;i<7;++i)for(size_t j=0;j<6;++j){const u32 key=94000+i*100+j;
             const u64 p=BbscFlagGroupStorage(key);if(!p)continue;
             KeepBbscOwnWorldGroup(key,reinterpret_cast<const u8*>(p));

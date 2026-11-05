@@ -1,3 +1,36 @@
+## 05.11.2026 — Dream lamps, command ownership and per-peer model lifecycle
+
+18:39 check: no-follow remains confirmed, but guest headstone list is empty,
+altar does not respond, host prompt flickers and guest model is missing after
+host reunion. Read-only flags show guest normal lamps unset while host lamps
+are set; occupied altar record already agrees. Runtime respawn guard also
+repeatedly reverses the guest's independent lamp selection.
+
+Normal lamps now enter the existing shared kind1 progress journal; the host
+catalog supplies only their live Dream bits, without copying personal services
+or chalice lamp namespace. Ordinary received map snapshots also contribute to
+the existing shared progress/reward path. Commands resolve the actual native
+executor's talk record, with load-generation fencing, instead of the last
+unrelated evaluated device. Independent mode retains native selected respawn
+point and full native auxiliary word; prejoin home backup remains unchanged.
+
+Every remote peer has an identity/visit-bound render lifecycle. Removed native
+SetDisabled on players: it unlinks attachments, so toggling it cannot restore
+a model. Use native member setter and bounded native insertion task transition;
+wait for native activation/model readiness before restoring visibility. Native
+physics reset/idle are retained only for a confirmed alive peer's stale death
+visual. Legacy overlapping self/remote repair is skipped in independent mode.
+No HP/type writes or custom mesh creation. Minimal draw/fade/death-bit repair
+remains where no safe player-oriented native wrapper has been established.
+The event revive wrapper013CBAD0 handles local-player global state or script
+IDs below10000; it is not a safe generic replacement for remote PlayerIns.
+
+Targeted production fixtures PASS: player lifecycle (four peers, load/address
+reuse, apart/reunion, death, bounded retries), altar/shared progress, command
+context, respawn guard, member binding, presence bridge and authority callbacks.
+Full MOD syntax PASS. Build/deploy/start and gameplay are separate pending steps.
+User preference: favor native game functions over duplicate manual handlers.
+
 ## 05.11.2026 — independent travel partial game confirmation; Dream device admission corrected
 
 18:25 run (P1 host/P2 guest): active18:26:26; host left Dream for Yharnam and

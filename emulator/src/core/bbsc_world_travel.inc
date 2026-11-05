@@ -14,6 +14,20 @@ alignas(16) std::array<u8,0x88> bbsc_world_bonfire_phase{};
 thread_local s32 bbsc_world_esd_function=-1;
 thread_local u64 bbsc_world_esd_actor=0;
 thread_local u32 bbsc_world_esd_talk=0;
+struct BbscWorldTalkRecord {u64 condition=0;u32 generation=0;};
+std::map<u64,BbscWorldTalkRecord> bbsc_world_talk_records;
+thread_local u32 bbsc_world_command_talk=0;
+thread_local u64 bbsc_world_command_actor=0;
+thread_local s64 bbsc_world_command_seen=0;
+
+void NoteBbscWorldTalkRecord(u64 condition,u64 executor) {
+    if(!executor || !ReadablePointer(condition,0x30) ||
+       ReadValue<u64>(condition,0)!=image_base+TalkConditionVtableOffset)return;
+    const u32 generation=bbsc_load_generation.load();
+    static u32 bound=0;if(bound!=generation){bound=generation;bbsc_world_talk_records.clear();}
+    if(bbsc_world_talk_records.size()<512 || bbsc_world_talk_records.contains(executor))
+        bbsc_world_talk_records[executor]={condition,generation};
+}
 
 bool BbscWorldTravelActorAllowed() {
     // A lamp/headstone/altar has its OWN native actor; it is not PlayerIns.
@@ -67,11 +81,21 @@ void PS4_SYSV_ABI BbscWorldEsdResult(u64,const GuestRegisterSnapshot* regs){
         const_cast<GuestRegisterSnapshot*>(regs)->rax&=~u64{0xFF};
 }
 void PS4_SYSV_ABI BbscWorldAltarCommand(u64,const GuestRegisterSnapshot* regs){
+    bbsc_world_command_talk=0;bbsc_world_command_actor=0;bbsc_world_command_seen=0;
+    if(!regs)return;
+    const auto it=bbsc_world_talk_records.find(regs->r14);
+    if(it!=bbsc_world_talk_records.end() && it->second.generation==bbsc_load_generation.load()) {
+        const u64 p=it->second.condition;
+        if(ReadablePointer(p,0x30) && ReadValue<u64>(p,0)==image_base+TalkConditionVtableOffset){
+            bbsc_world_command_talk=ReadValue<u32>(p,0x10);bbsc_world_command_actor=ReadValue<u64>(p,0x18);
+            bbsc_world_command_seen=SteadyNowMs();
+        }
+    }
     if(!regs || GetSessionState()!=6 || !BbscIndependentTravelAllowed() ||
-       !BbscWorldTravelActorAllowed())return;
-    const u32 talk=bbsc_world_travel_talk.load();
+       !bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return;
+    const u32 talk=bbsc_world_command_talk;
     if(talk<210050 || talk>210110 || (talk-210050)%10 ||
-       SteadyNowMs()-bbsc_world_travel_talk_seen.load()>1000 || !BbscWorldTalkAllowed(talk))return;
+       !BbscWorldTalkAllowed(talk))return;
     // c1_78 opens the special chalice menu. Reuse c1_41, the original headstone
     // list, with the ten native layer entries already added by this ESD. It has
     // no ritual creation/removal/inventory actions. c1_79 (empty-altar ritual UI)
@@ -89,9 +113,9 @@ void PS4_SYSV_ABI BbscWorldBonfirePhase(u64,const GuestRegisterSnapshot* regs){
 bool QueueBbscWorldTravel(u32 flag,u8 value) {
     if(!value || !BbscIndependentTravelAllowed())return false;
     if(GetSessionState()==3)return false;
-    if(GetSessionState()!=6 || !BbscWorldTravelActorAllowed())return false;
-    const u32 talk=bbsc_world_travel_talk.load();
-    if(SteadyNowMs()-bbsc_world_travel_talk_seen.load()>1000 || !BbscWorldTalkAllowed(talk))return false;
+    if(GetSessionState()!=6 || !bbsc_world_command_actor || BbscRegisterRemotePlayer(bbsc_world_command_actor))return false;
+    const u32 talk=bbsc_world_command_talk;
+    if(SteadyNowMs()-bbsc_world_command_seen>1000 || !BbscWorldTalkAllowed(talk))return false;
     s32 point=0,slot=-1;
     if(flag>=70000200 && flag<70000210)point=2102950;
     for(const auto& destination:LampTravel::Returns)if(destination.flag==flag){point=destination.point;break;}
@@ -188,7 +212,8 @@ void TickBbscWorldTravel() {
     bbsc_world_travel_load=bbsc_load_generation.load();bbsc_world_travel_since=now;
     bbsc_independent_role=0;
     ArmBbscReinsertV8();
-    WriteValue<s32>(global,0x1528,bbsc_world_travel_point);
+    const u64 lamp_aux=scope.map==BbscDreamStateMap?101200:101163;
+    WriteValue<s64>(global,0x1528,static_cast<s64>((lamp_aux<<32)|static_cast<u32>(bbsc_world_travel_point)));
     reinterpret_cast<void PS4_SYSV_ABI (*)(s32)>(image_base+BbscQuitCloseMenusOffset)(3);
     if(Chalice::IsMap(scope.map)){
         if(!PrepareBbscChaliceLoad(scope.map)){bbsc_world_travel_inflight=false;return;}

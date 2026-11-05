@@ -25,6 +25,7 @@ fixture = r"""
 using u8=uint8_t; using u16=uint16_t; using u32=uint32_t; using u64=uint64_t;
 using s32=int32_t; using s64=int64_t;
 #define BBSC_MOD
+bool BbscIndependentActive(){return false;}
 #define PS4_SYSV_ABI
 #define BBSC_TIMELINE(...)
 #define LOG_INFO(...)

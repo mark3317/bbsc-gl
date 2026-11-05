@@ -33,6 +33,8 @@ using u64=uint64_t; using u8=uint8_t; using s64=int64_t; using s32=int32_t;
 #define LOG_INFO(...) ((void)0)
 #define BBSC_TIMELINE(...) ((void)0)
 bool BbscResearchEnabled(){return false;}
+bool BbscIndependentActive(){return false;}
+bool BbscWorldTaskHere(u64){return true;}
 constexpr u64 image_base=1, CandidateLocalStatePointerOffset=0x553e878;
 constexpr u64 MatchingStatePointerOffset=0x5540290;
 std::map<u64,u64> mem;
