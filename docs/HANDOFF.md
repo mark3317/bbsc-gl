@@ -1,3 +1,23 @@
+## 05.11.2026 — chalice lamp access corrected, SOURCE ONLY / build deferred
+
+User still testing25405ed; explicitly requests NO build yet. Do not build/deploy
+or restart until user resumes. Both profiles remain running; no game inputs.
+Current run confirms guest P2 native altar79 -> selected72100421 -> native warp
+013CDF30 -> m29 arrival20:51:45.810; earlier altar/warp entry defects no longer
+block this observed transition. Guest dungeon lamp use still failed by report.
+
+Confirmed cause: guessed predicate talk/10000==29 && talk%1000<100 EXCLUDES ALL
+original m29 lamps290110..290119, while admitting unrelated NPC talks. Registry
+now includes exact ten original lamp ESDs, used consistently by UI and command
+interceptor. Removed mod opening-story/scene-ready gates on lamp interaction and
+travel requests. Original animations, event commands and shared unlock/state
+remain native/existing synchronization. Per-talk/per-load admission log replaces
+single process-wide line, making each actual dungeon lamp visible in next run.
+Production fixture covers every dungeon lamp's UI/multiplayer/range/return path
+with scene_ready=false/opening=false; original m29 ESD scan proves full lamp
+coverage with no NPC substitution. Seven altars/original animation checks PASS.
+No DLL build, deployment or gameplay check of this new source change yet.
+
 ## 05.11.2026 — correct native warp entry and original altar commands
 
 Source25405ed DLL build exit0; isolated stage delta exit0. Backup:

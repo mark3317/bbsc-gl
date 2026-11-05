@@ -91,7 +91,7 @@ int main(){
  command(241000,0x40000,11);
  r.r15=70000200;r.rax=123;BbscWorldLampCommandRange(0,&r);assert(r.rax==reinterpret_cast<u64>(bbsc_world_lamp_command.data()));
  assert(!QueueBbscWorldTravel(6200,1));
- scene_ready=false;assert(!BbscWorldTalkAllowed(241000)&&QueueBbscWorldTravel(70000200,1)&&bbsc_world_travel_point==0);scene_ready=true;
+ scene_ready=false;assert(BbscWorldTalkAllowed(241000));scene_ready=true;
  assert(QueueBbscWorldTravel(70000200,1));
  assert(bbsc_world_travel_point==2102950&&bbsc_world_requested_scope->map==0x15000000);
  assert(bbsc_world_requested_scope->world==(World::WorldId{11,99}));
@@ -124,7 +124,20 @@ int main(){
  bbsc_world_travel_inflight=false;bbsc_world_travel_point=0;
  state=3;bbsc_world_travel_point=0;command(241000,0x40000,11);assert(QueueBbscWorldTravel(70000200,1)&&bbsc_world_travel_point==2102950);state=6;bbsc_world_travel_point=0;
  allowed=false;assert(!QueueBbscWorldTravel(70000200,1));assert(!BbscWorldTalkAllowed(241000));
- allowed=true;opening=false;assert(!BbscWorldTalkAllowed(241000));
+ allowed=true;opening=false;assert(BbscWorldTalkAllowed(241000));
+ // All actual dungeon lamp scripts: UI, multiplayer gate, executor range and
+ // return-to-Dream must work without opening-story or scene-admission gates.
+ scene_ready=false;
+ for(u32 talk:LampTravel::DungeonTalks){
+  bbsc_world_travel_point=0;command(talk,0x40000,11);
+  assert(BbscWorldTalkAllowed(talk));
+  Set(context,0x10,talk);r.r15=reinterpret_cast<u64>(context.data());r.rax=52;BbscWorldEsdFunction(0,&r);
+  r.rax=1;r.rcx=1;BbscWorldLampMultiplayer(0,&r);assert((r.rax&255)==0&&(r.rcx&255)==0);
+  r.r15=70000200;r.rax=123;BbscWorldLampCommandRange(0,&r);assert(r.rax==reinterpret_cast<u64>(bbsc_world_lamp_command.data()));
+  assert(QueueBbscWorldTravel(70000200,1)&&bbsc_world_travel_point==2102950);
+ }
+ scene_ready=true;bbsc_world_travel_point=0;
+ assert(!BbscWorldTalkAllowed(290600)); // a dungeon NPC is not a lamp
  opening=true;command(210000,0x40000,11);++bbsc_load_generation;
  r.rax=11;BbscWorldAltarCommand(0,&r);assert(QueueBbscWorldTravel(70000200,1)); // retired executor generation
 
@@ -162,6 +175,17 @@ def check_original_altar_scripts(game):
         assert set(range(1,11))<=choices
         assert any(str(72100420+slot) in str(args) for b,i,args in commands)
     print('PASS original seven altar scripts: native78/79, ten layer choices, exact altar selection flags')
+    dungeon=bbfiles.read_bnd4(bbfiles.read_dcx(game/'script/talk/m29_00_00_00.talkesdbnd.dcx'))
+    actual=set()
+    for name,(_,raw) in dungeon.items():
+        commands=esd.Esd(raw).all_commands()
+        if any(b==1 and i==11 and any('70000200' in a for a in args) for g,s,b,i,args in commands):
+            actual.add(int(name[1:-4]))
+    import re
+    header=(ROOT/'emulator/src/core/bbsc_lamp_travel_data.h').read_text(encoding='utf-8')
+    registered={int(x) for x in re.search(r'DungeonTalks\{([^}]+)',header).group(1).replace('\n','').split(',') if x.strip()}
+    assert actual==registered,(actual,registered)
+    print('PASS every original chalice lamp ESD is registered, no NPCs substituted')
     from emevd import Emevd
     for name,event,animation in [('m21_00_00_00.emevd.dcx',12107000,101164),('common.emevd.dcx',7200,101160)]:
         script=Emevd(game/'event'/name)
