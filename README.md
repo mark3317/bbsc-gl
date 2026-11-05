@@ -2,39 +2,27 @@
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is mark3317's fork of [Bloodborne Seamless Co-op (BBSC)](https://github.com/CLSAMG22/BBSC), integrated into **[Bloodborne Game Launcher (BBGL)](https://github.com/mark3317/bbgl)**. Players should download BBGL: it includes the matching mod, launcher and hosting server. No separate mod download is needed.
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. Version **1.3.0**.
 
-## Why this fork exists
+**The full main story has been tested as a co-op playthrough through the finale, including the transition to NG+. Chalice dungeons work in co-op, with native random generation restored for Root Chalices.** Guests explore the host's generated layout while retaining their own altars and individual progress; they do not need to create a matching dungeon first.
 
-Original BBSC already provides persistent co-op, guest items, shared progress, scaling and up to five hunters. These are upstream features, not inventions of this fork. BBSC-GL concentrates on a complete playthrough in the Windows port: guests should interact with the world, keep personal quest rewards and return to their own world after playing with friends.
+## Co-op and architecture
 
-The goal is one connection for a play session, including area changes, deaths and chalices. This is a development goal, not a claim that every scenario is finished. Host migration is not implemented.
+Original BBSC supplies persistent sessions, guest items, shared progress, scaling and up to five hunters. This fork extends it with personal NPC quests, keys and rewards, an own Hunter's Dream and independent chalice progress during group exploration.
 
-## Architecture and differences
+The current launch path uses Party inside `run.py`, LAN/VPN discovery and native UDP. No separate VPS, shadNet server or invite code is required. Players can join after others have started; admission is sequential. Everyone must use the same BBGL version. Host migration is not implemented.
 
-| Area | Original BBSC baseline | BBSC-GL approach |
-|---|---|---|
-| Distribution | Separate Play, Server, Nucleus and BBport packages | Matching client and server built from a pinned submodule and shipped in BBGL; updates follow the BBGL release |
-| Runtime | shadPS4 fork with an additional BBport mod target | BBport DLL and injector are the primary integration target; emulator sources remain the basis of the mod |
-| Guest world | Upstream world synchronization and optional shared progress | Extended own-world snapshots, per-save-slot item/progress journals and restoration; personal NPC quest/reward handling and own Hunter's Dream |
-| Session recovery | Upstream persistent session machinery | Additional death, reload, spectator, rejoin and chalice-follow fixes; latest key-item regrant fix retries after reload |
-| Storage | Standalone emulator / mod directories | BBGL keeps binaries in the installation and writable state in `%LOCALAPPDATA%\bbgl`; `BBSC_DATA_DIR` redirects mod data, while standalone fallback remains |
-| Networking | shadNet / native game networking and BBSC messages | Retains those layers and the game-server relay, with fork fixes in the port and server; this is not a replacement combat protocol |
+Enemy loot and reviewed scripted/boss rewards use native game delivery with personal conditions. Host inventory is not copied. Missing unique base-game, DLC and chalice rewards are checked after loading; personal receipts cover one-time loot and NG+. See [reward policy and open checks](docs/REWARDS.md).
 
-World snapshots and journals separate the host's temporary world from the guest's own progression. Shared Progress merges eligible progress on return; chalice world flags are excluded from that merge. Server relay messages supplement the native game network rather than replacing all game traffic. See [architecture](docs/study/ARCHITECTURE-OVERVIEW.md) and [world synchronization](docs/study/bbsc-world-sync.md).
+Binaries live in `coop/client/bbsc`, Party in `coop/party`, and writable data defaults to `%LOCALAPPDATA%\Bloodborne Game Launcher` (`profile/coop` for mod state). `BBSC_DATA_DIR` can redirect it. Internal binary names and `BBSC_*` variables remain for compatibility. Native networking remains the game's transport, supplemented by BBSC messages.
 
-The inherited `bbsc.dll`, `bbsc-launch.exe`, `BBSC_*` environment variables and protocol identifiers remain for compatibility. The product and repository name is **BBSC-GL / bbsc-gl**.
+## Status and build
 
-## Current status
+The user confirmed a complete main-story co-op playthrough and a working NG+ transition on 5 November. Chalice co-op and randomly generated Root Chalices are supported. This does not establish coverage of every additional rite, reward edge case or party composition; those checks continue. T22 combat latency, T23 return and T24 wipe camera were confirmed on 1 November. See [HANDOFF](docs/HANDOFF.md) and [BACKLOG](docs/BACKLOG.md).
 
-Experimental. Basic chalice play and the two T21 entry fixes were confirmed by the player. Chalice combat latency, uncommon death/disconnect recovery, distinct dungeon identities and three-player coverage remain open checks. T24 spectator recovery and T25 key-item retry changes have build/code checks, but do not imply completed gameplay validation. [Backlog and evidence](docs/BACKLOG.md).
-
-## Build and source
-
-- BBport mod: `emulator\mod\build-mod-bbport.cmd` → `build/mod/`.
-- Game server: `server/gameserver/bbsc_gameserver.py`.
-- Reproducible player package: [BBGL build guide](https://github.com/mark3317/bbgl/blob/main/BUILDING.md).
-- Original emulator, standalone packages and upstream usage: [BBSC](https://github.com/CLSAMG22/BBSC#readme).
+- DLL: `emulator\mod\build-mod-bbport.cmd` → `build/mod/`.
+- Player package: [BBGL build guide](https://github.com/mark3317/bbgl/blob/develop/BUILDING.md).
+- Standalone/server instructions and older changelog entries are historical.
 
 ## Credits and licence
 
