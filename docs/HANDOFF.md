@@ -1,3 +1,13 @@
+## 05.11.2026 — independent travel: first integration gate, development branch
+
+User authorized implementation on `codex/independent-world-travel` and a two-profile
+PC launch. World/place presence bridge and pure owner/routing/guest-altar rules
+are implemented and targeted fixtures PASS. Live capability is metadata ONLY:
+free travel, native AI handover and the host altar UI are NOT implemented yet.
+Host-world guests must see host chalices; own world keeps personal altars.
+[Implementation and remaining work](fixes/2026-11-05-independent-world-travel.md).
+Do not declare the overall feature complete or reopen lamps from this first gate.
+
 ## 05.11.2026 — подтверждение пользователя для BBGL 1.2.0
 
 Пользователь сообщил: основная сюжетная игра полностью проверена на прохождение

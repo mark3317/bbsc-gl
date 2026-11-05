@@ -25,6 +25,7 @@ prefix=r'''
 #include "core/bbsc_follow.h"
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using s32=int32_t;
 int state=6,book=0,mount=0,kill=0,left=0,follow=0,other=0,pvp=0,pvp_kind=-1,pvp_on=-1;
+int world_presence=0;u32 world_sender=0,world_session=0;
 u32 own_id=2,host=1,key=1;int peers=0;
 std::atomic<bool> logged_old_sender{false};
 void Log(const std::string&){}
@@ -34,6 +35,9 @@ int GetBbscRelaySessionState(){return state;} u32 GetBbscRelayHost(){return host
 void OnBbscPeerLeft(u32,bool){++left;}
 void OnBbscExplicitSessionLeave(u32,bool){++left;}
 void OnBbscChaliceMountPacket(const void*,size_t){++mount;}
+void OnBbscWorldPresencePacket(u32 sender,u32 session,const void*,size_t){
+ ++world_presence;world_sender=sender;world_session=session;
+}
 Follow::Arrival last_arrival;
 void OnBbscHostFollowPacket(u32,float,float,float,float,u32,s32,const Chalice::Key&,const Follow::Arrival& a){++follow;last_arrival=a;}
 void NoteBbscRelayHost(u32,u32,float,float,float){}
@@ -69,6 +73,15 @@ int main(){
  assert(life_packets==1&&visible);
  Dispatch(packet(Protocol::Life,14));assert(life_packets==2&&!visible);
  Dispatch(packet(Protocol::Life,15,3,3));assert(life_packets==2);
+ // The presence bridge uses exactly the shared session envelope on both paths.
+ for(bool server:{false,true}){
+  Dispatch(packet(Protocol::WorldPresence,88,3,1),server);
+  assert(world_sender==3&&world_session==1);
+ }
+ assert(world_presence==2);
+ Dispatch(packet(Protocol::WorldPresence,88,3,3));
+ Dispatch(packet(Protocol::WorldPresence,88,own_id,1));
+ assert(world_presence==2);
  for(bool server:{false,true}){
   Dispatch(packet(Protocol::Register,33),server);
   Dispatch(packet(Chalice::MountPacketType,Chalice::MountPacketSize),server);

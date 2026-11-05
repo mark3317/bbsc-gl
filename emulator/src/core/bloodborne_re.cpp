@@ -3,6 +3,7 @@
 
 #include "core/bbsc_stop_policy.h"
 #include "core/bbsc_dream_finale.h"
+#include "core/bbsc_world_presence.h"
 #include "core/bloodborne_re.h"
 
 #include <algorithm>
@@ -72,6 +73,13 @@ namespace {
 // This avoids locking empty reward/drop/cutscene/departure queues on every game update.
 enum class BbscWork : u32 { BossReward = 1, GuestDrop = 2, Cutscene = 4, PeerLeft = 8, RewardCheck = 16 };
 std::atomic<u32> bbsc_pending_work{0};
+
+// Network readers only touch metadata under this lock, never game objects. The
+// bridge does not claim IndependentTravelCapability or alter gameplay yet.
+std::mutex bbsc_world_presence_mutex;
+World::PresenceBook bbsc_world_presence_book;
+World::Presence bbsc_world_presence_local;
+World::PlaceTracker bbsc_world_place;
 
 void QueueBbscWork(BbscWork work) {
     bbsc_pending_work.fetch_or(static_cast<u32>(work), std::memory_order_release);
@@ -21475,6 +21483,81 @@ BbscMod::RegisterIdentity ReadBbscRegisterIdentity(u64 chr) {
     return identity;
 }
 
+// First integration gate for independent travel: real P2P world/map observations
+// without changing the native session, lamps, saves or current follow policy.
+void TickBbscWorldPresence() {
+    static s64 last_send = 0;
+    static u64 sequence = 0;
+    const s64 now = SteadyNowMs();
+    const u32 session = BbscMod::RegisterSessionKey();
+    const u32 self = BbscMod::RegisterOwnId();
+    const s32 state = GetSessionState();
+    const u64 player = GetLocalPlayerCharacter();
+    const auto identity = ReadBbscRegisterIdentity(player);
+    const u64 global = GetGlobalState();
+    const bool departing = BbscQuitInProgress() || BbscReturningToTitle() || state == 7;
+    World::Presence next;
+    {
+        std::scoped_lock lock{bbsc_world_presence_mutex};
+        // Loads can briefly hide the actor/identity. Keep its room binding, but
+        // never report Playing until native state and a positioned actor agree.
+        const auto previous = bbsc_world_presence_local.world;
+        const u32 room = identity.room ? identity.room :
+                         (session == previous.host ? previous.room : 0);
+        const World::WorldId world{session, room};
+        if (!self || !World::Valid(world) || IsInvaderType(GetLocalPlayerType())) {
+            if (!session || departing) {
+                bbsc_world_presence_book.Clear();
+                bbsc_world_presence_local = {};
+                bbsc_world_place.Clear();
+            }
+            return;
+        }
+        if (world != previous) {
+            bbsc_world_place.Clear();
+            LOG_INFO(Debug, "BBSC world presence: bound host={:08x} room={:08x} (metadata only)",
+                     world.host, world.room);
+        }
+        bbsc_world_presence_book.Bind(world, self);
+        const bool loading = state != 3 && state != 6 ||
+                             !ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 8) != 0 ||
+                             bbsc_world_load_pending.load() != 0 || bbsc_reload_finish_pending.load();
+        const auto transform = ReadCharacterTransform(player);
+        const bool positioned = transform && std::isfinite(transform->position[0]) &&
+                                std::isfinite(transform->position[1]) &&
+                                std::isfinite(transform->position[2]);
+        bbsc_world_place.Observe(GetCurrentPackedMap(), loading, positioned, now);
+        next.world = world;
+        next.phase = departing ? World::Phase::Leaving : bbsc_world_place.State();
+        next.map = bbsc_world_place.Map();
+        next.visit = bbsc_world_place.Visit();
+        if (Chalice::IsMap(next.map)) next.dungeon = ReadBbscChaliceKey();
+        // Ritual identity is supplied by the forthcoming host altar catalog;
+        // until then an m29 observation cannot authorize shared simulation.
+        if (positioned && next.phase == World::Phase::Playing) {
+            next.x = transform->position[0];
+            next.y = transform->position[1];
+            next.z = transform->position[2];
+            next.alive = GetCharacterHp(player) > 0;
+        }
+        const bool changed = next.world != bbsc_world_presence_local.world ||
+                             next.phase != bbsc_world_presence_local.phase ||
+                             next.map != bbsc_world_presence_local.map ||
+                             next.visit != bbsc_world_presence_local.visit ||
+                             next.alive != bbsc_world_presence_local.alive ||
+                             next.dungeon != bbsc_world_presence_local.dungeon;
+        if (!changed && now - last_send < 1'000) return;
+        if (changed) LOG_INFO(Debug, "BBSC world presence: local phase={} map={:#x} visit={} alive={}",
+                             static_cast<u8>(next.phase), next.map, next.visit, next.alive);
+        next.sequence = ++sequence;
+        bbsc_world_presence_local = next;
+        last_send = now;
+    }
+    // Transport dispatch is never called while the book's mutex is held.
+    if (World::Valid(next))
+        Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(&next, sizeof(next));
+}
+
 bool BbscRegisterRemotePlayer(u64 chr) {
     const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
     if (!ReadablePointer(world,0x68) || chr==GetLocalPlayerCharacter()) return false;
@@ -22913,6 +22996,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscLoadState"); TickBbscLoadState(); }
         RefreshBbscLocalOnlineIdentity(); // current login before signs and insertion replication
 #ifdef BBSC_MOD
+        TickBbscWorldPresence();
         if (BbscMod::PartyEnabled()) {
             TickBbscPartyRole();
             TickBbscPartyItem();
@@ -24446,7 +24530,31 @@ void OnBbscExplicitSessionLeave(std::uint32_t player, bool host) {
     OnBbscPeerLeft(player,host);
 }
 
+void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,
+                               const void* data, std::size_t size) {
+    if (!data || !sender || !session) return;
+    const auto decoded = World::Decode({static_cast<const u8*>(data), size});
+    if (!decoded || decoded->world.host != session) return;
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    const auto* previous = bbsc_world_presence_book.Find(sender, SteadyNowMs());
+    const bool changed = !previous || previous->presence.map != decoded->map ||
+                         previous->presence.phase != decoded->phase ||
+                         previous->presence.visit != decoded->visit ||
+                         previous->presence.alive != decoded->alive;
+    if (bbsc_world_presence_book.Hear(sender, decoded->world, *decoded, SteadyNowMs()) && changed)
+        LOG_INFO(Debug, "BBSC world presence: peer={:08x} phase={} map={:#x} visit={} alive={}",
+                 sender, static_cast<u8>(decoded->phase), decoded->map, decoded->visit, decoded->alive);
+}
+
 void OnBbscPeerLeft(std::uint32_t player, bool host) {
+    {
+        std::scoped_lock lock{bbsc_world_presence_mutex};
+        if (host) {
+            bbsc_world_presence_book.Clear();
+            bbsc_world_presence_local = {};
+            bbsc_world_place.Clear();
+        } else bbsc_world_presence_book.Forget(player);
+    }
     {
         std::scoped_lock lock{bbsc_life_mutex};
         bbsc_peer_life.erase(player);
