@@ -338,7 +338,9 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
         return guest && sender_hosting && session == SessionKey() &&
                sender == Core::Bloodborne::GetBbscRelayHost();
     };
-    if (frame[4] == Core::Bloodborne::Protocol::Register && session != 0 && session == SessionKey()) {
+    if (frame[4] == Core::Bloodborne::Protocol::WorldPresence && session != 0 && session == SessionKey()) {
+        Core::Bloodborne::OnBbscWorldPresencePacket(sender, session, frame.data(), frame.size());
+    } else if (frame[4] == Core::Bloodborne::Protocol::Register && session != 0 && session == SessionKey()) {
         BbscMod::ReceiveSessionRegister(sender, session, frame.data(), static_cast<u32>(frame.size()));
     } else if (frame[4] == Core::Bloodborne::Protocol::RegisterKill && session != 0 && session == SessionKey()) {
         BbscMod::ReceiveRegisterKill(sender, session, frame.data(), static_cast<u32>(frame.size()));

@@ -1,0 +1,163 @@
+"""Production independent-world rules: place, expiry, ownership, channels and guest altars.
+
+No game process, profile, save, or network needed. The live bridge still advertises
+only presence; these rules do not claim native travel or enemy handover is ready.
+"""
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+CODE = r'''
+#include <cassert>
+#include <limits>
+#include "core/bbsc_world_presence.h"
+#include "core/bbsc_world_altars.h"
+using namespace Core::Bloodborne;
+using namespace Core::Bloodborne::World;
+constexpr u32 Yharnam = 0x18000000, Dream = 0x15000000, Dungeon = 0x1D0A5A00;
+Presence Sample(u32 map=Yharnam, u64 seq=1) {
+    Presence p;
+    p.world={11,99}; p.sequence=seq; p.visit=1; p.map=map;
+    p.phase=Phase::Playing; p.alive=1;
+    return p;
+}
+int main() {
+    // Exact-length parsing and finite coordinates, reserved bytes, versions.
+    Presence a=Sample(); assert(Valid(a));
+    auto bytes=std::span{reinterpret_cast<const u8*>(&a),sizeof(a)};
+    assert(Decode(bytes)); assert(!Decode(bytes.first(bytes.size()-1)));
+    auto bad=a; bad.x=std::numeric_limits<float>::infinity(); assert(!Valid(bad));
+    bad=a; bad.z=std::numeric_limits<float>::quiet_NaN(); assert(!Valid(bad));
+    bad=a; bad.version=2; assert(!Valid(bad));
+    bad=a; bad.sequence=0; assert(!Valid(bad));
+    bad=a; bad.reserved=1; assert(!Valid(bad));
+    bad=a; bad.padding[2]=1; assert(!Valid(bad));
+    bad=a; bad.phase=static_cast<Phase>(9); assert(!Valid(bad));
+    bad=a; bad.map=0; assert(!Valid(bad));
+    bad=a; bad.alive=2; assert(!Valid(bad));
+    bad=a; bad.world.room=0; assert(!Valid(bad));
+
+    // Borders settle; zero reads don't invent a new place. A load into the same
+    // map still invalidates presence immediately and creates a new visit.
+    PlaceTracker tracker;
+    tracker.Observe(Yharnam,false,true,100); assert(tracker.Visit()==1);
+    tracker.Observe(Dream,false,true,200); assert(tracker.Map()==Yharnam);
+    tracker.Observe(Yharnam,false,true,300);
+    tracker.Observe(Dream,false,true,400);
+    tracker.Observe(Dream,false,true,1899); assert(tracker.Map()==Yharnam);
+    tracker.Observe(Dream,false,true,1900); assert(tracker.Map()==Dream && tracker.Visit()==2);
+    tracker.Observe(0,false,true,2000); assert(tracker.Map()==Dream && tracker.Visit()==2);
+    tracker.Observe(Dream,true,true,2100); assert(tracker.State()==Phase::Loading);
+    tracker.Observe(Dream,false,false,2200); assert(tracker.State()==Phase::Loading);
+    tracker.Observe(Dream,false,true,2300); assert(tracker.Visit()==3);
+    tracker.Clear(); tracker.Observe(Dream,false,true,2400); assert(tracker.Visit()==4);
+
+    // A member in another place/loading/leaving is not a participant here.
+    auto b=a; assert(SamePlace(a,b));
+    b.map=Dream; assert(!SamePlace(a,b));
+    b=a; b.world.room++; assert(!SamePlace(a,b));
+    b=a; b.phase=Phase::Loading; assert(!SamePlace(a,b));
+    b=a; b.phase=Phase::Leaving; assert(!SamePlace(a,b));
+    b=a; a.map=b.map=Dungeon; a.dungeon=b.dungeon={55,66,16,0};
+    assert(!SamePlace(a,b));
+    a.ritual=b.ritual=7; assert(SamePlace(a,b));
+    b.ritual=8; assert(!SamePlace(a,b));
+    b=a; b.dungeon.channel++; assert(!SamePlace(a,b));
+    b=a; b.dungeon.form_hash++; assert(!SamePlace(a,b));
+    a=Sample(); b=a;
+
+    // Reject strangers, old worlds, replay, backwards visits and a fifth peer.
+    PresenceBook book; book.Bind(a.world,11);
+    assert(!book.Hear(11,a.world,a,100));
+    assert(!book.Hear(0,a.world,a,100));
+    assert(!book.Hear(22,{11,100},a,100));
+    assert(book.Hear(22,a.world,a,100));
+    assert(!book.Hear(22,a.world,a,101));
+    assert(book.Find(22,3099)); assert(!book.Find(22,3100));
+    assert(book.LivingHere(a,100)==1);
+    assert(book.LivingHere(a,3100)==0);
+    b=Sample(Dream,2); assert(book.Hear(22,b.world,b,3200));
+    assert(book.LivingHere(a,3200)==0);
+    b=Sample(Yharnam,3); b.visit=2; assert(book.Hear(22,b.world,b,3300));
+    bad=Sample(Yharnam,4); assert(!book.Hear(22,bad.world,bad,3400));
+    book.Forget(22); assert(!book.Find(22,3400));
+    assert(!book.Hear(22,a.world,a,3500)); // timeout/leave does not erase fences
+    b.sequence=5; assert(book.Hear(22,b.world,b,3500));
+    for (u32 peer: {23u,24u,25u}) assert(book.Hear(peer,a.world,a,3500));
+    assert(!book.Hear(26,a.world,a,3500));
+    book.Bind({11,100},11); assert(book.Members().empty());
+    assert(!book.Hear(22,a.world,a,3500));
+
+    // The first bridge cannot enable travel, including in a mixed-version room.
+    book.Bind(a.world,11); b=a; assert(book.Hear(22,a.world,b,4000));
+    const std::array<u32,1> roster{22};
+    assert(!book.AllSupportTravel(a,roster,4000));
+    a.capabilities|=IndependentTravelCapability;
+    assert(!book.AllSupportTravel(a,roster,4000));
+    b.sequence++; b.capabilities=a.capabilities; assert(book.Hear(22,a.world,b,4001));
+    assert(book.AllSupportTravel(a,roster,4001));
+    assert(!book.AllSupportTravel(a,roster,7001));
+
+    // Stable owner: a returning host follows the still-present owner first.
+    std::map<u32,Member> owners{{11,{a,4000,3900}},{22,{b,4000,3800}}};
+    assert(ChooseOwner(a,owners,22,4000)==22);
+    assert(ChooseOwner(a,owners,0,4000)==11);
+    owners[11].presence.map=Dream;
+    assert(ChooseOwner(a,owners,0,4000)==22);
+    owners[22].presence.phase=Phase::Loading;
+    assert(ChooseOwner(a,owners,22,4000)==0);
+
+    // Session handshake crosses maps. World actions do not; personal item
+    // packets and thanks-kick stay separate from the shared simulation.
+    b=a; b.map=Dream;
+    for(u32 channel: {7u,0x10u,0x11u,0x19u,0x42u}) assert(Routes(channel,a,b));
+    for(u32 channel: {4u,5u,6u,0x15u,0x31u,0x3Eu}) {
+        assert(!Routes(channel,a,b)); assert(Routes(channel,a,a));
+    }
+    assert(!Routes(0x2C,a,a)); assert(!Routes(0x27,a,a)); assert(!Routes(0x44,a,a));
+
+    // Whole host altar snapshots. Loading this view never touches personal data.
+    AltarCatalog catalog; catalog.world=a.world; catalog.revision=1;
+    for(auto& altar:catalog.altars) altar.ritual=1;
+    auto& altar=catalog.altars[0]; altar.occupied=true; altar.record[0]=29;
+    altar.form=std::vector<u8>(16,9);
+    altar.dungeon={55,Chalice::HashForm(altar.form),16,0}; altar.lamps[0]=true;
+    assert(Valid(catalog));
+    const auto personal=catalog; GuestAltars guest; guest.Bind(a.world);
+    assert(!guest.Take(22,catalog)); assert(guest.Take(11,catalog));
+    assert(guest.Destination(0,1,0)); assert(!guest.Destination(0,1,1));
+    assert(!guest.Destination(7,1,0)); assert(!guest.Destination(0,1,4));
+    assert(!guest.Take(11,catalog));
+    auto corrupt=catalog; corrupt.revision=2; corrupt.altars[0].form[0]^=1;
+    assert(!guest.Take(11,corrupt)); assert(guest.Destination(0,1,0));
+    auto replaced=catalog; replaced.revision=2; replaced.altars[0].record[1]=99;
+    assert(!guest.Take(11,replaced)); // different ritual, same incarnation rejected
+    replaced.altars[0].ritual=2; assert(guest.Take(11,replaced));
+    assert(!guest.Destination(0,1,0)); assert(guest.Destination(0,2,0));
+    auto removed=replaced; removed.revision=3; removed.altars[0]={}; removed.altars[0].ritual=3;
+    assert(guest.Take(11,removed)); assert(!guest.Destination(0,2,0));
+    assert(personal.altars[0].occupied && personal.altars[0].record[1]==0);
+    guest.Bind({11,100}); assert(!guest.View());
+}
+'''
+
+def main():
+    compiler = os.environ.get('CXX') or shutil.which('clang++')
+    if not compiler:
+        compiler = r'C:/msys64/clang64/bin/clang++.exe'
+    with tempfile.TemporaryDirectory(prefix='bbsc-world-') as tmp:
+        source = Path(tmp)/'world.cpp'
+        exe = Path(tmp)/('world.exe' if os.name=='nt' else 'world')
+        source.write_text(CODE,encoding='utf-8')
+        subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror',
+                        '-I',str(ROOT/'emulator/src'),str(source),'-o',str(exe)],check=True)
+        env=os.environ.copy()
+        env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
+        subprocess.run([str(exe)],check=True,env=env)
+    print('PASS production world presence, place/visit, ownership selection, routing, guest altar isolation')
+
+if __name__=='__main__':
+    main()

@@ -42,6 +42,10 @@ void OnBbscHostFollowPacket(std::uint32_t packed_map, float x, float y, float z,
 void OnBbscWorldFlagsPacket(const void* packet, std::uint32_t size);
 // Pointer-free native dungeon loader input; receive thread only stores it.
 void OnBbscChaliceMountPacket(const void* packet, std::size_t size);
+// Independent-world presence bridge. Metadata only until travel/ownership hooks
+// are integrated; called with the already validated relay session envelope.
+void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,
+                               const void* packet, std::size_t size);
 // BBSC life state: another player says whether it is dead (spectating) or alive. Relay receive
 // thread; only stores it.
 void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence,
