@@ -31,6 +31,7 @@ inline bool Valid(const Scope& s) {
     return Chalice::IsMap(s.map) ? Chalice::Valid(s.dungeon) && s.ritual != 0 :
                                  s.dungeon == Chalice::Key{} && s.ritual == 0;
 }
+// Wire value3 (Enemies) is reserved for old builds; no enemy payload is produced or applied.
 enum class ControlKind : u8 { Owner=1, Flags=2, Enemies=3, Request=4, Altar=5, AltarRequest=6, AltarProgress=7 };
 #pragma pack(push,1)
 struct Control {

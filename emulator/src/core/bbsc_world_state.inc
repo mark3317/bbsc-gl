@@ -127,10 +127,6 @@ struct BbscWorldFlagPart {
     u64 present=0;
     std::array<std::array<u8,125>,8> groups{};
 };
-struct BbscWorldEnemy {
-    u32 handle=0;s32 hp=0,max=0;float x=0,y=0,z=0,heading=0;
-    u8 fighting=0;std::array<u8,3> padding{};
-};
 struct BbscWorldAltarProgress {
     u8 slot=0;std::array<u8,7> reserved{};u64 ritual=0;
     std::array<u8,125> mask{},bits{};
@@ -154,11 +150,6 @@ struct BbscWorldState {
     u64 epoch=0,sequence=0,present=0;
     u32 parts=0;
     std::array<std::array<u8,125>,30> groups{};
-    std::map<u32,BbscWorldEnemy> enemies;
-    std::map<u32,BbscWorldEnemy> incoming_enemies;
-    u64 enemy_epoch=0,enemy_sequence=0;
-    u32 enemy_parts=0,enemy_part_count=0;
-    bool enemies_ready=false;
     bool flags_ready=false;
 };
 std::map<World::Scope,BbscWorldState> bbsc_independent_states; // game thread only
@@ -293,10 +284,10 @@ bool GuardBbscWorldBootstrap(u64 instance) {
         }
         return true;
     }
-    u32 owner=0;u64 epoch=0;
-    {std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* lease=bbsc_independent_owners.Find(scope)){owner=lease->owner;epoch=lease->epoch;}}
-    if(scope.map!=BbscDreamStateMap && owner && owner!=BbscMod::RegisterOwnId() &&
-       (it==bbsc_independent_states.end() || !it->second.enemies_ready || it->second.enemy_epoch!=epoch))return true;
+    u32 owner=0;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* lease=bbsc_independent_owners.Find(scope))owner=lease->owner;}
+    // Enemy initial state belongs to the native network machinery. Never wait
+    // for, publish or apply a parallel mod-maintained enemy snapshot.
     if(!BbscWorldNativePeerReady(owner))return true;
     if(it!=bbsc_independent_states.end())BbscWorldApplyFlags(scope,it->second);
     if(scope.map==BbscDreamStateMap && GetSessionState()==6)ApplyBbscHostDreamState("before native events");
@@ -315,97 +306,6 @@ void BbscWorldPublishFlags(const World::Scope& scope,const BbscWorldState& state
         BbscWorldSend(c,{reinterpret_cast<const u8*>(&p),sizeof(p)});
     }
 }
-void BbscWorldPublishEnemies(const World::Scope& scope,const BbscWorldState& state,u32 owner,u64 epoch,u64 seq) {
-    std::vector<BbscWorldEnemy> entries;
-    for(const auto& [id,e]:state.enemies){entries.push_back(e);if(entries.size()==1024)break;}
-    const size_t parts=std::max<size_t>(1,(entries.size()+47)/48);
-    for(size_t i=0;i<parts;++i){const size_t first=i*48,n=std::min<size_t>(48,entries.size()-first);
-        World::Control c;c.kind=World::ControlKind::Enemies;c.scope=scope;c.owner=owner;c.epoch=epoch;c.sequence=seq;c.parts=parts;c.part=i;
-        if(n)BbscWorldSend(c,{reinterpret_cast<const u8*>(entries.data()+first),n*sizeof(BbscWorldEnemy)});
-        else BbscWorldSend(c);
-    }
-}
-bool BbscWorldEnemyValid(const BbscWorldEnemy& e) {
-    return e.max>0 && e.max<100'000'000 && e.hp>=0 && e.hp<=e.max &&
-        e.fighting<=1 && e.padding==std::array<u8,3>{} &&
-        std::isfinite(e.x)&&std::isfinite(e.y)&&std::isfinite(e.z)&&std::isfinite(e.heading);
-}
-bool BbscWorldReceiveEnemies(BbscWorldState& state,const World::Control& c,std::span<const u8> bytes) {
-    if(!c.parts || c.parts>22 || c.part>=c.parts || bytes.size()%sizeof(BbscWorldEnemy) ||
-       bytes.size()>48*sizeof(BbscWorldEnemy) || c.epoch<state.enemy_epoch ||
-       (c.epoch==state.enemy_epoch && c.sequence<state.enemy_sequence))return false;
-    std::vector<BbscWorldEnemy> entries;
-    for(size_t i=0;i<bytes.size();i+=sizeof(BbscWorldEnemy)){
-        BbscWorldEnemy e;std::memcpy(&e,bytes.data()+i,sizeof(e));
-        if(!BbscWorldEnemyValid(e))return false;
-        entries.push_back(e);
-    }
-    if(c.epoch!=state.enemy_epoch || c.sequence!=state.enemy_sequence){
-        state.incoming_enemies.clear();state.enemy_parts=0;state.enemy_part_count=c.parts;state.enemies_ready=false;
-        state.enemy_epoch=c.epoch;state.enemy_sequence=c.sequence;
-    }
-    if(state.enemy_part_count!=c.parts || (state.enemy_parts&(1u<<c.part)))return false;
-    for(const auto& e:entries)state.incoming_enemies[e.handle]=e;
-    state.enemy_parts|=1u<<c.part;
-    if(state.enemy_parts!=((1u<<c.parts)-1))return false;
-    state.enemies=std::move(state.incoming_enemies);state.enemies_ready=true;
-    return true;
-}
-void BbscWorldTakeEnemy(u64 chr,const BbscWorldEnemy& e,bool position) {
-    const u64 modules=ReadValue<u64>(chr,0x3B0);
-    const u64 stats=ReadablePointer(modules,0x28)?ReadValue<u64>(modules,0x20):0;
-    if(!ReadablePointer(stats,0x100)) return;
-    const s32 maximum=ReadValue<s32>(stats,0xFC);if(maximum<=0) return;
-    const s32 hp=static_cast<s32>(static_cast<std::int64_t>(e.hp)*maximum/e.max);
-    const u8 death_before=hp==0?ReadValue<u8>(chr,0x1E3):0;
-    using SetHp=void PS4_SYSV_ABI (*)(u64,s32);
-    reinterpret_cast<SetHp>(image_base+0x018BCD40)(chr,hp);
-    if(hp==0 && !(ReadValue<u8>(chr,0x1E3)&0x25)) {
-        // Same no-reward ForceCharacterDeath path as native2004[4] at017BA95A:
-        // bit21 suppresses a historical kill's reward, then the game's kill
-        // starts its death transition. HP=0 alone leaves a frozen live model.
-        if(HasMemoryAccess(chr+0x1E1,4,MemoryProt::CpuWrite)){
-            WriteValue<u32>(chr,0x1E1,ReadValue<u32>(chr,0x1E1)|0x200000);
-            using Kill=void PS4_SYSV_ABI (*)(u64);
-            reinterpret_cast<Kill>(image_base+0x018BF9A0)(chr);
-        }
-    }
-    if(hp==0){
-        const u64 control=ReadValue<u64>(chr,0x18);
-        const u64 proxy=ReadablePointer(control,0x38)?ReadValue<u64>(control,0x30):0;
-        // One line per baseline application, never per game frame. A call to
-        // native Kill is not proof its proxy guard permitted a death transition.
-        BBSC_TIMELINE("WORLD","historical enemy death index={} actor={:#x} hp_after={} death_before={:#x} death_after={:#x} proxy_flags={:#x}",
-            e.handle,chr,ReadValue<s32>(stats,0xF8),death_before,ReadValue<u8>(chr,0x1E3),
-            ReadablePointer(proxy,0x19)?ReadValue<u8>(proxy,0x18):0);
-    }
-    if(position && hp>0) {
-        const u64 vtable=ReadValue<u64>(chr,0),warp=ReadablePointer(vtable,0x600)?ReadValue<u64>(vtable,0x5F8):0;
-        if(IsEbootCodeAddress(warp)){
-            // Native Warp -> 018CD600 -> 01517200 uses VMOVAPS on BOTH
-            // arguments. std::array<float,4> alone guarantees only4-byte alignment.
-            alignas(16) std::array<float,4> at{e.x,e.y,e.z,1};
-            alignas(16) std::array<float,4> rotation{0,e.heading,0,0};
-            using Warp=void PS4_SYSV_ABI (*)(u64,float*,float*,u32);
-            reinterpret_cast<Warp>(warp)(chr,at.data(),rotation.data(),1);
-        }
-
-    }
-}
-size_t BbscWorldSeedEnemies(u64 world,const BbscWorldState& state,const std::set<u64>& players,u64 doll,std::map<u32,u64>& seeded) {
-    if(!state.flags_ready || !state.enemies_ready)return 0;
-    size_t count=0;
-    BbscWorldCharacters(world,[&](u64 chr){
-        if(players.contains(chr)||chr==doll)return;
-        const u32 id=ReadValue<u32>(chr,0x90);const auto it=state.enemies.find(id);
-        const u64 activation=ReadValue<u64>(chr,0x18);
-        if(it==state.enemies.end() || seeded[id]==chr || !ReadablePointer(activation,0x18) ||
-           ReadValue<s32>(activation,0x10)!=4 || ReadValue<s32>(activation,0x14)!=4)return;
-        BbscWorldTakeEnemy(chr,it->second,false);seeded[id]=chr;++count;
-    });
-    return count;
-}
-
 void BbscWorldReceiveAltar(const BbscWorldIncoming& message) {
     if(message.payload.size()!=sizeof(BbscWorldAltarWire)) return;
     BbscWorldAltarWire p;std::memcpy(&p,message.payload.data(),sizeof(p));
@@ -472,9 +372,9 @@ void TickBbscWorldSnapshots() {
             const u64 seq=it->second.sequence;
             const u32 source=provider.owner?provider.owner:self;
             BbscWorldPublishFlags(c.scope,it->second,source,it->second.epoch,seq);
-            BbscWorldPublishEnemies(c.scope,it->second,source,it->second.epoch,seq);continue;
+            continue;
         }
-        if(c.kind!=World::ControlKind::Flags && c.kind!=World::ControlKind::Enemies)continue;
+        if(c.kind!=World::ControlKind::Flags)continue; // obsolete enemy-control packets are ignored
         const bool from_host=message.sender==local.world.host;
         World::OwnerLease owner;
         {std::scoped_lock lock{bbsc_world_presence_mutex};const auto* lease=bbsc_independent_owners.Find(c.scope);if(lease)owner=*lease;}
@@ -488,8 +388,6 @@ void TickBbscWorldSnapshots() {
             state.epoch=c.epoch;state.sequence=c.sequence;state.present=p.present;
             for(size_t j=0;j<p.count;++j)state.groups[p.first+j]=p.groups[j];
             state.parts|=1u<<c.part;state.flags_ready=state.parts==15;
-        } else if(c.kind==World::ControlKind::Enemies && message.payload.size()%sizeof(BbscWorldEnemy)==0){
-            BbscWorldReceiveEnemies(state,c,message.payload);
         }else continue;
         if(host && !from_host){World::Control forwarded=c;BbscWorldSend(forwarded,message.payload);}
         if(c.kind==World::ControlKind::Flags && state.flags_ready)BbscWorldRememberProgress(c.scope,state);
@@ -500,26 +398,9 @@ void TickBbscWorldSnapshots() {
        local.map!=GetCurrentPackedMap() || BbscCurtainActive() || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load() || !BbscWorldSceneReady())return;
     const auto scope=World::ScopeOf(local);const u32 role=bbsc_independent_role.load();
     World::OwnerLease lease;{std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* p=bbsc_independent_owners.Find(scope);p)lease=*p;}
-    static World::Scope previous_scope;static u64 previous_epoch=0;
-    const bool changed=previous_scope!=scope || previous_epoch!=lease.epoch;
     auto& saved=bbsc_independent_states[scope];
-    const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
-    const auto players=BbscWorldPlayers(world);const u64 doll=BbscWorldDoll(world);
-    static World::Scope seeded_scope;static u64 seeded_visit=0,seeded_epoch=0;
-    static std::map<u32,u64> seeded;
-    if(seeded_scope!=scope || seeded_visit!=local.visit || seeded_epoch!=lease.epoch){
-        seeded.clear();seeded_scope=scope;seeded_visit=local.visit;seeded_epoch=lease.epoch;
-    }
-    if(role==2 && saved.enemies_ready && saved.enemy_epoch==lease.epoch){
-        const size_t count=BbscWorldSeedEnemies(world,saved,players,doll,seeded);
-        if(count)BBSC_TIMELINE("WORLD","native enemy baseline map={:#x} owner={:08x} epoch={} applied={}",scope.map,lease.owner,lease.epoch,count);
-    }
-    if(changed && role==1 && !saved.enemies.empty()) {
-        BbscWorldCharacters(world,[&](u64 chr){if(players.contains(chr)||chr==doll)return;
-            if(auto it=saved.enemies.find(ReadValue<u32>(chr,0x90));it!=saved.enemies.end()) BbscWorldTakeEnemy(chr,it->second,true);});
-        BBSC_TIMELINE("WORLD","map authority acquired map={:#x} epoch={} retained_enemies={}",scope.map,lease.epoch,saved.enemies.size());
-    }
-    previous_scope=scope;previous_epoch=lease.epoch;
+    // Native NPC ownership/replication owns HP, death, transforms and handover.
+    // No historical kills, actor-state cache, or manual takeover positions.
     static s64 last=0;const s64 now=SteadyNowMs();if(now-last<500)return;last=now;
     if(role!=1) return;
     if(Chalice::IsMap(scope.map))for(auto& progress:bbsc_world_altar_progress) {
@@ -534,20 +415,9 @@ void TickBbscWorldSnapshots() {
         if(acknowledged)progress.mask.fill(0);
     }
     auto next=BbscWorldCaptureFlags(scope);next.epoch=lease.epoch;next.sequence=++bbsc_world_state_sequence;
-    // Streamed-out enemies (including kills) remain part of this area's world.
-    next.enemies=saved.enemies;
-    BbscWorldCharacters(world,[&](u64 chr){if(players.contains(chr)||chr==doll||next.enemies.size()>=1024)return;
-        const auto at=ReadCharacterTransform(chr);const s32 hp=GetCharacterHp(chr);
-        const u64 modules=ReadValue<u64>(chr,0x3B0),stats=ReadablePointer(modules,0x28)?ReadValue<u64>(modules,0x20):0;
-        if(!at || !ReadablePointer(stats,0x100) || hp<0)return;
-        BbscWorldEnemy e;e.handle=ReadValue<u32>(chr,0x90);e.hp=hp;e.max=ReadValue<s32>(stats,0xFC);
-        e.x=at->position[0];e.y=at->position[1];e.z=at->position[2];e.heading=at->rotation[1];
-        if(BbscWorldEnemyValid(e))next.enemies[e.handle]=e;
-    });
     saved=std::move(next);
     BbscWorldRememberProgress(scope,saved);
     BbscWorldPublishFlags(scope,saved,self,lease.epoch,saved.sequence);
-    BbscWorldPublishEnemies(scope,saved,self,lease.epoch,saved.sequence);
 }
 
 void TickBbscWorldAltars() {

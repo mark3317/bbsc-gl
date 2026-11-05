@@ -1,3 +1,29 @@
+## 05.11.2026 — USER REQUIREMENT: native enemy initial state, no mod enemy cache
+
+User explicitly rejects mod-maintained enemy state: entering an occupied map
+must use native summon-style initial synchronization. Removed BbscWorldEnemy,
+all enemy capture/retention/serialization/assembly, historical HP/kill seeding
+and cached-position handover. Deleted the obsolete takeover fixture which tested
+that removed workaround. Obsolete control kind3 is reserved/ignored, never
+published or applied. Existing shared story/boss/lamp flags and host altar
+catalog remain separate from native per-enemy replication.
+
+Bootstrap no longer waits for a removed custom enemy snapshot. Native peer
+creation readiness is still checked, but FirstSyncWait primarily creates a
+remote PlayerIns: it MUST NOT be advertised as proof that native NPC initial
+state has been delivered. Native enemy authority/HP packet routing remains;
+late arrival full NPC initial synchronization is OPEN, not fixed by deletion.
+Potential admission routing issue to investigate: SamePlace rejects loading
+presence while retained member tasks may already be atCreateWait6. Do not widen
+routing to unrelated maps or fabricate native completion merely to pass a guard.
+
+Targeted native authority/routing fixture, updated bootstrap fixture and full
+MOD syntax-only check PASS. No new DLL build/deploy/restart: user's ongoing
+NO BUILD instruction remains active. Installed source25405ed still includes
+the old enemy cache until a later authorized build; lamp fix91e1337 also pending.
+Historical death diagnosticsd0e0e4d removed together with the workaround.
+No computer-use, save edits, process termination or live memory writes.
+
 ## 05.11.2026 — delayed historical enemy death, diagnosis/logging ONLY
 
 User reports first Yharnam resident killed one enemy; late arrival sees a living,

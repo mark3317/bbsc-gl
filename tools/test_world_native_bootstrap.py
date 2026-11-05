@@ -34,7 +34,7 @@ constexpr u32 BbscDreamStateMap=0x15000000;
 struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;};
 std::array<BbscWorldAltar,7> bbsc_world_altars;
 std::optional<World::Scope> bbsc_world_requested_scope;
-struct BbscWorldState{u64 epoch=0,sequence=0,present=0;bool flags_ready=false;u64 enemy_epoch=9;bool enemies_ready=true;};
+struct BbscWorldState{u64 epoch=0,sequence=0,present=0;bool flags_ready=false;};
 std::map<World::Scope,BbscWorldState> bbsc_independent_states;
 u64 bbsc_world_state_sequence=0;
 bool intro_live=false,door_live=false;
@@ -60,8 +60,7 @@ int main(){
  bbsc_independent_states[scope]={9,7,1,true};
  assert(GuardBbscWorldBootstrap(1)); // native FirstSync is not finished
  assert(!intro_live&&!door_live&&applied==0);
- native_state=6;bbsc_independent_states[scope].enemies_ready=false;assert(GuardBbscWorldBootstrap(1)&&applied==0);
- bbsc_independent_states[scope].enemies_ready=true;assert(!GuardBbscWorldBootstrap(1));assert(intro_live&&door_live&&applied==1);
+ native_state=6;assert(!GuardBbscWorldBootstrap(1));assert(intro_live&&door_live&&applied==1);
  assert(BbscWorldSceneReady());
  door_live=false;assert(!GuardBbscWorldBootstrap(1)&&applied==1&&!door_live); // do not rewind running events
  ++bbsc_world_native_load;bbsc_independent_states.erase(scope);
