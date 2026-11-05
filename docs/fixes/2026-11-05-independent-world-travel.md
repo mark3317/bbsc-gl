@@ -1,5 +1,14 @@
 # Independent travel — development branch, 05.11.2026
 
+Source420c200 DLL build/delta exit0. Backup independent-native-flow-20261105-
+203254. Requested two-profile startup20:32:54 MSK: P1 run_20261105_203320.log /
+native10428; P2 run_20261105_203316.log / native13860. Both35/35 functional hooks,
+enemy/travel hooks ready and local relay connected. No startup hook failure.
+Original transition animation, admission to an existing owner, chalice selection,
+actual enemy/model state and absence of intro replay remain gameplay OPEN.
+Main installation unchanged; no computer-use, save edits or process termination.
+Evidence: parent out/coop-dev/runs/independent-native-flow-20261105.
+
 ## 05.11.2026 — native travel events and pre-event native admission
 
 User requires original stone/lamp animation, loading and admission to the
