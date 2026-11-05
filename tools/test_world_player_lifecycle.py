@@ -83,9 +83,15 @@ int main(){
  loading=false;now++;Hear();TickBbscWorldPlayers();assert(inserts==3&&removals==3&&remote==0);
  remote=reinterpret_cast<u64>(actor1.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();
  now++;Hear();TickBbscWorldPlayers();assert(inserts==3&&removals==3); // one restart per visit
+ // Native tasks can vanish briefly before/after the loading curtain. Room
+ // membership still retains the visit fence needed when the task returns.
+ task_present=false;now++;Hear();TickBbscWorldPlayers();
+ ++bbsc_world_presence_local.visit;remote=reinterpret_cast<u64>(actor2.data());Actor(remote);
+ task_present=true;now++;Hear();TickBbscWorldPlayers();assert(inserts==4&&removals==4&&remote==0);
+ remote=reinterpret_cast<u64>(actor1.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();
  remote=0;
  // Missing/unfinished native actors can recover; retries remain bounded.
- now+=2500;Hear();TickBbscWorldPlayers();now+=4000;Hear();TickBbscWorldPlayers();assert(inserts<=5);
+ now+=2500;Hear();TickBbscWorldPlayers();now+=4000;Hear();TickBbscWorldPlayers();assert(inserts<=6);
  for(int i=0;i<4;++i){
   World::PlayerVisualLife life;World::PlayerVisualInput in;in.loading=false;in.here=true;in.alive=in.actor_alive=in.actor_ready=in.task_ready=true;in.local_visit=1;in.peer_visit=i+1;in.actor=i+100;in.model=i+200;
   assert(life.Observe(in,1000).rebind);assert(!life.Observe(in,2000).insert);
@@ -110,6 +116,10 @@ int main(){
   ++in.local_visit;in.actor=in.model=0;in.actor_ready=false;
   assert(life.Observe(in,9001).insert);assert(!life.Observe(in,9002).insert);
  }
+ const int before_new_member=inserts;
+ bbsc_world_presence_book.Forget(22);task_present=false;now++;TickBbscWorldPlayers();
+ task_present=true;remote=reinterpret_cast<u64>(actor2.data());Actor(remote);now++;Hear();
+ TickBbscWorldPlayers();assert(inserts==before_new_member); // real departure forgets old lifecycle
  active=false;TickBbscWorldPlayers();VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
 

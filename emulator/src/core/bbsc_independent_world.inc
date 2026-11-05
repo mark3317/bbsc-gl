@@ -357,11 +357,10 @@ void TickBbscWorldPlayers() {
         if(!RepairBbscLocalMemberBinding(GetSessionState(),tasks,true))return;
         local_bound_visit=local.visit;
     }
-    std::set<u32> present;
     for(const u64 task:tasks){
         const s32 mode=ReadValue<s32>(task,0xE8);if(mode!=1 && mode!=2)continue;
         const u32 peer=mode==2 && GetSessionState()==6?GetBbscRelayHost():BbscWorldPeer(task+0xC8);
-        if(!peer)continue;present.insert(peer);
+        if(!peer)continue;
         const auto it=members.find(peer);
         const bool fresh=it!=members.end(); // native residency survives movie silence
         World::PlayerVisualInput in;in.loading=false;in.local_visit=local.visit;
@@ -409,7 +408,10 @@ void TickBbscWorldPlayers() {
         }
 
     }
-    std::erase_if(lives,[&](const auto& entry){return !present.contains(entry.first);});
+    // Native tasks may disappear briefly around StageFlow while the room member
+    // survives. Keep its previous visit so a returning task cannot bypass the
+    // meeting admission as if it were a brand-new session member.
+    std::erase_if(lives,[&](const auto& entry){return !members.contains(entry.first);});
 }
 
 // Travel/catalog/ordered world updates follow below. All hook readiness is

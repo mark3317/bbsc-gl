@@ -22,6 +22,11 @@ per-character removal/FirstSync once. The actor supplied after that request is
 left alone; recovery retries remain bounded. Initial session observations keep
 native admission. No opacity/draw/death manipulation or new network protocol.
 
+A second confirmed gap discarded peer lifecycle history whenever its native
+task temporarily disappeared, even with room membership intact. Retain history
+by membership instead. A separate production regression FAILS before/PASSES
+after; an actual member departure still discards its previous lifecycle.
+
 Validation: production TickBbscWorldPlayers fixture first FAILS on new-address
 local travel with the old controller, then PASSES with the correction. Added
 remote travel with changing addresses while task is pending, immediate missing
