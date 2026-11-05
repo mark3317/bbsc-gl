@@ -1,6 +1,7 @@
 """The real party allocator and protobuf replies must use shadNet native member IDs."""
 import unittest
 import time
+from itertools import permutations
 from collections import defaultdict
 from types import SimpleNamespace
 from engine import initial, invite, transition
@@ -9,6 +10,36 @@ import test_compat
 
 
 class NativeMemberIdsTests(unittest.TestCase):
+    def test_two_guest_races_join_cancel_close_and_capacity(self):
+        members=[dict(id=w,host='127.0.0.1',port=38000+i,p2p=39000+i) for i,w in enumerate('ABC')]
+        # Enumerate all orders at the boundary of the two admissions. Failed
+        # commands must leave the input snapshot intact and never consume a slot.
+        for slots in (2,3):
+            base=initial(invite(members))
+            base=transition(base,'A',1,{'kind':'acquire'})
+            base=transition(base,'A',2,dict(kind='room_create',room=dict(max_slots=slots,member_bins=[])))
+            room_id=base['room']['id']
+            base=transition(base,'A',3,dict(kind='claim',target='B',claim={}))
+            for order in permutations(('finish_B','claim_C','join_C','close')):
+                for finish in ('room_join','admission_cancel'):
+                    s=base
+                    for seq,event in enumerate(order,4):
+                        who,op={'finish_B':('B',dict(kind=finish,room_id=room_id)),
+                                'claim_C':('A',dict(kind='claim',target='C',claim={})),
+                                'join_C':('C',dict(kind='room_join',room_id=room_id)),
+                                'close':('A',dict(kind='room_close'))}[event]
+                        closing=s['room'].get('closing',False)
+                        allowed={'claim_C':not closing and not s['pending'] and len(s['room']['members'])<slots,
+                                 'finish_B':'B' in s['pending'] and (finish=='admission_cancel' or not closing),
+                                 'join_C':'C' in s['pending'] and not closing,'close':True}[event]
+                        with self.subTest(slots=slots,order=order,event=event,finish=finish):
+                            if not allowed:
+                                with self.assertRaises(ValueError):transition(s,who,seq,op)
+                            else:
+                                s=transition(s,who,seq,op)
+                            self.assertLessEqual(len(s['pending']),1)
+                            self.assertLessEqual(len(s['room']['members']),slots)
+
     def test_allocator_reuses_places_and_changes_incarnation_across_generation_wrap(self):
         members = [dict(id=p, host='127.0.0.1', port=38000+i, p2p=39000+i)
                    for i, p in enumerate('ABCDE')]
@@ -37,6 +68,7 @@ class NativeMemberIdsTests(unittest.TestCase):
             adapter = Compatibility.__new__(Compatibility)
             adapter.e = SimpleNamespace(id='A', state=state,
                                         members={m['id']: m for m in members})
+            adapter.native_names={m['id']:m['id'] for m in members}
             result = adapter.room_details(state)
             ids = {m['npid']: m['member_id'] for m in result['members']}
             # Same decoder as packaged shadNet's allocMemberId/native allocator fixture.

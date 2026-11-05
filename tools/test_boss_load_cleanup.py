@@ -34,6 +34,8 @@ u64 image_base=0x100000, gauge=0x200000, rules=0x300000;
 constexpr u64 BossGaugePointerOffset=0x10, SummonSessionRulesPointerOffset=0x18;
 std::array<int,3> handles{1,2,3};
 bool bbsc_boss_at_own_death=true;
+s32 bbsc_encounter_lamp=2412952;
+u32 bbsc_encounter_map=24, bbsc_encounter_load_generation=1;
 s64 bbsc_boss_bar_seen_ms=100, bbsc_boss_killed_ms=50;
 bool selected=true, writable=true, chalice_ready=true, valid=true;
 bool bbsc_chalice_transition_owned=false;
@@ -64,6 +66,7 @@ bool Select(u64,s32) { return selected; }
 u64 Transition() {
     assert(!BossFightActive());
     assert(!bbsc_boss_at_own_death && bbsc_boss_bar_seen_ms==0 && bbsc_boss_killed_ms==0);
+    assert(bbsc_encounter_lamp==-1 && bbsc_encounter_map==0 && bbsc_encounter_load_generation==0);
     ++transitions; return 1;
 }
 u64 SetForcedSummonPositionOffset=reinterpret_cast<u64>(&Placement)-image_base;

@@ -50,8 +50,12 @@ def personal_writes(instructions, npc):
             wrote = True
         elif b == 2003 and n == 22 and len(a) == 12:
             lo, hi, value = struct.unpack('<III', a)
+            # Native state changes clear the whole 20-bit NPC family, including
+            # unused states absent from the literal talk-flag catalogue.
             if not (0 <= hi - lo < 100 and value in (0, 1) and
-                    all(f in npc for f in range(lo, hi + 1))):
+                    (all(f in npc for f in range(lo, hi + 1)) or
+                     (value == 0 and 1100 <= lo <= hi < 2000 and
+                      lo // 20 == hi // 20 and lo in npc))):
                 return False
             wrote = True
         else:
@@ -62,7 +66,6 @@ def personal_writes(instructions, npc):
 def generate():
     source = CPP.read_text(encoding='utf-8')
     npc = numbers(source, 'BbscNpcQuestFlags')
-    existing = numbers(source, 'BbscGuestGiftEvents')
     events = {}
     scripted = set()
     ranges = []
@@ -75,7 +78,10 @@ def generate():
                     lo, hi = struct.unpack_from('<II', a)
                     if 0 <= hi - lo <= 10000:
                         ranges.append((lo, hi))
-            if host_gate(instructions) and eid not in existing and personal_writes(instructions, npc):
+            # Already guest-enabled workers also need local network authority.
+            # Otherwise a host's synchronized action can bypass the guest's
+            # own condition evaluator (including the NPC-death prerequisite).
+            if host_gate(instructions) and personal_writes(instructions, npc):
                 events[eid] = file.name
             if eid == 12410702:
                 # Sister's window proxies and quest corpse, not a shared door/enemy.
@@ -86,7 +92,7 @@ def generate():
                 assert any(b == 2005 and n == 4 and struct.unpack('<ii', a) == (2410851, 0)
                            for b, n, a in instructions)
                 events[eid] = file.name
-    assert {12410702, 12410713, 12410748} <= events.keys()
+    assert {12410702, 12410713, 12410748, 12410761, 12410803, 12410804} <= events.keys()
     layout, _, data, rows = param.load('ItemLotParam')
     get_flags = set()
     for offset in rows.values():

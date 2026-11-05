@@ -44,6 +44,8 @@ std::atomic<bool> joined_claim_cleanup_due{false};
 std::atomic<bool> stale_cleared{false},was_in_session{false},placement_aimed{false};
 std::atomic<s64> claim_delivered_ms{0},own_user_id{0},placement_received_ms{0};
 std::atomic<u32> placement_sender{0};
+std::mutex aimed_placement_mutex;
+std::string aimed_placement_ack,ack_header;
 std::mutex summon_lifecycle_mutex;
 u64 summon_lifecycle_generation=0;
 bool summon_cleanup_in_flight=false;
@@ -65,9 +67,15 @@ DWORD Post(const std::string& url,const std::string& body){
 }
 int original_send(int,const void*,u64){++creates;operations.push_back('C');broker_record=true;return 0;}
 int original_set_content_length(int,u64){return 0;}
+int original_add_header(int,const char* name,const char* value,int){
+ assert(std::string(name)=="X-BBSC-Aimed-Placement");ack_header=value;return 0;
+}
 bool RewriteAreaId(std::string&){return false;}
 namespace Core::Bloodborne {
 bool pending=false;
+void NoteBbscHostRangOurSign(u32){}
+std::string applied;
+bool SetSeamlessHostPlacementHeader(std::string_view value){applied=value;return true;}
 void ClearSeamlessHostPlacementHeader(){}
 void SetBbscNativeSignClaimPending(bool v){pending=v;}
 }
@@ -85,7 +93,8 @@ int original_read_data(int,void* out,u64 size){
 for signature in ('std::string JsonString(', 'std::string JsonNumber(',
                   'bool ClearStaleRecord(', 'void WatchSessionForStaleClaims()',
                   'int SendCleanSummonCreate(', 'void MaintainSummonLifecycle()',
-                  'int PS4_SYSV_ABI ReadData('):
+                  'int PS4_SYSV_ABI ReadData(', 'void OnAimedHostPlacement(',
+                  'std::string AimedPlacementAcknowledgment('):
     fixture += function(signature) + '\n'
 fixture += r'''
 const std::string url="http://private:31315/summon_messenger/create?user_id=2545";
@@ -97,6 +106,27 @@ int main(){
  // Initial cleanup, then normal refresh without deleting an active invitation.
  assert(create()==0&&deletes==1&&creates==1&&broker_record);
  assert(create()==0&&deletes==1&&creates==2);
+ // Only a native-accepted, live aimed placement may acknowledge readiness.
+ const std::string placement="1,18010000,0,0,0,0,241040";
+ OnAimedHostPlacement(999,placement,111);assert(!placement_aimed);
+ state=3;OnAimedHostPlacement(2545,placement,111);assert(!placement_aimed);
+ state=6;OnAimedHostPlacement(2545,placement,111);assert(!placement_aimed);state=0;
+ assert(create()==0&&ack_header.empty());
+ OnAimedHostPlacement(2545,placement,111);
+ assert(AimedPlacementAcknowledgment()==placement);
+ // Direct JoinRoom may already be joining before the placement arrives.
+ state=4;OnAimedHostPlacement(2545,placement,111);
+ assert(AimedPlacementAcknowledgment()==placement);state=0;
+ assert(placement_aimed&&aimed_placement_ack==placement);
+ const std::string repeat=placement+"|Host-3-125";
+ OnAimedHostPlacement(2545,repeat,111);
+ assert(Core::Bloodborne::applied==placement && AimedPlacementAcknowledgment()==repeat);
+ OnAimedHostPlacement(2545,placement+"|invalid ticket",111);
+ assert(AimedPlacementAcknowledgment()==repeat);
+ assert(create()==0&&ack_header==aimed_placement_ack);
+ ack_header.clear();now+=90001;
+ assert(AimedPlacementAcknowledgment().empty()); // expires even without sign/create
+ assert(create()==0&&ack_header.empty()&&!placement_aimed);
  state=4;tick();assert(deletes==1&&broker_record);
  state=6;tick();assert(deletes==2&&!broker_record);
  tick();assert(deletes==2); // joined member no longer searchable

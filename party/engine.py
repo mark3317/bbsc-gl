@@ -20,6 +20,7 @@ import time
 import uuid
 from collections import deque
 from party_workers import DurableWriter,PeerSender
+from retirement import scope as native_scope, validate as validate_retirement
 
 MAX_FRAME = 256 * 1024
 
@@ -102,6 +103,9 @@ def transition(state, sender, seq, op):
         if sender != s['owner'] or target == sender or target not in s['roster'] or (s['room'] and s['room'].get('closing')):
             raise ValueError('Invalid claim')
         if target in s['pending'] or target in s['joined']: raise ValueError('Already joining')
+        if s['pending']: raise ValueError('Another admission is pending')
+        if s['room'] and len(s['room']['members']) >= s['room']['max_slots']:
+            raise ValueError('Room full')
         s['pending'][target] = {'generation': s['generation'], 'ticket': s['revision']+1, 'claim': op['claim']}
     elif kind == 'admission_cancel':
         if sender not in s['pending']: raise ValueError('Only joining member may cancel')
@@ -112,6 +116,8 @@ def transition(state, sender, seq, op):
         if s['room'] and s['room'].get('closing'): raise ValueError('Room is closing')
         if not s['room'] or sender not in s['pending'] or op['room_id'] != s['room']['id']:
             raise ValueError('No current admission')
+        if 'ticket' in op and op['ticket'] != s['pending'][sender].get('ticket',0):
+            raise ValueError('Stale JoinRoom admission')
         if s['room'].get('member_id_layout') != 2:
             raise ValueError('Legacy native room must drain before new admission')
         slots = {m['slot'] >> 4 for m in s['room']['members'].values()}
@@ -191,6 +197,7 @@ class Engine:
         self.relay_backlogs={};self.relay_sequences={};self.relay_buffers={};self.relay_rtt={}
         self.relay_window=16;self.relay_streams={}
         self.relay_in = queue.Queue(128); self.relay_error = None
+        self.relay_peer_errors = {}
         if self.path.exists():
             self.disk = json.loads(self.path.read_text())
             if self.disk['group'] != cfg['group'] or self.disk['id'] != member:
@@ -208,6 +215,8 @@ class Engine:
         self.relay_received={k:tuple(v) if len(v)==3 else (v[0],-1,v[1]) for k,v in receipts.items()}
         if receipts and not self.relay_path.exists():
             atomic_json(self.relay_path,{'group':cfg['group'],'id':member,'received':self.relay_received})
+        self.disk.setdefault('native_retirements', {})
+        self.retirement_at = 0
         self.disk['incarnation'] += 1; self.persist()
         self.state = self.disk['state']; self.pending_local = None
         engine = self
@@ -258,6 +267,7 @@ class Engine:
         with self.lock:
             return {'id': self.id, 'state': copy.deepcopy(self.state), 'final': self.disk['final'] if self.finalized() else min(self.disk['final'],self.state['revision']-1),
                     'pending': copy.deepcopy(self.pending_local), 'relay_error': self.relay_error,
+                    'relay_peer_errors': dict(self.relay_peer_errors),
                     'tx_phase': self.disk['tx']['phase'] if self.disk['tx'] else None}
     def start(self):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -317,9 +327,15 @@ class Engine:
         if target in self.blocked:return
         if target not in self.links:
             m=self.members[target]
-            self.links[target]=PeerSender((m['host'],m['port']),self.member['host'],self.stop_event,self.network_error,lambda:target not in self.blocked)
+            self.links[target]=PeerSender((m['host'],m['port']),self.member['host'],self.stop_event,lambda message:self.fail_relay_peer(target,message),lambda:target not in self.blocked)
         self.links[target].put(raw,priority)
     def network_error(self,message):self.relay_error=message
+    def fail_relay_peer(self,peer,message):
+        # Retire this recipient's stream without closing the shared native socket.
+        # Never skip a missing multipart frame and resume the same ordered stream.
+        with self.lock:
+            self.relay_peer_errors[peer]=message
+            self.relay_pending.pop(peer,None);self.relay_backlogs.pop(peer,None)
     def flush_outbound(self,now):
         waiting=[]
         for at,target,raw,priority,ticket in self.deferred:
@@ -336,9 +352,47 @@ class Engine:
             del self.disk['history'][min(self.disk['history'], key=int)]
     def seen(self, p):
         return self.disk['history'].get(str(p['next']['revision'])) == self.digest(p)
+    def retire_native(self, reason, scope, witness=None):
+        with self.lock:
+            if native_scope(self.state) != scope: raise ValueError('Stale native session')
+            record = dict(group=self.cfg['group'], issuer=self.id, reason=reason,
+                          base=copy.deepcopy(self.state), witness=copy.deepcopy(witness))
+            validate_retirement(record)
+            record['signature'] = hmac.new(self.key,canonical(record),hashlib.sha256).hexdigest()
+            self.accept_retirement(record)
+    def accept_retirement(self, record):
+        payload = {k:v for k,v in record.items() if k != 'signature'}
+        if (record['group'] != self.cfg['group'] or
+                not hmac.compare_digest(record['signature'],hmac.new(self.key,canonical(payload),hashlib.sha256).hexdigest())):
+            raise ValueError('Invalid native retirement signature')
+        next_state = validate_retirement(record)
+        base = record['base']; current = self.state
+        if (base['epoch'] != current['epoch'] or base['roster'] != current['roster'] or
+                base['generation'] < current['generation']): return
+        if base['generation'] == current['generation'] and current['owner'] not in (None,base['owner']): return
+        if (base['generation'] == current['generation'] and current.get('room') and
+                native_scope(current) != native_scope(base)): return
+        key = str(base['generation'])
+        old = self.disk['native_retirements'].get(key)
+        rank = lambda r:(r['base']['revision'],hashlib.sha256(canonical(r)).hexdigest())
+        if old and rank(record) <= rank(old): return
+        # Terminal evidence ends this generation, including speculative prepares.
+        # It grants no role: the next acquire still requires the full roster.
+        self.disk['native_retirements'][key] = copy.deepcopy(record)
+        while len(self.disk['native_retirements']) > 32:
+            del self.disk['native_retirements'][min(self.disk['native_retirements'],key=int)]
+        self.disk.update(state=next_state, final=next_state['revision'], accepted=None, tx=None)
+        self.state = next_state
+        self.pending_local = None
+        self.disk['history'] = {}
+        self.retirement_at = 0
+        self.persist()
+        self.final_ticket = self.control_ticket
     def handle(self, m):
         kind = m['type']; sender = m['from']; s = self.state
-        if kind == 'request':
+        if kind == 'native_retirement':
+            self.accept_retirement(m['record'])
+        elif kind == 'request':
             if self.id != self.coordinator() or self.disk['final'] != s['revision']: return
             if sender not in s['roster'] or m['revision'] != s['revision']: return
             if self.disk['tx']: return
@@ -354,6 +408,7 @@ class Engine:
                 self.pending_local['error'] = m['error']
         elif kind in ('prepare', 'commit', 'final'):
             p = m['proposal']; base = p['base']; rev = p['next']['revision']
+            if base['owner'] and str(base['generation']) in self.disk['native_retirements']: return
             if sender != self.coordinator(base) or self.id not in base['roster']: return
             if self.seen(p):
                 if kind == 'final' and self.disk['final'] < rev:
@@ -462,6 +517,7 @@ class Engine:
     def reset_relay(self):
         with self.lock:
             self.relay_transport+=1;self.relay_pending.clear();self.relay_error=None
+            self.relay_peer_errors.clear()
             self.relay_backlogs.clear();self.relay_sequences.clear()
             self.relay_buffers.clear();self.relay_streams.clear()
             while not self.relay_out.empty():self.relay_out.get_nowait()
@@ -482,11 +538,13 @@ class Engine:
             except queue.Empty:break
             data=base64.b64encode(raw).decode()
             for peer in self.state['roster']:
-                if peer==self.id or (recipients is not None and peer not in recipients):continue
+                if peer==self.id or peer in self.relay_peer_errors or (recipients is not None and peer not in recipients):continue
                 backlog=self.relay_backlogs.setdefault(peer,deque())
-                if len(backlog)>=128:self.relay_error='peer relay backlog full';return
+                if len(backlog)>=128:
+                    self.fail_relay_peer(peer,'peer relay backlog full');continue
                 backlog.append((data,binding,now))
-        for peer,backlog in self.relay_backlogs.items():
+        for peer,backlog in list(self.relay_backlogs.items()):
+            if peer in self.relay_peer_errors:continue
             window=self.relay_pending.setdefault(peer,{})
             while backlog and len(window)<self.relay_window:
                 data,binding,at=backlog.popleft()
@@ -495,7 +553,8 @@ class Engine:
                      'generation':self.state['generation'],'binding':binding,'data':data}
                 window[seq]={'msg':msg,'at':at,'sent':0,'attempts':0,'rto':max(.15,min(2,3*self.relay_rtt.get(peer,.1)))}
             for pending in window.values():
-                if now-pending['at']>10:self.relay_error='unacknowledged BBSC frame expired';return
+                if now-pending['at']>10:
+                    self.fail_relay_peer(peer,'unacknowledged BBSC frame expired');break
                 if not pending['attempts'] or now-pending['sent']>=pending['rto']:
                     if pending['attempts']:pending['rto']=min(2,pending['rto']*2)
                     self.send(peer,pending['msg']);pending['sent']=now;pending['attempts']+=1
@@ -529,5 +588,9 @@ class Engine:
                             self.status_last=stamp;self.status_at=now;self.status_tx+=1
                             self.fan({'type':'status','epoch':self.state['epoch'],'generation':self.state['generation'],
                                       'incarnation':own['stamp'][0],'seq':own['stamp'][1],'body':own['body']},self.state['roster'])
+                        records=self.disk['native_retirements']
+                        if records and now-self.retirement_at>=2:
+                            self.retirement_at=now
+                            self.fan({'type':'native_retirement','record':records[max(records,key=int)]},self.state['roster'])
                     if not self.relay_error:self.pump_relay(now)
                 except OSError as error:self.relay_error=str(error)

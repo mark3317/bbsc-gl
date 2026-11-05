@@ -58,6 +58,13 @@ void TickBbscPartyItem() {
         return;
     }
     if (result != Mailbox::Granted) return;
+    // The durable host reservation already withdrew our published sign and
+    // blocks other hosts. Stop the native Small Bell before applying Beckoning;
+    // an old responder observation must not undo the newly granted role.
+    if (BbscLocalEffectNode(9005) != 0) {
+        if (!BbscEraseLocalEffect(9005)) return;
+        BBSC_TIMELINE("JOIN", "Small Resonant Bell stopped before switching to Beckoning host search");
+    }
     // The verified NativeApply entry is also used by seamless responder resume.
     // Keep the permission only on this call stack so its nested GoodsExecutor
     // hook cannot issue a second request or consume the action a second time.

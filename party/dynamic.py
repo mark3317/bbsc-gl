@@ -1,0 +1,931 @@
+"""Late discovery with durable, single-writer world sessions.
+
+Each process owns an independent home journal. A guest is durably reserved before
+the host commits its admission. Only the host writes that world's state; a guest
+never promotes itself on timeout. Legacy unanimous invitations use Engine instead.
+The selected private network remains the discovery/trust boundary.
+"""
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import hmac
+import json
+from pathlib import Path
+import queue
+import re
+import secrets
+import socket
+import socketserver
+import struct
+import threading
+import time
+
+from engine import MAX_FRAME, atomic_json, canonical, initial, transition, validate_invite
+from retirement import terminal, scope as native_scope, validate as validate_retirement
+
+
+def member(offer):
+    return {k: offer[k] for k in ('id', 'host', 'port', 'p2p', 'name')}
+
+
+def validate_offer(offer):
+    validate_invite(dict(version=1, secret='00'*32, members=[member(offer)]))
+    if not re.fullmatch('[a-f0-9]{64}', offer['seed']):
+        raise ValueError('Invalid discovery identity')
+
+
+def session(cfg, state):
+    return [cfg['group'], state['generation']]
+
+
+def admission_ticket(state, who):
+    if who == state['owner']:
+        return 0
+    if who in state['pending']:
+        return state['pending'][who].get('ticket')
+    room = state.get('room') or {}
+    member = room.get('members', {}).get(who) or room.get('departing', {}).get(who)
+    return member.get('admission_ticket', 0) if member else None
+
+
+def read_frame(sock):
+    def exact(size):
+        data = bytearray()
+        while len(data) < size:
+            part = sock.recv(size-len(data))
+            if not part:
+                raise OSError('Closed party connection')
+            data.extend(part)
+        return bytes(data)
+    size, = struct.unpack('<I', exact(4))
+    if not 0 < size <= MAX_FRAME:
+        raise ValueError('Oversized party RPC')
+    return json.loads(exact(size))
+
+
+def write_frame(sock, body):
+    raw = canonical(body)
+    if len(raw) > MAX_FRAME:
+        raise ValueError('Oversized party RPC')
+    sock.sendall(struct.pack('<I', len(raw))+raw)
+
+
+class DynamicEngine:
+    dynamic = True
+    def __init__(self, cfg, who, profile, peers_file):
+        validate_invite(cfg)
+        self.cfg = copy.deepcopy(cfg)
+        self.id, self.profile = who, Path(profile)
+        self.identity = copy.deepcopy(cfg['identity'])
+        validate_offer(self.identity)
+        self.member = member(self.identity)
+        if who != self.identity['id'] or cfg['members'] != [self.member]:
+            raise ValueError('Dynamic configuration must contain only its own identity')
+        self.path = self.profile/'dynamic-journal.json'
+        self.peers_file = Path(peers_file)
+        self.lock = threading.RLock()
+        self.mutation = threading.Lock()
+        self.stop_event = threading.Event()
+        self.peers = {who: self.identity}
+        self.members = {who: self.member}
+        self.signs = {}
+        self.local_status = {'sign': None}
+        self.native_status = {}
+        self.native_at = 0
+        self.yielding_search = None
+        self.host_intent_generation = None
+        self.update_seq = 0
+        self.pending_local = None
+        self.finished_commands = {}
+        self.storage_error = None
+        self.relay_error = None
+        self.relay_peer_errors = {}
+        self.relay_network_errors = {}
+        self.relay_in = queue.Queue(128)
+        self.relay_transport = 0
+        self.relay_next_stream = 0
+        self.relay_peer_streams = {}
+        self.relay_workers = {}
+        self.relay_sequences = {}
+        self.relay_buffers = {}
+        self.relay_active = {}
+        self.relay_threads = []
+        self.relay_enqueue = threading.Lock()
+        self.blocked = set()  # Fault injection on isolated test networks.
+        if self.path.exists():
+            self.disk = json.loads(self.path.read_text(encoding='utf-8'))
+            if self.disk['group'] != cfg['group'] or self.disk['id'] != who:
+                raise ValueError('Dynamic journal identity mismatch')
+        else:
+            self.disk = dict(group=cfg['group'], id=who, incarnation=0, counter=0,
+                             home=initial(cfg), attachment=None, staged=None,
+                             retired=[], closed={}, receipts={}, identities={})
+        # Bind before persisting anything; a second process cannot touch this journal.
+        outer = self
+
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = False
+            daemon_threads = True
+            request_queue_size = 128
+
+            def server_bind(self):
+                if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                super().server_bind()
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.settimeout(2)
+                try:
+                    request = read_frame(self.request)
+                    sender = request['from']
+                    with outer.lock:
+                        known = sender in outer.peers
+                    if not known:
+                        outer.refresh_peers()
+                    with outer.lock:
+                        peer = outer.peers.get(sender)
+                        if not peer or peer['host'] != self.client_address[0] or sender in outer.blocked:
+                            return
+                        outer.verify(sender, request)
+                    try:
+                        result = {'ok': True, 'result': outer.dispatch(sender, request['body'])}
+                    except (ValueError, KeyError) as error:
+                        result = {'ok': False, 'error': str(error)}
+                    write_frame(self.request, outer.signed(sender, dict(result, nonce=request['nonce'])))
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
+
+        self.server = Server((self.member['host'], self.member['port']), Handler)
+        self.disk['incarnation'] += 1
+        for peer in self.disk['identities'].values():
+            self.peers[peer['id']] = peer
+            self.members[peer['id']] = member(peer)
+        self.persist()
+        self.refresh_peers()
+
+    @property
+    def state(self):
+        attached = self.disk['attachment']
+        return attached['state'] if attached else self.disk['home']
+
+    def persist(self):
+        try:
+            atomic_json(self.path, self.disk)
+            self.storage_error = None
+        except OSError as error:
+            self.storage_error = str(error)
+            raise
+
+    def refresh_peers(self):
+        try:
+            offers = json.loads(self.peers_file.read_text(encoding='utf-8'))
+            if not isinstance(offers, list) or len(offers) > 17:
+                return
+            with self.lock:
+                advertised = {p['id'] for p in offers if isinstance(p, dict) and isinstance(p.get('id'), str)}
+                pinned = set(self.state['roster']) if self.state['owner'] else {self.id}
+                if self.disk['staged']:
+                    pinned.update(self.disk['staged']['state']['roster'])
+                for who in set(self.peers) - advertised - pinned:
+                    if time.monotonic()-self.signs.get(who, {}).get('at', float('-inf')) < 5:
+                        continue
+                    del self.peers[who], self.members[who]
+                    self.signs.pop(who, None)
+                for offer in offers:
+                    try:
+                        validate_offer(offer)
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    who = offer['id']
+                    if who == self.id:
+                        continue
+                    if who not in self.peers and len(self.peers) >= 17:
+                        continue
+                    old = self.peers.get(who)
+                    # Active session identities/endpoints/names are pinned.
+                    active = who in pinned
+                    if old and (old['seed'] != offer['seed'] or active):
+                        continue
+                    if any(p['name'].casefold() == offer['name'].casefold()
+                           or (p['host'], p['port']) == (offer['host'], offer['port'])
+                           for ident, p in self.peers.items() if ident != who):
+                        continue
+                    self.peers[who] = copy.deepcopy(offer)
+                    self.members[who] = member(offer)
+        except (OSError, ValueError):
+            pass
+
+    def pair_key(self, who):
+        identities = sorted([(self.id, self.identity['seed']), (who, self.peers[who]['seed'])])
+        return hashlib.sha256(b'BBGL-dynamic-v1\0'+canonical(identities)).digest()
+
+    def signed(self, who, body):
+        message = dict(body, **{'from': self.id})
+        message['mac'] = hmac.new(self.pair_key(who), canonical(message), hashlib.sha256).hexdigest()
+        return message
+
+    def verify(self, who, message):
+        unsigned = {k: v for k, v in message.items() if k != 'mac'}
+        expected = hmac.new(self.pair_key(who), canonical(unsigned), hashlib.sha256).hexdigest()
+        if message.get('from') != who or not hmac.compare_digest(message.get('mac', ''), expected):
+            raise ValueError('Wrong dynamic peer authentication')
+
+    def rpc(self, who, body):
+        with self.lock:
+            if who in self.blocked:
+                raise OSError('Isolated test peer')
+            peer = copy.deepcopy(self.peers[who])
+            nonce = secrets.token_hex(16)
+            request = self.signed(who, dict(nonce=nonce, body=body))
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.5)
+            sock.bind((self.member['host'], 0))
+            sock.connect((peer['host'], peer['port']))
+            write_frame(sock, request)
+            try:
+                reply = read_frame(sock)
+                with self.lock:
+                    self.verify(who, reply)
+                if reply.get('nonce') != nonce or type(reply.get('ok')) is not bool:
+                    raise ValueError('Unexpected RPC reply')
+                if ('result' if reply['ok'] else 'error') not in reply:
+                    raise ValueError('Incomplete RPC reply')
+            except (ValueError, AttributeError, TypeError) as error:
+                # The peer may have committed. Only its authenticated rejection
+                # for this nonce lets the owner roll back a staged reservation.
+                raise OSError('Unconfirmed dynamic RPC reply') from error
+        if reply['ok'] is False:
+            raise ValueError(reply['error'])
+        return reply['result']
+
+    def world(self, expected=None):
+        if self.storage_error or self.stop_event.is_set():
+            raise OSError('World journal is not durable')
+        state = self.disk['home']
+        if expected is not None and expected != session(self.cfg, state):
+            state = self.disk['closed'].get(canonical(expected).decode())
+            if state is None:
+                raise ValueError('Stale world session')
+        ids = state['roster']
+        return dict(session=session(self.cfg, state), state=copy.deepcopy(state),
+                    peers=[copy.deepcopy(self.peers.get(p) or self.disk['identities'][p]) for p in ids])
+
+    def dispatch(self, sender, body):
+        if self.stop_event.is_set():
+            raise OSError('World runtime is closing')
+        kind = body['kind']
+        if kind == 'presence':
+            with self.lock:
+                attached = self.disk['attachment']
+                eligible = self.disk['home']['owner'] is None and (not attached or attached['host'] == sender)
+                return dict(body=copy.deepcopy(self.local_status) if eligible else {'sign': None},
+                            stamp=[self.disk['incarnation'], self.update_seq], host=self.host_presence())
+        if kind == 'reserve':
+            return self.reserve(sender, body)
+        if kind == 'view':
+            with self.lock:
+                return self.participant_view(sender,body['session'])
+        if kind == 'command':
+            with self.mutation:
+                with self.lock:
+                    if self.stop_event.is_set():
+                        raise OSError('World runtime is closing')
+                    if body['op']['kind'] in ('acquire', 'claim', 'membership'):
+                        raise ValueError('Only the local world owner may reserve players')
+                    home = self.disk['home']
+                    if body['session'] != session(self.cfg, home):
+                        raise ValueError('Stale world command')
+                    if str(body['seq']) in home['results'].get(sender, {}):
+                        return self.participant_view(sender,body['session'])
+                    if 'admission' in body and body['admission'] != admission_ticket(home, sender):
+                        raise ValueError('Stale guest command admission')
+                    self.apply(sender, body['seq'], body['op'])
+                    return self.world()
+        if kind == 'relay':
+            return self.receive_relay(sender, body)
+        raise ValueError('Unknown dynamic RPC')
+
+    def participant_view(self,sender,session_id):
+        world = self.world(session_id)
+        state = world['state']
+        if sender in state['roster']:
+            return world
+        receipts = state['results'].get(sender)
+        if not receipts:
+            raise ValueError('Not a world participant')
+        # Another admission can remove a departed guest from the roster while
+        # its leave response is in flight. Return only its own receipts and
+        # proof of absence, never the new guests' identities or room contents.
+        departed = initial(self.cfg)
+        departed.update(revision=state['revision'],generation=state['generation'],
+                        epoch=state['epoch'],roster=[],results={sender:receipts})
+        return dict(session=world['session'],state=departed,peers=[])
+
+    def reserve(self, sender, body):
+        world = body['world']
+        state = world['state']
+        reservation = [*world['session'], body['seq']]
+        with self.lock:
+            if self.storage_error or self.stop_event.is_set():
+                raise OSError('Guest journal is not durable')
+            attached = self.disk['attachment']
+            if attached:
+                if attached['host'] == sender and attached['reservation'] == reservation:
+                    return True
+                raise ValueError('Player already belongs to another world')
+            if reservation in self.disk['retired']:
+                raise ValueError('Admission already retired')
+            if self.disk['home']['owner'] is not None or self.pending_local or not self.local_status.get('sign'):
+                raise ValueError('Player is not searching as a guest')
+            if state['owner'] != sender or self.id not in state['pending'] or len(state['roster']) > 5:
+                raise ValueError('Invalid world reservation')
+            offered = {p['id']: p for p in world['peers']}
+            if set(offered) != set(state['roster']) or offered.get(self.id) != self.identity or offered.get(sender) != self.peers[sender]:
+                raise ValueError('Reservation identities disagree')
+            for peer in offered.values():
+                validate_offer(peer)
+            validate_invite(dict(version=1, secret='00'*32, members=[member(p) for p in offered.values()]))
+            for who, peer in offered.items():
+                self.peers[who] = copy.deepcopy(peer)
+                self.members[who] = member(peer)
+                if who != self.id:
+                    self.disk['identities'][who] = copy.deepcopy(peer)
+            self.disk['attachment'] = dict(host=sender, session=world['session'], reservation=reservation,
+                                           state=copy.deepcopy(state), confirmed=False)
+            self.persist()  # Native never sees a claim before the host confirms it.
+            self.reset_relay()
+            return True
+
+    def apply(self, sender, seq, op):
+        state = self.disk['home']
+        if op['kind'] == 'room_create' and self.yielding_search == state['generation']:
+            raise ValueError('Empty search is yielding to a network host')
+        if self.disk['staged']:
+            raise ValueError('Admission confirmation pending')
+        if sender not in state['roster']:
+            raise ValueError('Not a world participant')
+        done = state['completed'].get(sender, [0, None])
+        if seq <= done[0]:
+            if str(seq) not in state['results'].get(sender, {}):
+                raise ValueError('Expired request receipt')
+            return
+        next_state = transition(state, sender, seq, op)
+        if op['kind'] == 'room_join':
+            next_state['room']['members'][sender]['admission_ticket'] = state['pending'][sender].get('ticket', 0)
+        if op['kind'] == 'room_create':
+            # Native callbacks carry only room_id, not our owner/session tuple.
+            # Different independent hosts must not produce the same native ID.
+            room_id = secrets.randbits(63) or 1
+            next_state['room']['id'] = room_id
+            next_state['completed'][sender][1] = room_id
+            next_state['results'][sender][str(seq)] = room_id
+        self.disk['home'] = next_state
+        if op['kind'] == 'release':
+            self.disk['closed'][canonical(session(self.cfg, next_state)).decode()] = copy.deepcopy(next_state)
+            while len(self.disk['closed']) > 32:
+                del self.disk['closed'][next(iter(self.disk['closed']))]
+        self.persist()
+        if next_state['generation'] != state['generation']:
+            # Receipts are scoped to the world generation. A new world must
+            # start its outgoing stream at seq=1 too, even if native TCP stays up.
+            self.reset_relay()
+
+    def stage_claim(self, seq, op):
+        with self.lock:
+            if self.yielding_search == self.disk['home']['generation']:
+                raise ValueError('Empty search is yielding to a network host')
+            if self.disk['attachment']:
+                raise ValueError('Guest cannot claim another player')
+            if self.disk['staged']:
+                return
+            state = copy.deepcopy(self.disk['home'])
+            if state['owner'] != self.id:
+                raise ValueError('Only the local world owner may claim')
+            target = op['target']
+            if target not in self.peers or target == self.id:
+                raise ValueError('Unknown claim target')
+            # Idle/offline acquaintances never become voting members or consume slots.
+            room = state['room'] or {}
+            active = {self.id, target} | set(state['joined']) | set(state['pending']) | set(room.get('members', {})) | set(room.get('departing', {}))
+            state['roster'] = sorted(active)
+            if len(active) > 5:
+                raise ValueError('World full')
+            next_state = transition(state, self.id, seq, op)
+            peers = [self.peers[p] for p in next_state['roster']]
+            validate_invite(dict(version=1, secret='00'*32, members=[member(p) for p in peers]))
+            self.disk['identities'].update({p['id']: copy.deepcopy(p) for p in peers if p['id'] != self.id})
+            self.disk['staged'] = dict(seq=seq, target=target, state=next_state)
+            self.persist()
+
+    def finish_claim(self):
+        with self.lock:
+            staged = copy.deepcopy(self.disk['staged'])
+            if not staged:
+                return
+            world = dict(session=session(self.cfg, staged['state']), state=staged['state'],
+                         peers=[copy.deepcopy(self.peers[p]) for p in staged['state']['roster']])
+        try:
+            self.rpc(staged['target'], dict(kind='reserve', seq=staged['seq'], world=world))
+        except ValueError:
+            # A signed rejection guarantees that this reservation was not accepted.
+            with self.lock:
+                self.disk['staged'] = None
+                self.persist()
+            raise
+        with self.lock:
+            self.disk['home'] = staged['state']
+            self.disk['staged'] = None
+            self.reset_relay_peer(staged['target'])
+            self.persist()
+
+    def accept_world(self, world):
+        with self.lock:
+            attached = self.disk['attachment']
+            if not attached or world['session'] != attached['session']:
+                raise ValueError('Unexpected world snapshot')
+            state = world['state']
+            # During reserve, the host may still be persisting its commit.
+            if state['revision'] < attached['state']['revision']:
+                return
+            if state['revision'] == attached['state']['revision'] and state != attached['state']:
+                raise ValueError('Conflicting world snapshot')
+            if state['revision'] == attached['state']['revision'] and attached['confirmed']:
+                return
+            previous = attached['state']
+            old_scope = (previous['owner'], previous['generation'])
+            attached['state'] = copy.deepcopy(state)
+            attached['confirmed'] = True
+            pending = self.pending_local
+            if pending and pending.get('destination') and pending['destination']['session'] == world['session']:
+                receipts = state.get('results', {}).get(self.id, {})
+                if str(pending['seq']) in receipts:
+                    pending['result'] = receipts[str(pending['seq'])]
+            room = state['room'] or {}
+            if self.id not in state['pending'] and self.id not in state['joined'] and self.id not in room.get('members', {}) and self.id not in room.get('departing', {}):
+                self.disk['retired'].append(attached['reservation'])
+                self.disk['retired'] = self.disk['retired'][-64:]
+                self.disk['attachment'] = None
+            self.persist()
+            if not self.disk['attachment'] or old_scope != (state['owner'], state['generation']):
+                self.reset_relay()
+            else:
+                for peer in state['roster']:
+                    if peer != self.id and admission_ticket(previous, peer) != admission_ticket(state, peer):
+                        self.reset_relay_peer(peer)
+
+    def start(self):
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.scanner = threading.Thread(target=self.scan, daemon=True)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.thread.start()
+        self.scanner.start()
+        return self
+
+    def close(self):
+        self.stop_event.set()
+        self.server.shutdown()
+        for thread in (getattr(self, 'thread', None), getattr(self, 'scanner', None)):
+            if thread:
+                thread.join(8)
+        for thread in self.relay_threads:
+            thread.join(2)
+        # Retain the exclusive endpoint until the old mutation workers are done.
+        self.server.server_close()
+
+    def finalized(self, state=None):
+        with self.lock:
+            attached = self.disk['attachment']
+            return not self.storage_error and (not attached or attached['confirmed'])
+
+    def confirmed_state(self, revision):
+        with self.lock:
+            if not self.finalized():
+                return False, None
+            return True, copy.deepcopy(self.state) if self.state['revision'] != revision else None
+
+    def snapshot(self):
+        with self.lock:
+            return dict(id=self.id, state=copy.deepcopy(self.state), final=self.state['revision'] if self.finalized() else -1,
+                        pending=copy.deepcopy(self.pending_local), relay_error=self.relay_error,
+                        relay_peer_errors=dict(self.relay_peer_errors),
+                        tx_phase='reserve' if self.disk['staged'] else None)
+
+    def request(self, op):
+        with self.lock:
+            self.collect_finished_command()
+            if self.pending_local:
+                raise ValueError('One outstanding command per member')
+            self.disk['counter'] += 1
+            self.persist()
+            self.pending_local = dict(seq=self.disk['counter'], op=copy.deepcopy(op),
+                                      destination=copy.deepcopy(self.disk['attachment']))
+            return self.disk['counter']
+
+    def collect_finished_command(self):
+        pending = self.pending_local
+        if not pending or not self.finalized():
+            return
+        seq = pending['seq']
+        receipts = self.state['results'].get(self.id, {})
+        if str(seq) in receipts:
+            pending['result'] = receipts[str(seq)]
+        if 'result' in pending or 'error' in pending:
+            # Waiters and maintenance poll independently. Keep the completed
+            # result for its caller without blocking the next operation.
+            self.finished_commands[seq] = (pending.get('error'), pending.get('result'))
+            if len(self.finished_commands) > 32:
+                del self.finished_commands[next(iter(self.finished_commands))]
+            self.pending_local = None
+
+    def poll(self, seq):
+        with self.lock:
+            if seq in self.finished_commands:
+                error, result = self.finished_commands.pop(seq)
+                if error is not None:
+                    raise ValueError(error)
+                return True, result
+            pending = self.pending_local
+            if pending and pending['seq'] == seq:
+                if 'error' in pending:
+                    self.pending_local = None
+                    raise ValueError(pending['error'])
+                if 'result' in pending and self.finalized():
+                    self.pending_local = None
+                    return True, pending['result']
+            done = self.state.get('results', {}).get(self.id, {})
+            if str(seq) in done and self.finalized():
+                if self.pending_local and self.pending_local['seq'] == seq:
+                    self.pending_local = None
+                return True, done[str(seq)]
+            return False, None
+
+    def wait(self, seq, timeout=10):
+        deadline = time.monotonic()+timeout
+        while time.monotonic() < deadline:
+            ready, result = self.poll(seq)
+            if ready:
+                return result
+            time.sleep(.02)
+        raise TimeoutError('Waiting for world owner confirmation')
+
+    def command(self, op, timeout=10):
+        return self.wait(self.request(op), timeout)
+
+    def retire_native(self, reason, scope, witness=None):
+        with self.mutation, self.lock:
+            state = self.state
+            if native_scope(state) != scope: raise ValueError('Stale native session')
+            validate_retirement(dict(base=state, issuer=self.id, reason=reason, witness=witness))
+            if reason == 'host_lost':
+                attached = self.disk['attachment']
+                if not attached:
+                    raise ValueError('No attached host')
+                # Retire this exact reservation locally even if its host crashed.
+                # A late view/reserve cannot attach it again or affect a new world.
+                self.disk['retired'].append(attached['reservation'])
+                self.disk['retired'] = self.disk['retired'][-64:]
+                self.disk['attachment'] = None
+            else:
+                staged = self.disk['staged']
+                base = staged['state'] if staged else self.disk['home']
+                closed = terminal(base)
+                self.disk['home'] = closed
+                self.disk['staged'] = None
+                self.disk['closed'][canonical(session(self.cfg, closed)).decode()] = copy.deepcopy(closed)
+                while len(self.disk['closed']) > 32:
+                    del self.disk['closed'][next(iter(self.disk['closed']))]
+            self.pending_local = None
+            self.persist()
+            self.reset_relay()
+
+    def publish(self, body):
+        with self.lock:
+            if body != self.local_status:
+                self.local_status = copy.deepcopy(body)
+                self.update_seq += 1
+
+    def observe_native(self, body):
+        with self.lock:
+            self.native_status = copy.deepcopy(body)
+            self.native_at = time.monotonic()
+            if body.get('bell'):
+                self.host_intent_generation = None
+
+    def empty_search(self):
+        # Call under lock. An admitted/constructing room must never yield to
+        # discovery, including while its actors disappear during a load.
+        s = self.disk['home']
+        return (not self.disk['attachment'] and not self.disk['staged'] and
+                s['owner'] == self.id and not s['room'] and not s['pending'] and not s['joined'])
+
+    def host_presence(self):
+        s, n = self.disk['home'], self.native_status
+        if (self.storage_error or self.disk['attachment'] or s['owner'] != self.id or
+                time.monotonic()-self.native_at >= 1.5 or n.get('fresh') is not True or
+                n.get('await_title') or
+                not (n.get('bell') or n.get('state') == 3 or not self.empty_search() or
+                     self.host_intent_generation == s['generation'])):
+            return None
+        if s['room'] and s['room'].get('closing'):
+            return None
+        return dict(owner=self.id, generation=s['generation'], occupied=not self.empty_search())
+
+    def preferred_host(self):
+        """Fresh authenticated host; stable ID breaks only empty-search ties."""
+        with self.lock:
+            if self.disk['attachment'] or (self.state['owner'] == self.id and not self.empty_search()):
+                return None
+            candidates = []
+            for who, entry in self.signs.items():
+                host = entry.get('host')
+                if (who == self.id or who not in self.peers or time.monotonic()-entry['at'] >= 2 or
+                        not isinstance(host, dict) or host.get('owner') != who):
+                    continue
+                if self.state['owner'] == self.id and not host.get('occupied') and who > self.id:
+                    continue
+                candidates.append((not bool(host.get('occupied')), who))
+            return min(candidates)[1] if candidates else None
+
+    def run(self):
+        while not self.stop_event.wait(.03):
+            with self.lock:
+                if self.storage_error:
+                    try:
+                        self.persist()
+                    except OSError:
+                        continue
+                self.collect_finished_command()
+                pending = copy.deepcopy(self.pending_local)
+                staged = bool(self.disk['staged'])
+            if not staged and (not pending or 'error' in pending or 'result' in pending):
+                continue
+            try:
+                with self.mutation:
+                    # Retirement may have cancelled the operation while this
+                    # worker waited for the mutation lock.
+                    with self.lock:
+                        if pending and (not self.pending_local or self.pending_local['seq'] != pending['seq']):
+                            continue
+                    if staged:
+                        self.finish_claim()
+                    if not pending:
+                        continue
+                    with self.lock:
+                        attached = copy.deepcopy(self.disk['attachment'])
+                    destination = pending.get('destination')
+                    if destination:
+                        world = self.rpc(destination['host'], dict(kind='command', session=destination['session'],
+                                                               admission=admission_ticket(destination['state'], self.id),
+                                                               seq=pending['seq'], op=pending['op']))
+                        result = world['state']['results'][self.id][str(pending['seq'])]
+                        if attached:
+                            self.accept_world(world)
+                    else:
+                        with self.lock:
+                            done = self.disk['home']['results'].get(self.id, {})
+                            completed = str(pending['seq']) in done
+                        if not completed and pending['op']['kind'] == 'claim':
+                            self.stage_claim(pending['seq'], pending['op'])
+                            self.finish_claim()
+                        elif not completed:
+                            with self.lock:
+                                self.apply(self.id, pending['seq'], pending['op'])
+                        with self.lock:
+                            result = self.disk['home']['results'][self.id][str(pending['seq'])]
+                    with self.lock:
+                        if self.pending_local and self.pending_local['seq'] == pending['seq']:
+                            self.pending_local['result'] = result
+            except (OSError, TimeoutError):
+                pass  # Keep the same durable reservation/request, never release on timeout.
+            except (ValueError, KeyError) as error:
+                with self.lock:
+                    if self.pending_local and pending and self.pending_local['seq'] == pending['seq']:
+                        self.pending_local['error'] = str(error)
+
+    def scan(self):
+        workers = {}
+        while not self.stop_event.is_set():
+            self.refresh_peers()
+            with self.lock:
+                peers = set(self.peers) - {self.id}
+            workers = {who: thread for who, thread in workers.items() if thread.is_alive()}
+            for who in peers:
+                if who in workers:
+                    continue
+                thread = threading.Thread(target=self.poll_peer, args=(who,), daemon=True)
+                workers[who] = thread
+                thread.start()
+            self.stop_event.wait(.5)
+        for thread in workers.values():
+            thread.join()
+
+    def poll_peer(self, who):
+        while not self.stop_event.is_set():
+            with self.lock:
+                peer = self.peers.get(who)
+                if peer is None:
+                    return
+                attached = self.disk['attachment']
+                session_id = attached['session'] if attached and attached['host'] == who else None
+            if session_id:
+                try:
+                    self.accept_world(self.rpc(who, dict(kind='view', session=session_id)))
+                except (OSError, ValueError, KeyError):
+                    pass
+            try:
+                reply = self.rpc(who, dict(kind='presence'))
+                with self.lock:
+                    if peer == self.peers.get(who) and not self.stop_event.is_set():
+                        self.signs[who] = dict(body=reply['body'], stamp=reply['stamp'],
+                                               host=reply.get('host'), at=time.monotonic())
+            except (OSError, ValueError, KeyError):
+                pass
+            self.stop_event.wait(.5)
+
+    def reset_relay(self):
+        with self.lock:
+            self.relay_next_stream += 1
+            self.relay_transport = self.relay_next_stream
+            self.relay_peer_streams.clear()
+            self.relay_error = None
+            self.relay_peer_errors.clear()
+            self.relay_network_errors.clear()
+            self.relay_sequences.clear()
+            self.relay_buffers.clear()
+            self.relay_active.clear()
+
+    def reset_relay_peer(self, who):
+        # A new admission fences this peer's old queued/in-flight frames only.
+        # Preserve the host role, native TCP and other guests' streams.
+        with self.lock:
+            self.relay_next_stream += 1
+            self.relay_peer_streams[who] = self.relay_next_stream
+            self.relay_sequences.pop(who, None)
+            self.relay_peer_errors.pop(who, None)
+            self.relay_network_errors.pop(who, None)
+
+    def relay_stream(self, who):
+        return self.relay_peer_streams.get(who, self.relay_transport)
+
+    def current_session(self):
+        attached = self.disk['attachment']
+        return attached['session'] if attached else session(self.cfg, self.disk['home'])
+
+    def relay_scope(self, sender, recipient):
+        with self.lock:
+            return [self.current_session(), admission_ticket(self.state, sender), admission_ticket(self.state, recipient)]
+
+    def relay(self, raw, binding=None, recipients=None):
+        if len(raw) > 65536:
+            raise ValueError('Oversized BBSC frame')
+        # Apply backpressure before consuming more native frames. A temporary
+        # snapshot burst must not permanently fence a healthy recipient and
+        # silently discard its later one-shot cutscene/ending requests.
+        with self.relay_enqueue:
+            with self.lock:
+                targets = [who for who in (recipients if recipients is not None else self.state['roster'])
+                           if who != self.id]
+            accepted = True
+            for who in targets:
+                accepted = self.enqueue_relay(who, raw, binding) and accepted
+            return accepted
+
+    def enqueue_relay(self, who, raw, binding):
+        with self.lock:
+            if not self.state['owner'] or not self.finalized():
+                return False
+            if who == self.id or who not in self.state['roster'] or who in self.relay_peer_errors:
+                return False
+            if who not in self.relay_workers:
+                work = queue.Queue(128)
+                self.relay_workers[who] = work
+                # Keep the previous protocol's 16-frame window; a long-distance
+                # ACK must not serialize every multipart BBSC chunk.
+                for _ in range(16):
+                    thread = threading.Thread(target=self.send_relay, args=(who, work), daemon=True)
+                    self.relay_threads.append(thread)
+                    thread.start()
+            sequence = self.relay_sequences.get(who, 0)+1
+            self.relay_sequences[who] = sequence
+            body = dict(kind='relay', session=self.current_session(), incarnation=self.disk['incarnation'],
+                        stream=self.relay_stream(who), seq=sequence,
+                        admission=self.relay_scope(self.id, who),
+                        data=base64.b64encode(raw).decode(), binding=binding or {})
+            work = self.relay_workers[who]
+        # Workers need self.lock to drain/ACK; never wait for capacity under it.
+        at = time.monotonic()
+        while not self.stop_event.is_set():
+            with self.lock:
+                if body['session'] != self.current_session() or body['stream'] != self.relay_stream(who):
+                    return False
+                if who in self.relay_peer_errors:
+                    return False
+            try:
+                work.put((at, body), timeout=.05)
+                return True
+            except queue.Full:
+                with self.lock:
+                    unreachable = who in self.relay_network_errors
+                if unreachable:
+                    self.fail_relay_peer(who, 'Peer relay backlog while unreachable', body['stream'])
+                    return False
+                if time.monotonic()-at >= 10:
+                    self.fail_relay_peer(who, 'Peer relay backlog deadline', body['stream'])
+                    return False
+        return False
+
+    def fail_relay_peer(self, who, message, stream=None):
+        # A failed recipient cannot poison healthy streams or release membership.
+        # Retain a fence until reset_relay starts a new stream; no silent seq gaps.
+        with self.lock:
+            if stream is not None and stream != self.relay_stream(who):
+                return
+            self.relay_peer_errors[who] = message
+            work = self.relay_workers.get(who)
+            if work:
+                while True:
+                    try: work.get_nowait()
+                    except queue.Empty: break
+
+    def send_relay(self, who, work):
+        while not self.stop_event.is_set():
+            try:
+                at, body = work.get(timeout=.2)
+            except queue.Empty:
+                continue
+            while not self.stop_event.is_set():
+                with self.lock:
+                    if body['session'] != self.current_session() or body['stream'] != self.relay_stream(who):
+                        break
+                    if self.relay_error:
+                        break
+                    if who in self.relay_peer_errors:
+                        break
+                    if time.monotonic()-at > 10:
+                        self.fail_relay_peer(who, 'Unacknowledged BBSC frame expired', body['stream'])
+                        break
+                try:
+                    reply = self.rpc(who, body)
+                    with self.lock:
+                        if body['stream'] == self.relay_stream(who):
+                            self.relay_network_errors.pop(who, None)
+                    if reply['ack'] >= body['seq']:
+                        break
+                    self.stop_event.wait(.05)
+                except OSError:
+                    with self.lock:
+                        if body['stream'] == self.relay_stream(who):
+                            self.relay_network_errors[who] = time.monotonic()
+                    self.stop_event.wait(.1)
+                except (ValueError, KeyError):
+                    self.stop_event.wait(.1)
+
+    def receive_relay(self, sender, body):
+        with self.lock:
+            if self.stop_event.is_set():
+                raise OSError('World runtime is closing')
+            if body['session'] != self.current_session() or sender not in self.state['roster'] or not self.state['owner'] or not self.finalized():
+                raise ValueError('Stale relay session')
+            scope = self.relay_scope(sender, self.id)
+            if 'admission' in body and body['admission'] != scope:
+                raise ValueError('Stale relay admission')
+            key = canonical([body['session'], sender]).decode()
+            stamp = (int(body['incarnation']), int(body['stream']), int(body['seq']))
+            previous = tuple(self.disk['receipts'].get(key, [0, -1, 0]))
+            active = self.relay_active.get(key, previous[:2])
+            if stamp[:2] < active:
+                raise ValueError('Retired relay stream')
+            if stamp <= previous:
+                return {'ack': previous[2]}
+            expected = previous[2]+1 if stamp[:2] == previous[:2] else 1
+            if min(stamp) < 0 or not expected <= stamp[2] < expected+16:
+                raise ValueError('Out of order relay frame')
+            raw = base64.b64decode(body['data'], validate=True)
+            if len(raw) > 65536:
+                raise ValueError('Oversized BBSC frame')
+            self.relay_active[key] = stamp[:2]
+            stream_key = (key, stamp[:2])
+            buffered = self.relay_buffers.setdefault(stream_key, {})
+            # At most one 16-frame stream per sender; old streams cannot fill RAM.
+            for old in list(self.relay_buffers):
+                if old[0] == key and old[1] < stamp[:2]:
+                    del self.relay_buffers[old]
+            buffered.setdefault(stamp[2], (sender, raw, dict(body['binding'], admission=scope)))
+            changed = False
+            while expected in buffered:
+                try:
+                    self.relay_in.put_nowait(buffered[expected])
+                except queue.Full:
+                    break
+                del buffered[expected]
+                self.disk['receipts'][key] = [*stamp[:2], expected]
+                expected += 1
+                changed = True
+            if changed:
+                while len(self.disk['receipts']) > 256:
+                    del self.disk['receipts'][next(iter(self.disk['receipts']))]
+                self.persist()
+            return {'ack': expected-1}

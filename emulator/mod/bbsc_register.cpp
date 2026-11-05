@@ -281,6 +281,19 @@ void ReceiveSessionRegister(u32 sender,u32 session,const void* data,u32 size) {
     if(session!=current_session || (members.size()>=4 && !members.contains(sender))) return;
     members[sender]={packet,GetTickCount64()};
 }
+u32 FindSessionRegisterPeer(const RegisterIdentity& identity) {
+    const u32 session=RegisterSessionKey();
+    const u64 now=GetTickCount64();
+    std::scoped_lock lock{mutex};
+    if(!session || session!=current_session) return 0;
+    u32 match=0;
+    for(const auto& [sender,entry]:members) {
+        if(now-entry.seen>15'000 || !SameMember(identity,entry.packet.identity)) continue;
+        if(match) return 0;
+        match=sender;
+    }
+    return match;
+}
 void QueueRegisterKill(const RegisterIdentity& killer) {
     const u32 session=RegisterSessionKey();
     if(!session) return;

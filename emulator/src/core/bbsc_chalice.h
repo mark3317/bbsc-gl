@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include "core/bbsc_protocol.h"
 
@@ -61,6 +62,34 @@ inline bool ValidMount(const Mount& mount) {
     }
     return any;
 }
+// The nine conditional travel entries in t210060..t210120 (the Hall is unconditional).
+inline constexpr std::array<std::uint32_t, 9> LampUnlockFlags{
+    12907830, 12907850, 12907870, 12907890, 12907910, 12907930, 12907950, 12907970, 12907990};
+
+constexpr bool TouchesLampUnlock(std::uint32_t first, std::uint32_t width = 1) {
+    if (first > LampUnlockFlags.back() || std::uint64_t{first} + width <= LampUnlockFlags.front())
+        return false;
+    for (const auto flag : LampUnlockFlags) {
+        if (flag >= first && flag - first < width) return true;
+    }
+    return false;
+}
+
+inline void CopyHostFlagGroup(std::uint32_t key, std::uint8_t* live,
+                              const std::array<std::uint8_t, 125>& host) {
+    if (key != LampUnlockFlags.front() / 1000) {
+        std::memcpy(live, host.data(), host.size());
+        return;
+    }
+    auto merged = host;
+    for (const auto flag : LampUnlockFlags) {
+        const auto byte = (flag % 1000) / 8;
+        const auto mask = 0x80u >> (flag % 8);
+        merged[byte] = (host[byte] & ~mask) | (live[byte] & mask);
+    }
+    std::memcpy(live, merged.data(), merged.size());
+}
+
 constexpr bool TouchesAltar(std::uint32_t first, std::uint32_t width = 1) {
     if (width == 0) return false;
     const std::uint64_t end = std::uint64_t{first} + width;

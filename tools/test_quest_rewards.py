@@ -81,6 +81,7 @@ code = r'''
 #include <mutex>
 #include <map>
 #include <string>
+#include <atomic>
 #include <utility>
 #include <cstdio>
 #include "core/cpu_patches.h"
@@ -88,6 +89,7 @@ code = r'''
 using Core::GuestRegisterSnapshot;
 namespace QuestRules=Core::Bloodborne::QuestRules;
 #define LOG_INFO(...)
+#define BBSC_TIMELINE(...)
 namespace fmt { template<class... T> std::string format(const char*,T...){return {};}}
 u64 image_base,actor_address,info_address;
 bool guest=true,own=true,free_bell=true;
@@ -103,7 +105,9 @@ bool EnvFlagEnabled(const char* name){return strcmp(name,"SHADPS4_BBSC_FREE_BELL
 int GetLocalPlayerType(){return 1;}u64 GetLocalPlayerCharacter(){return 0x123;}
 bool IsEbootCodeAddress(u64 a){return a>=image_base && a<image_base+0x6000000;}
 enum class BbscWork{GuestDrop};void QueueBbscWork(BbscWork){}
-std::mutex bbsc_guest_drop_mutex;std::vector<std::pair<s32,u32>> bbsc_guest_drop_queue;
+bool bbsc_native_enemy_loot_ready=true;
+std::set<std::pair<u64,u32>> bbsc_native_loot_deaths;
+u32 bbsc_native_loot_generation=~u32{0};std::atomic<u32> bbsc_load_generation{0};
 u8 bbsc_quest_death_skip=0,bbsc_bell_refund_skip=0;
 s64 BbscRunningEventId(u64){return 9183;}
 s64 now=1000;s64 SteadyNowMs(){return now;}u32 GetCurrentPackedMap(){return 0x18010000;}
@@ -120,7 +124,7 @@ for signature in ['bool BbscNpcRewardAllowed(u32 entity)',
                   'bool BbscNpcReceiptAllowed(u32 receipt)',
                   'bool BbscNpcActorRewardAllowed(u64 actor)',
                   'void PS4_SYSV_ABI BbscQuestDeathHook(u64, const GuestRegisterSnapshot* registers)',
-                  'void NoteBbscGuestEnemyDeath(u64 dead)',
+                  'void PS4_SYSV_ABI BbscNativeEnemyLootHook(u64 tag, const GuestRegisterSnapshot* registers)',
                   'void PS4_SYSV_ABI BbscBellRefundHook(u64, const GuestRegisterSnapshot* registers)',
                   'void PS4_SYSV_ABI BbscTreasureVisibilityHook(u64, const GuestRegisterSnapshot* registers)',
                   'void TickBbscGuestItemsPickable()']:
@@ -151,11 +155,13 @@ int main(){
  condition[0x29]=0;flags={1240};check((u64)condition);assert(condition[0x10]&1); // alive test intact
  condition[0x29]=1;life[0x18]=1;guest=false;check((u64)condition);assert(condition[0x10]&1);
  guest=true;own=false;check((u64)condition);assert(condition[0x10]&1);own=true;
- // First-two-lot guest delivery uses exactly the same gate.
+ // Native body-loot eligibility uses exactly the same personal NPC gate.
  WriteValue<u64>((u64)actor,0,(u64)vtable);vtable[0x168/8]=image_base+0x1000;
  WriteValue<u32>((u64)actor,0x278,2410781);WriteValue<s32>((u64)row,0x2c,29010);WriteValue<s32>((u64)row,0x30,-1);
- flags={1240};NoteBbscGuestEnemyDeath((u64)actor);assert(bbsc_guest_drop_queue.empty());
- flags={1246};NoteBbscGuestEnemyDeath((u64)actor);assert(bbsc_guest_drop_queue.size()==1&&bbsc_guest_drop_queue[0].first==29010);
+ GuestRegisterSnapshot loot{};alignas(16) u8 loot_life[0x100]={};
+ loot.rbx=(u64)actor;loot.rax=(u64)loot_life;
+ flags={1240};BbscNativeEnemyLootHook(0,&loot);assert(ReadValue<s32>(loot.rax,0xf8)==0);
+ loot.rax=(u64)loot_life;flags={1246};BbscNativeEnemyLootHook(0,&loot);assert(ReadValue<s32>(loot.rax,0xf8)==1);
  // Scripted ForceCharacterTreasure is blocked independently of native death reward.
  alignas(16) u8 instance[0xc0]={},instruction[0x20]={};u32 args[3]={2410781,0,0};
  WriteValue<u64>((u64)instance,0xb0,(u64)instruction);WriteValue<u64>((u64)instance,0xb8,(u64)args);

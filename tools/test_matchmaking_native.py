@@ -21,6 +21,9 @@ fixture=r'''
 using u64=uint64_t;using u32=uint32_t;using s32=int32_t;using s64=int64_t;
 #define LOG_INFO(...)
 #define BBSC_TIMELINE(...)
+#define BBSC_MOD
+int cancels=0;
+namespace BbscMod {void PartyCancel(){++cancels;}}
 enum class MemoryProt { CpuWrite };
 std::vector<unsigned char> image(0x0556e800),manager(0x20),info(0x9c0),network(0xc58),broker(0x194);
 u64 image_base=(u64)image.data(); constexpr u64 SummonManagerRootPointerOffset=0x0553B120;
@@ -76,13 +79,17 @@ int main(){
  WriteValue<u32>((u64)info.data(),0x89c,0xffffffff);assert(!ConfigureBbscSummonPolling());
  effect=true;TickBbscHostSearchLimit();now+=299999;TickBbscHostSearchLimit();assert(effect&&notices==0);
  ++now;erase_ok=false;TickBbscHostSearchLimit();assert(effect&&notices==0);
- erase_ok=true;state=3;TickBbscHostSearchLimit();assert(!effect&&notices==1&&state==3);
+ erase_ok=true;state=3;TickBbscHostSearchLimit();assert(!effect&&notices==1&&state==3&&cancels==0);
  TickBbscHostSearchLimit();assert(notices==1);
  effect=true;TickBbscHostSearchLimit();now+=10000;effect=false;TickBbscHostSearchLimit();
  effect=true;TickBbscHostSearchLimit();now+=299999;TickBbscHostSearchLimit();assert(effect&&notices==1);
- ++now;TickBbscHostSearchLimit();assert(!effect&&notices==2);
- state=6;effect=true;TickBbscHostSearchLimit();now+=400000;TickBbscHostSearchLimit();assert(effect&&notices==2);
- state=0;foreign=true;TickBbscHostSearchLimit();assert(effect&&notices==2);
+ ++now;TickBbscHostSearchLimit();assert(!effect&&notices==2&&cancels==0);
+ // Solo expiry still cancels a pending acquisition; no established room exists.
+ state=0;effect=true;TickBbscHostSearchLimit();now+=300000;
+ TickBbscHostSearchLimit();assert(!effect&&notices==3&&cancels==1);
+ TickBbscHostSearchLimit();
+ state=6;effect=true;TickBbscHostSearchLimit();now+=400000;TickBbscHostSearchLimit();assert(effect&&notices==3&&cancels==1);
+ state=0;foreign=true;TickBbscHostSearchLimit();assert(effect&&notices==3&&cancels==1);
  std::cout<<"PASS: native polling and co-op retry guard/cache/countdowns, other roles and observation windows preserved, no countdown reset, invalid pointers/settings, 300s bell boundary, erase retry, party preserved\n";
 }
 '''

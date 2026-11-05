@@ -13,7 +13,7 @@ def write_header(stream,env):
     stream.write('BBGL party launch '+json.dumps(safe)+'\n'); stream.flush()
 
 def native_output(user_dir,env):
-    """An existing launcher pipe owns the log; never rotate its open file again."""
+    """An existing launcher pipe owns the log; never open a second log for it."""
     owner=env.get('BB_RUN_LOG_OWNER','')
     try:
         piped=stat.S_ISFIFO(os.fstat(sys.stdout.fileno()).st_mode)
@@ -27,10 +27,15 @@ def native_output(user_dir,env):
 
 def open_log(user_dir,env):
     root=Path(user_dir); root.mkdir(parents=True,exist_ok=True)
-    for n in range(2,-1,-1):
-        old=root/('last_run.log' if n==0 else f'last_run.{n}.log')
-        if old.exists(): old.replace(root/f'last_run.{n+1}.log')
-    stream=(root/'last_run.log').open('w',encoding='utf-8',buffering=1)
+    name=time.strftime('run_%Y%m%d_%H%M%S')
+    sequence=1
+    while True:
+        suffix='' if sequence==1 else f'_{sequence}'
+        try:
+            stream=(root/f'{name}{suffix}.log').open('x',encoding='utf-8',buffering=1)
+            break
+        except FileExistsError:
+            sequence+=1
     write_header(stream,env)
     return stream
 

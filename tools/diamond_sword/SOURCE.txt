@@ -1,0 +1,5 @@
+diamond_sword.png is the original Minecraft diamond sword item texture.
+Source: https://github.com/Mojang/bedrock-samples/blob/main/resource_pack/textures/items/diamond_sword.png
+Downloaded: 2026-11-04
+Minecraft artwork belongs to Mojang / Microsoft.
+The source PNG is retained unchanged. The builder derives both the blade mesh and UI icon from it.

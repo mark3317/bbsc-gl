@@ -3,19 +3,53 @@
 #include <array>
 #include <cstdint>
 namespace Core::Bloodborne::QuestRules {
-inline constexpr std::array<std::int64_t, 16> LocalEvents{
+inline constexpr std::array<std::int64_t, 50> LocalEvents{
+    9722, // common.emevd.dcx
+    9723, // common.emevd.dcx
+    9781, // common.emevd.dcx
+    12400501, // m24_00_00_00.emevd.dcx
+    12400521, // m24_00_00_00.emevd.dcx
     12400531, // m24_00_00_00.emevd.dcx
+    12400561, // m24_00_00_00.emevd.dcx
     12400563, // m24_00_00_00.emevd.dcx
     12400564, // m24_00_00_00.emevd.dcx
     12400565, // m24_00_00_00.emevd.dcx
+    12400611, // m24_00_00_00.emevd.dcx
+    12400622, // m24_00_00_00.emevd.dcx
+    12400624, // m24_00_00_00.emevd.dcx
+    12400630, // m24_00_00_00.emevd.dcx
+    12400800, // m24_00_00_00.emevd.dcx
+    12400903, // m24_00_00_00.emevd.dcx
     12400954, // m24_00_00_00.emevd.dcx
     12410676, // m24_01_00_00.emevd.dcx
+    12410701, // m24_01_00_00.emevd.dcx
     12410702, // m24_01_00_00.emevd.dcx
+    12410703, // m24_01_00_00.emevd.dcx
     12410713, // m24_01_00_00.emevd.dcx
     12410734, // m24_01_00_00.emevd.dcx
     12410736, // m24_01_00_00.emevd.dcx
     12410738, // m24_01_00_00.emevd.dcx
+    12410744, // m24_01_00_00.emevd.dcx
+    12410745, // m24_01_00_00.emevd.dcx
     12410748, // m24_01_00_00.emevd.dcx
+    12410761, // m24_01_00_00.emevd.dcx
+    12410762, // m24_01_00_00.emevd.dcx
+    12410763, // m24_01_00_00.emevd.dcx
+    12410785, // m24_01_00_00.emevd.dcx
+    12410786, // m24_01_00_00.emevd.dcx
+    12410801, // m24_01_00_00.emevd.dcx
+    12410803, // m24_01_00_00.emevd.dcx
+    12410804, // m24_01_00_00.emevd.dcx
+    12410812, // m24_01_00_00.emevd.dcx
+    12410813, // m24_01_00_00.emevd.dcx
+    12410814, // m24_01_00_00.emevd.dcx
+    12410831, // m24_01_00_00.emevd.dcx
+    12700701, // m27_00_00_00.emevd.dcx
+    12700720, // m27_00_00_00.emevd.dcx
+    12701000, // m27_00_00_00.emevd.dcx
+    12701001, // m27_00_00_00.emevd.dcx
+    12701002, // m27_00_00_00.emevd.dcx
+    12800901, // m28_00_00_00.emevd.dcx
     12800906, // m28_00_00_00.emevd.dcx
     13500998, // m35_00_00_00.emevd.dcx
     13600942, // m36_00_00_00.emevd.dcx

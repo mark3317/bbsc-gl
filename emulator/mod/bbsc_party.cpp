@@ -20,8 +20,9 @@ bool ExclusiveNative() {
     }();
     return unique;
 }
-std::atomic<unsigned> native{1u<<8};
+std::atomic<std::uint64_t> native{1u<<8};
 std::atomic<bool> can_beckon{false};
+std::atomic<unsigned> host_hint{0};
 std::atomic<std::uint64_t> bell_generation{0}, bell_released_generation{0};
 std::atomic<unsigned> cancel_sequence{0};
 std::atomic<ULONGLONG> refreshed{0}, leave_refreshed{0};
@@ -93,6 +94,9 @@ void PartyFinishAcquire(std::uint64_t ticket) {
 bool PartyCanBeckon() {
     return !PartyEnabled() || (ExclusiveNative() && can_beckon.load() && GetTickCount64()-refreshed.load()<1500);
 }
+unsigned PartyHostHint() {
+    return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500 ? host_hint.load() : 0;
+}
 std::uint64_t PartyBellGeneration() {
     return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
         ? bell_generation.load() : 0;
@@ -111,24 +115,34 @@ bool PartyTitleReady() {
     title_pending=!ready;
     return ready;
 }
-void PartyObserve(std::int32_t state,bool loading,bool bell) {
-    if(PartyEnabled()) native=static_cast<unsigned>(state&255)|(loading?256u:0u)|(bell?512u:0u);
+void PartyObserve(std::int32_t state,bool loading,bool bell,std::int32_t members,bool alive,bool responder) {
+    if(PartyEnabled()) {
+        // One atomic snapshot; zero encodes unknown, member count includes self.
+        const unsigned population=members>=1 && members<=5 ? static_cast<unsigned>(members) : 0;
+        native=(GetTickCount64()<<15)|static_cast<unsigned>(state&255)|(loading?256u:0u)|
+               (bell?512u:0u)|(population<<10)|(alive?8192u:0u)|(responder?16384u:0u);
+    }
 }
 void PartyMaintain() {
     if(!PartyEnabled() || !ExclusiveNative()) return;
     static ULONGLONG last=0;
     const ULONGLONG now=GetTickCount64();
     if(now-last<250) return;
-    last=now; const unsigned value=native.load(), cancel=cancel_sequence.load();
+    last=now; const auto snapshot=native.load();
+    const unsigned value=static_cast<unsigned>(snapshot&0x7FFFu), cancel=cancel_sequence.load();
     const bool awaiting=title_pending.load();
     const std::string body="{\"state\":"+std::to_string(value&255)+",\"loading\":"+
         ((value&256)?"true":"false")+",\"bell\":"+((value&512)?"true":"false")+
-        ",\"cancel_seq\":"+std::to_string(cancel)+",\"await_title\":"+(awaiting?"true":"false")+"}";
-    const std::string result=Call(L"/party/tick",body.substr(0,body.size()-1)+",\"bell_notice\":true,\"bell_release\":true}",300);
+        ",\"members\":"+std::to_string((value>>10)&7u)+",\"alive\":"+((value&8192)?"true":"false")+
+        ",\"responder\":"+((value&16384)?"true":"false")+
+        ",\"fresh\":"+((snapshot>>15 && now-(snapshot>>15)<1500)?"true":"false")+
+        ",\"cancel_seq\":"+std::to_string(cancel)+",\"await_title\":"+(awaiting?"true":"false")+
+        ",\"placement_ticket\":true,\"aimed_placement\":\""+AimedPlacementAcknowledgment()+"\"}";
+    const std::string result=Call(L"/party/tick",body.substr(0,body.size()-1)+",\"bell_notice\":true,\"bell_release\":true,\"host_check\":true}",300);
     // Accept old two-field runners, but only an explicit generation can notify.
     const size_t generation_separator=result.find(' ',result.find(' ')+1);
     const std::string status=result.substr(0,generation_separator);
-    std::uint64_t generation=0, released=0;
+    std::uint64_t generation=0, released=0; unsigned hint=0;
     if(generation_separator!=std::string::npos) {
         const char* first=result.data()+generation_separator+1;
         const char* end=result.data()+result.size();
@@ -137,7 +151,13 @@ void PartyMaintain() {
         else if(parsed.ptr!=end) {
             if(*parsed.ptr==' ') {
                 const auto tail=std::from_chars(parsed.ptr+1,end,released);
-                if(tail.ec!=std::errc{} || tail.ptr!=end) { generation=0; released=0; }
+                if(tail.ec!=std::errc{}) { generation=0; released=0; }
+                else if(tail.ptr!=end) {
+                    if(*tail.ptr==' ') {
+                        const auto host=std::from_chars(tail.ptr+1,end,hint);
+                        if(host.ec!=std::errc{} || host.ptr!=end || hint>2) { generation=0; released=0; hint=0; }
+                    } else { generation=0; released=0; }
+                }
             } else generation=0;
         }
     }
@@ -145,7 +165,7 @@ void PartyMaintain() {
     const std::string expected=std::to_string(cancel);
     const bool valid=separator!=std::string::npos && (status.substr(0,separator)=="0" || status.substr(0,separator)=="1") &&
                      (status.substr(separator+1)=="0" || status.substr(separator+1)==expected);
-    can_beckon=valid && status[0]=='1'; bell_generation=valid?generation:0; bell_released_generation=valid?released:0; refreshed=GetTickCount64();
+    can_beckon=valid && status[0]=='1'; host_hint=valid?hint:0; bell_generation=valid?generation:0; bell_released_generation=valid?released:0; refreshed=GetTickCount64();
     const bool ready=valid && awaiting && cancel && status.substr(separator+1)==expected;
     if(cancel_sequence.load()==cancel) {
         leave_confirmed=ready?cancel:0; leave_refreshed=GetTickCount64();

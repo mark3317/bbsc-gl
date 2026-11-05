@@ -176,12 +176,12 @@ replace(1122, r'Small Resonant Bell', "Join another player's game\nwith the Smal
 item_files = bbfiles.read_bnd4(bbfiles.read_dcx(bbfiles.GAME + r'\msg\engus\item.msgbnd.dcx'))
 item_categories = {fid: bbfiles.read_fmg(data) for _, (fid, data) in item_files.items()}
 ITEM_TEXT = {
-    200: ("Call other players into your game. No Insight cost.",
-          "Ring the Beckoning Bell to call other players\ninto your game. Costs no Insight.\n\nGuests stay after deaths and boss battles.\nUse the Silencing Blank to end co-op."),
-    205: ("Join another player's game. No Insight cost.",
-          "Ring the Small Resonant Bell to find a host\nand join their game. Costs no Insight.\n\nYou stay after deaths and boss battles.\nUse the Silencing Blank to return to your world."),
-    225: ("Invade another player's world. No Insight cost.",
-          "Ring the Sinister Resonant Bell to search\nfor a world to invade. Costs no Insight.\n\nYou enter the other world as an enemy."),
+    200: ("Call other players into your game.",
+          "Ring the Beckoning Bell to call other players\ninto your game.\n\nGuests stay after deaths and boss battles.\nUse the Silencing Blank to end co-op."),
+    205: ("Join another player's game.",
+          "Ring the Small Resonant Bell to find a host\nand join their game.\n\nYou stay after deaths and boss battles.\nUse the Silencing Blank to return to your world."),
+    225: ("Enable or disable PvP in the current session.",
+          "Ring the Sinister Resonant Bell to enable\nor disable PvP in the current session."),
     111: ("End co-op or stop searching for players.",
           "Use the Silencing Blank to stop a bell's search\nor end co-op.\n\nAs a guest, you return to your own world.\nAs the host, you send all guests home."),
 }

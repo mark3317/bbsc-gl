@@ -128,6 +128,8 @@ std::atomic<s64> claim_delivered_ms{0}; // our sign's reply carried a host's cla
 std::atomic<bool> was_in_session{false};
 std::atomic<s64> own_user_id{0};          // UserId of our own sign (from its /create body)
 std::atomic<bool> placement_aimed{false}; // the placement came aimed at our sign
+std::mutex aimed_placement_mutex;
+std::string aimed_placement_ack; // exact placement accepted by the native handler
 // Serializes departure cleanup with the next native create. The maintenance thread
 // never sends a delete after a replacement sign has been dispatched.
 std::mutex summon_lifecycle_mutex;
@@ -500,6 +502,13 @@ int SendCleanSummonCreate(int request, const std::string& url, const void* data,
         placement_sender = 0;
         Core::Bloodborne::ClearSeamlessHostPlacementHeader();
     }
+    {
+        std::scoped_lock lock{aimed_placement_mutex};
+        if (placement_aimed.load() && placement_received_ms.load() != 0 &&
+            !aimed_placement_ack.empty()) {
+            original_add_header(request, "X-BBSC-Aimed-Placement", aimed_placement_ack.c_str(), 0);
+        }
+    }
     if (RewriteAreaId(body)) {
         original_set_content_length(request, body.size());
         // The emulator copies the body during the call, so a local buffer is fine.
@@ -840,12 +849,26 @@ void OnAimedHostPlacement(s64 target_user, const std::string& placement, u32 sen
         return; // another player's sign was rung
     }
     const s32 state = SessionState();
-    if (state == 3 || state == 4 || state == 6) {
-        return; // hosting, joining or already a guest
+    if (state == 3 || state == 6) {
+        return; // never change placement in an established world
     }
     // Its world flags are taken before the join load (bloodborne_re.cpp, "the host that rang").
+    // New local Party bridges append the admission identity to the native
+    // replay. Only the coordinates go to the game; echo the exact replay in
+    // the acknowledgment even when two visits use identical coordinates.
+    const std::string_view replay{placement};
+    const auto separator = replay.find('|');
+    if (separator != std::string_view::npos) {
+        const auto ticket = replay.substr(separator + 1);
+        if (ticket.empty() || ticket.size() > 64 ||
+            ticket.find_first_not_of("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-") != std::string_view::npos) {
+            return;
+        }
+    }
     Core::Bloodborne::NoteBbscHostRangOurSign(sender);
-    if (Core::Bloodborne::SetSeamlessHostPlacementHeader(placement)) {
+    if (Core::Bloodborne::SetSeamlessHostPlacementHeader(replay.substr(0, separator))) {
+        std::scoped_lock lock{aimed_placement_mutex};
+        aimed_placement_ack = placement;
         placement_sender = sender;
         placement_aimed = true;
         placement_received_ms = NowMs();
@@ -854,6 +877,14 @@ void OnAimedHostPlacement(s64 target_user, const std::string& placement, u32 sen
         BBSC_TIMELINE("JOIN", "HTTP: host {:08x} rang our sign (user {}) - placement {}", sender, own,
                  placement);
     }
+}
+
+std::string AimedPlacementAcknowledgment() {
+    std::scoped_lock lock{aimed_placement_mutex};
+    const s64 received = placement_received_ms.load();
+    if (!placement_aimed.load() || received == 0 || NowMs() - received < 0 ||
+        NowMs() - received > AimedPlacementStaleMs) return {};
+    return aimed_placement_ack;
 }
 
 void InstallHttpWrappers() {

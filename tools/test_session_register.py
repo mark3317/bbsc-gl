@@ -12,6 +12,7 @@ source = re.sub(r'^#include.*$', '', source, flags=re.M)
 wait_header = (root / 'emulator/mod/bbsc_register_wait.h').read_text(encoding='utf8')
 wait_header = re.sub(r'^#(?:include|pragma once).*$', '', wait_header, flags=re.M)
 fixture = r'''
+#include "../emulator/src/core/bbsc_protocol.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -60,6 +61,9 @@ int main(){using namespace BbscMod;
  ReceiveSessionRegister(2,999,&p,sizeof p);assert(Snapshot().size()==1);
  for(u32 id=2;id<=5;++id){p.identity.member=id;p.offered=id==3?0:id;ReceiveSessionRegister(id,42,&p,sizeof p);}
  assert(Snapshot().size()==5); // includes zero-offering hunters
+ assert(FindSessionRegisterPeer(p.identity)==5);
+ auto ambiguous=p.identity;ambiguous.room=0;ambiguous.member=0;
+ assert(FindSessionRegisterPeer(ambiguous)==0);
  ReceiveSessionRegister(5,42,&p,sizeof p);assert(Snapshot().size()==5);
  p.identity.member=6;ReceiveSessionRegister(6,42,&p,sizeof p);assert(Snapshot().size()==5);
  Rank rows[100];u64 date;u32 total;
@@ -98,7 +102,7 @@ int main(){using namespace BbscMod;
  outgoing.kind=1;ReceiveRegisterKill(3,42,&outgoing,sizeof outgoing);assert(outgoing_kills.size()==4);
  ReceiveRegisterKill(2,42,&outgoing,sizeof outgoing);assert(outgoing_kills.size()==3);
  const auto after=sent.size();ServiceKills(false,clock_ms+60000);assert(sent.size()==after+3); // long loads do not discard claims
- clock_ms+=15001;assert(Snapshot().size()==1);
+ clock_ms+=15001;assert(Snapshot().size()==1 && FindSessionRegisterPeer(p.identity)==0);
  clock_ms+=1001;TickSessionRegister(0,true,me);assert(members.empty());
  p.identity.member=6;ReceiveSessionRegister(6,42,&p,sizeof p);assert(Snapshot().size()==2); // stale roster entries cannot block a replacement
  ForgetSessionRegister(6);assert(Snapshot().size()==1);
