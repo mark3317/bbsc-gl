@@ -5,6 +5,7 @@
 #include "core/bbsc_dream_finale.h"
 #include "core/bbsc_world_presence.h"
 #include "core/bbsc_world_control.h"
+#include "core/bbsc_world_players.h"
 #include "core/bbsc_world_altars.h"
 #include "core/bbsc_world_lamp_points.h"
 #include "core/bbsc_lamp_travel_data.h"
@@ -89,6 +90,7 @@ bool BbscIndependentActive();
 bool BbscIndependentTravelAllowed();
 bool BbscWorldTravelInFlight();
 bool BbscWorldTalkAllowed(u32 talk);
+void NoteBbscWorldTalkRecord(u64 condition,u64 executor);
 bool QueueBbscWorldTravel(u32 flag, u8 value);
 bool BbscWorldTaskHere(u64 task);
 u32 BbscWorldLivingHere();
@@ -4166,6 +4168,7 @@ void TickBbscReinsertV8() {
 constexpr s64 BbscSelfHealMissingMs = 4'000;
 
 void TickBbscSelfHeal() {
+    if(BbscIndependentActive())return; // per-peer lifecycle owns reinsertion/rebinding
     if (BbscQuitInProgress()) return;
     struct MissingSince {
         u64 task;
@@ -9350,6 +9353,7 @@ BbscMod::RegisterIdentity ReadBbscRegisterIdentity(u64 chr);
 #endif
 
 void TickBbscRemoteRevive() {
+    if(BbscIndependentActive())return; // identity/visit-bound lifecycle owns these models
     struct Pending {
         u32 peer;
         bool dead;
@@ -12649,6 +12653,7 @@ void PS4_SYSV_ABI BbscDreamTalkHook(u64 /*tag*/, const GuestRegisterSnapshot* re
         return;
     }
     const u64 condition = ReadValue<u64>(record, 0x10);
+    NoteBbscWorldTalkRecord(condition,ReadValue<u64>(record,0x18));
     if (!ReadablePointer(condition, 0x30) || ReadValue<u8>(condition, 0x25) == 0 ||
         ReadValue<u64>(condition, 0) != image_base + TalkConditionVtableOffset) {
         return; // host, solo, or no evaluator: nothing was refused
@@ -18543,6 +18548,10 @@ bool GuardBbscGuestRespawnPoint(u64 global, s64 value) {
         bbsc_guest_respawn_released = false;
     }
     if (state == 6 && !invader && !bbsc_guest_respawn_released) {
+        // Independent journeys own their runtime lamp. Keep the pre-join backup
+        // for the eventual home return, but do not pull a living/dead traveller
+        // back to that backup or to the host's lamp every frame.
+        if(BbscIndependentActive())return false;
         if (!held) {
             if (loading) {
                 return false; // the join load: take it once we stand in the host's world

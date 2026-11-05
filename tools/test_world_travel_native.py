@@ -36,6 +36,7 @@ std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;};
 std::array<BbscWorldAltar,7> bbsc_world_altars;
 std::atomic<bool> bbsc_world_catalog_ready{false};
+std::atomic<u32> bbsc_load_generation{1};
 s32 bbsc_world_altar_visiting=-1;
 std::optional<Chalice::Mount> bbsc_world_requested_mount;
 std::optional<World::Scope> bbsc_world_requested_scope;
@@ -49,6 +50,9 @@ int main(){
  // Actual203AD60: R12=RDI=result variant, R15=RSI=condition evaluator.
  // The old fixture incorrectly put the evaluator in R12 and missed closed lamps.
  GuestRegisterSnapshot r;r.r12=reinterpret_cast<u64>(result.data());r.r15=reinterpret_cast<u64>(context.data());
+ r.r14=0x50000;
+ auto command=[&](u32 talk,u64 actor,s32 id){Set(context,0x10,talk);Set(context,0x18,actor);
+  NoteBbscWorldTalkRecord(reinterpret_cast<u64>(context.data()),r.r14);r.rax=id;BbscWorldAltarCommand(0,&r);};
  r.rax=26;BbscWorldEsdFunction(0,&r);r.r15=7;r.rax=1;BbscWorldEsdResult(0,&r);assert(r.rax==0);
  assert((result==std::array<u8,128>{})); // result pointer must never be treated as an evaluator
  r.r15=reinterpret_cast<u64>(context.data());BbscWorldLampTalker(0,&r);
@@ -57,6 +61,7 @@ int main(){
  BbscWorldLampTalker(0,&r);assert(r.r15==reinterpret_cast<u64>(context.data())); // no spoofed NPC quests
  Set(context,0x10,u32{241000});r.rax=52;BbscWorldEsdFunction(0,&r);
  r.rax=1;r.rcx=1;BbscWorldLampMultiplayer(0,&r);assert((r.rax&255)==0&&(r.rcx&255)==0);
+ command(241000,0x40000,11);
  assert(!QueueBbscWorldTravel(6200,1));
  assert(QueueBbscWorldTravel(70000200,1));
  assert(bbsc_world_travel_point==2102950&&bbsc_world_requested_scope->map==0x15000000);
@@ -64,14 +69,18 @@ int main(){
  bbsc_world_travel_point=0;now+=2000;assert(!QueueBbscWorldTravel(70000200,1)); // no stale talk context
  Set(context,0x18,u64{0x30000});r.r15=reinterpret_cast<u64>(context.data());r.rax=26;BbscWorldEsdFunction(0,&r);
  BbscWorldTalkAllowed(241000);assert(!QueueBbscWorldTravel(70000200,1)); // another actor's talk does not move us
+ command(241000,0x30000,11);assert(!QueueBbscWorldTravel(70000200,1));
  Set(context,0x18,u64{0x40000});r.rax=52;BbscWorldEsdFunction(0,&r);
  BbscWorldTalkAllowed(210000);
+ command(210000,0x40000,11);
  const auto destination=LampTravel::Returns[0];assert(QueueBbscWorldTravel(destination.flag,1));
  assert(bbsc_world_travel_point==destination.point&&bbsc_world_requested_scope->map!=0x15000000);
  bbsc_world_travel_point=0;bbsc_world_catalog_ready=true;
  auto& altar=bbsc_world_altars[3];altar.entry.occupied=true;altar.entry.ritual=36;
  altar.mount.key={55,66,88,0};altar.mount.stage_map=0x1D000000;altar.mount.layout_map=0x1D0A5A00;
- BbscWorldTalkAllowed(210080);r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==41);
+ command(210080,0x40000,78);assert(r.rax==41);
+ BbscWorldTalkAllowed(210721); // another script evaluated: command mapping must still select our altar
+ r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==41);
  r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==88);
  state=3;r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==78);state=6;
  assert(QueueBbscWorldTravel(72100423,1));
@@ -85,6 +94,8 @@ int main(){
  bbsc_world_travel_inflight=false;bbsc_world_travel_point=0;
  allowed=false;assert(!QueueBbscWorldTravel(70000200,1));assert(!BbscWorldTalkAllowed(241000));
  allowed=true;opening=false;assert(!BbscWorldTalkAllowed(241000));
+ opening=true;command(210000,0x40000,11);++bbsc_load_generation;
+ r.rax=11;BbscWorldAltarCommand(0,&r);assert(!QueueBbscWorldTravel(70000200,1)); // retired executor generation
 }
 '''
 def main():

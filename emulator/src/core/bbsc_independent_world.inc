@@ -324,18 +324,82 @@ bool BbscWorldAllMembersReady() {
     return bbsc_world_presence_book.AllSupportTravel(bbsc_world_presence_local,roster,SteadyNowMs());
 }
 
-// Other peers' actors stay bound to their identities. Native SetDisable controls
-// off-map copies; no health or player-type edits are used to hide an actor.
-void BbscWorldHideApart() {
-    if(!BbscIndependentActive()) return;
-    const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
-    const u64 local=GetLocalPlayerCharacter();
-    for(const auto chr:BbscWorldPlayers(world)) {
-        if(!chr || chr==local || !ReadablePointer(chr,0x400)) continue;
-        const u32 peer=BbscWorldPeer(chr+0x3D8);if(!peer) continue;
-        using Set=void PS4_SYSV_ABI (*)(u64,u32);
-        reinterpret_cast<Set>(image_base+0x018C6390)(chr,BbscWorldPeerHere(peer)?0:1);
+// Rendering/residency is separate from enemy authority. SetDisabled tears down
+// character attachments and is never used to hide a remote player.
+void TickBbscWorldPlayers() {
+    static World::WorldId bound{};
+    static std::map<u32,World::PlayerVisualLife> lives;
+    static u64 local_bound_visit=0;
+    World::Presence local;std::map<u32,World::Member> members;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;members=bbsc_world_presence_book.Members();}
+    if(!BbscIndependentActive() || bound!=local.world){lives.clear();bound=local.world;local_bound_visit=0;}
+    if(!BbscIndependentActive())return;
+    const u64 global=GetGlobalState(),world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
+    const bool loading=local.phase!=World::Phase::Playing || !ReadablePointer(global,0x10) ||
+        ReadValue<u8>(global,8)!=0 || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load() || BbscCurtainActive();
+    if(loading)return; // old character storage may already belong to another load
+    const auto tasks=GetMultiPlayerInsTasks();const auto players=BbscWorldPlayers(world);
+    if(local_bound_visit!=local.visit){
+        if(!RepairBbscLocalMemberBinding(GetSessionState(),tasks,true))return;
+        local_bound_visit=local.visit;
     }
+    std::set<u32> present;
+    for(const u64 task:tasks){
+        const s32 mode=ReadValue<s32>(task,0xE8);if(mode!=1 && mode!=2)continue;
+        const u32 peer=mode==2 && GetSessionState()==6?GetBbscRelayHost():BbscWorldPeer(task+0xC8);
+        if(!peer)continue;present.insert(peer);
+        const auto it=members.find(peer);
+        const bool fresh=it!=members.end() && World::PresenceBook::Fresh(it->second,SteadyNowMs());
+        World::PlayerVisualInput in;in.loading=false;in.local_visit=local.visit;
+        in.peer_visit=fresh?it->second.presence.visit:0;
+        in.here=fresh && World::SamePlace(local,it->second.presence);
+        in.alive=fresh && it->second.presence.alive;
+        in.task_ready=ReadValue<s32>(task,0x50)==6 && ReadValue<s32>(task,0x54)==6 && !(ReadValue<u8>(task,0xED)&2);
+        u64 chr=0;for(const auto candidate:players)
+            if(candidate && candidate!=GetLocalPlayerCharacter() && BbscWorldPeer(candidate+0x3D8)==peer){chr=candidate;break;}
+        const u64 control=ReadablePointer(chr,0x410)?ReadValue<u64>(chr,0x58):0;
+        const u64 draw=BbscCharacterDrawState(chr);
+        in.actor=chr;in.model=draw;in.actor_alive=chr && GetCharacterHp(chr)>0;
+        const u64 activation=ReadablePointer(chr,0x20)?ReadValue<u64>(chr,0x18):0;
+        in.actor_ready=ReadablePointer(activation,0x18) && ReadValue<s32>(activation,0x10)==4 && ReadValue<s32>(activation,0x14)==4;
+        in.draw_off=draw && ReadValue<u8>(draw,0x0C)==0;
+        in.faded=chr && (ReadValue<float>(chr,0x208)==0 || ReadValue<float>(chr,0x20C)==0);
+        in.dead_visual=ReadablePointer(control,0x118) && (ReadValue<u16>(control,0x114)&1);
+        const auto action=lives[peer].Observe(in,SteadyNowMs());
+        if(action.hide && HasMemoryAccess(draw+0x0C,1,MemoryProt::CpuWrite))WriteValue<u8>(draw,0x0C,0);
+        if(action.rebind && ReadablePointer(chr,0x410) && IsValidMemberId(task+0xC8)){
+            const u64 child=ReadValue<u64>(chr,0x60),vt=ReadablePointer(child,8)?ReadValue<u64>(child,0):0;
+            if(ReadablePointer(vt,0xD8) && IsEbootCodeAddress(ReadValue<u64>(vt,0xD0))){
+                using SetMember=void PS4_SYSV_ABI (*)(u64,u64);
+                reinterpret_cast<SetMember>(image_base+0x018F27C0)(chr,task+0xC8);
+                BBSC_TIMELINE("MODEL","resident peer bound peer={:08x} local_visit={} peer_visit={}",peer,local.visit,in.peer_visit);
+            }
+        }
+        if(action.insert){
+            if(HasMemoryAccess(task+0xED,1,MemoryProt::CpuWrite)){
+                WriteValue<u8>(task,0xED,ReadValue<u8>(task,0xED)|1);MarkBbscRecreatedMember(task);
+                using Set=void PS4_SYSV_ABI (*)(u64,s32);reinterpret_cast<Set>(image_base+MultiPlayerInsSetStateOffset)(task,4);
+                BBSC_TIMELINE("MODEL","resident peer insertion requested peer={:08x} actor={} model={}",peer,chr!=0,draw!=0);
+            }
+        }
+        if(action.show){
+            if(action.revive){
+                using Reset=void PS4_SYSV_ABI (*)(u64,u8);reinterpret_cast<Reset>(image_base+0x018BCF30)(chr,1);
+                const u64 modules=ReadValue<u64>(chr,0x3B0),behaviour=ReadablePointer(modules,0x38)?ReadValue<u64>(modules,0x30):0;
+                if(ReadablePointer(behaviour,0x388) && ReadValue<u8>(behaviour,0x384)){
+                    using Play=void PS4_SYSV_ABI (*)(u64,u64);
+                    reinterpret_cast<Play>(image_base+0x01A19F60)(behaviour,image_base+0x04992C40);
+                }
+                const u64 flags=ReadablePointer(control,0x40)?ReadValue<u64>(control,0x38):0;
+                if(HasMemoryAccess(flags+0x48,1,MemoryProt::CpuWrite))WriteValue<u8>(flags,0x48,ReadValue<u8>(flags,0x48)&0xFC);
+                if(HasMemoryAccess(control+0x114,2,MemoryProt::CpuWrite))WriteValue<u16>(control,0x114,ReadValue<u16>(control,0x114)&0xFFFE);
+            }
+            if(HasMemoryAccess(draw+0x0C,1,MemoryProt::CpuWrite))WriteValue<u8>(draw,0x0C,1);
+            for(u64 offset:{0x208,0x20C})if(ReadValue<float>(chr,offset)==0)WriteValue<float>(chr,offset,1.0f);
+            BBSC_TIMELINE("MODEL","resident peer visible peer={:08x} restored_draw={} restored_fade={} revived={}",peer,in.draw_off,in.faded,action.revive);
+        }
+    }
+    std::erase_if(lives,[&](const auto& entry){return !present.contains(entry.first);});
 }
 
 // Travel/catalog/ordered world updates follow below. All hook readiness is
@@ -386,7 +450,7 @@ void TickBbscIndependentWorld() {
     }else previous_visit=0;
     bbsc_independent_owner=owner;bbsc_independent_role=role;
     TickBbscWorldAltars();TickBbscWorldSnapshots();TickBbscWorldTravel();
-    if(active) BbscWorldHideApart();
+    if(active) TickBbscWorldPlayers();
 }
 
 void InstallBbscIndependentWorld() {
@@ -429,6 +493,7 @@ void InstallBbscIndependentWorld() {
 bool BbscIndependentActive(){return false;}
 bool BbscIndependentTravelAllowed(){return false;}
 bool BbscWorldTalkAllowed(u32){return false;}
+void NoteBbscWorldTalkRecord(u64,u64){}
 bool QueueBbscWorldTravel(u32,u8){return false;}
 bool BbscWorldTaskHere(u64){return true;}
 u32 BbscWorldLivingHere(){return 0;}
