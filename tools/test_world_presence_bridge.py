@@ -25,19 +25,27 @@ PREFIX=r'''
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define LOG_INFO(...)
-s64 now=10000;u32 key=11,self=11,room=99,map=0x18000000;
+#define BBSC_TIMELINE(...)
+s64 now=10000;u32 key=11,self=11,map=0x18000000;
+u64 room=99,image_base=0x800000000ULL;
+constexpr u64 MatchingStatePointerOffset=0x05540290;
 s32 state=3,hp=594,type=0;bool loading=false,quitting=false,title=false,positioned=true;
 s64 SteadyNowMs(){return now;}
 s32 GetSessionState(){return state;}
 u64 GetLocalPlayerCharacter(){return positioned?0x20000:0;}
 u64 GetGlobalState(){return 0x10000;}
 struct Identity{u32 room;};
-Identity ReadBbscRegisterIdentity(u64 player){return {player?room:0};}
+Identity ReadBbscRegisterIdentity(u64){return {0};} // actual local endpoint is zero
 namespace BbscMod{u32 RegisterSessionKey(){return key;}u32 RegisterOwnId(){return self;}}
 bool BbscQuitInProgress(){return quitting;}bool BbscReturningToTitle(){return title;}
 bool IsInvaderType(s32 t){return t==2;}s32 GetLocalPlayerType(){return type;}
 bool ReadablePointer(u64 p,size_t){return p!=0;}
-template<class T>T ReadValue(u64,size_t){return static_cast<T>(loading);}
+template<class T>T ReadValue(u64 p,size_t offset){
+ if(p==image_base+MatchingStatePointerOffset)return static_cast<T>(0x30000);
+ if(p==0x30000 && offset==0x18)return static_cast<T>(0x40000);
+ if(p==0x40000 && offset==0x400)return static_cast<T>(room);
+ return static_cast<T>(loading);
+}
 std::atomic<u64> bbsc_world_load_pending{0};std::atomic<bool> bbsc_reload_finish_pending{false};
 struct Transform{std::array<float,4> position{1,2,3,1};};
 Transform transform;
@@ -98,6 +106,15 @@ int main(){
  key=11;state=3;now++;TickBbscWorldPresence();assert(sent.back().visit>visit);
  room=100;now++;TickBbscWorldPresence();assert(sent.back().world.room==100);
  OnBbscWorldPresencePacket(22,11,&peer,sizeof(peer));assert(!bbsc_world_presence_book.Find(22,now));
+ // Local endpoint address/port are zero in real native sessions. Room comes
+ // from Matching2, including its upper32 bits; never from the self MemberId.
+ room=0x0f05780968768890ULL;now++;TickBbscWorldPresence();
+ assert(sent.back().world.room==room);
+ auto wrong=sent.back();wrong.world.room^=u64{1}<<40;wrong.sequence+=100;
+ OnBbscWorldPresencePacket(22,11,&wrong,sizeof(wrong));assert(!bbsc_world_presence_book.Find(22,now));
+ room=0;loading=true;now++;TickBbscWorldPresence();
+ assert(sent.back().world.room==0x0f05780968768890ULL); // transient missing controller
+ room=0x0f05780968768890ULL;loading=false;
  // Chalice identity is observed, never guessed: ritual 0 cannot join simulation.
  map=0x1D0A5A00;loading=true;now++;TickBbscWorldPresence();
  dungeon={55,66,16,0};loading=false;now++;TickBbscWorldPresence();
@@ -111,7 +128,7 @@ def main():
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-world-bridge-') as tmp:
         cpp=Path(tmp)/'bridge.cpp';exe=Path(tmp)/('bridge.exe' if os.name=='nt' else 'bridge')
-        cpp.write_text(PREFIX+function('void TickBbscWorldPresence()')+
+        cpp.write_text(PREFIX+function('u64 ReadBbscWorldRoom()')+function('void TickBbscWorldPresence()')+
             function('void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,\n                               const void* data, std::size_t size)')+MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')

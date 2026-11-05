@@ -1,5 +1,23 @@
 # Independent travel — development branch, 05.11.2026
 
+## First gameplay failure: native room binding (18:04 MSK)
+
+P1 hosted/P2 joined successfully, but P2 followed the host Dream->Central Yharnam
+at18:04:15; no independent activation. Read-only inspection of the actual
+bb-probe children7572/35600 confirmed staging bbsc.dll loaded and send/lamp
+hooks patched. The local native MemberId endpoint fields+30/+34 are zero; remote
++30 is127.0.0.1. They are network address/port, despite the historical register
+field names `room/member`, and cannot identify a world.
+
+Correct binding is the actual64-bit Matching2 room at
+`[image+05540290]->+18->+400`, identical in both processes. The bridge now reads
+that existing native controller field, preserves it during transient loads, and
+uses the full64-bit room in presence/control v2. Old versions fail closed. The
+fixture executes this actual pointer chain with a zero local endpoint and checks
+cross-room differences in the upper32 bits, rather than stubbing an invented
+nonzero local member room. Added release-visible timeline gate diagnostics.
+This corrects activation; a new game result is still required.
+
 Branch (parent and BBSC): `codex/independent-world-travel`, based on BBSC `bdd59b7`.
 User authorized implementation and a two-profile launch on this PC.
 

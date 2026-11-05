@@ -27,11 +27,14 @@ inline constexpr u32 PresenceCapability = 1;
 // alone must never open lamps, suppress follow, or authorize enemy ownership.
 inline constexpr u32 IndependentTravelCapability = 2;
 
+#pragma pack(push,1)
 struct WorldId {
     u32 host = 0;
-    u32 room = 0; // concrete native room identity, not a roster/discovery group
+    u64 room = 0; // full native Matching2 room ID; never an endpoint/roster ID
     bool operator==(const WorldId&) const = default;
 };
+#pragma pack(pop)
+static_assert(sizeof(WorldId)==12);
 constexpr bool Valid(WorldId id) { return id.host != 0 && id.room != 0; }
 constexpr bool ValidMap(u32 map) { return (map >> 24) >= 21 && (map >> 24) <= 36; }
 
@@ -40,7 +43,7 @@ enum class Phase : u8 { Unknown, Loading, Playing, Leaving };
 struct Presence {
     char magic[4] = {'S','H','A','D'};
     u8 type = Protocol::WorldPresence;
-    u8 version = 1;
+    u8 version = 2;
     Phase phase = Phase::Unknown;
     u8 reserved = 0;
     WorldId world{};
@@ -55,11 +58,11 @@ struct Presence {
     std::array<u8, 3> padding{};
 };
 #pragma pack(pop)
-static_assert(sizeof(Presence) == 88);
+static_assert(sizeof(Presence) == 92);
 
 inline bool Valid(const Presence& p) {
     if (std::memcmp(p.magic, "SHAD", 4) || p.type != Protocol::WorldPresence ||
-        p.version != 1 || !Valid(p.world) || p.sequence == 0 || p.reserved ||
+        p.version != 2 || !Valid(p.world) || p.sequence == 0 || p.reserved ||
         p.phase > Phase::Leaving || p.alive > 1 ||
         !(p.capabilities & PresenceCapability) ||
         p.padding != std::array<u8, 3>{} ||

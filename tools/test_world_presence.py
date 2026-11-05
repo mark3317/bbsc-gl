@@ -31,7 +31,7 @@ int main() {
     assert(Decode(bytes)); assert(!Decode(bytes.first(bytes.size()-1)));
     auto bad=a; bad.x=std::numeric_limits<float>::infinity(); assert(!Valid(bad));
     bad=a; bad.z=std::numeric_limits<float>::quiet_NaN(); assert(!Valid(bad));
-    bad=a; bad.version=2; assert(!Valid(bad));
+    bad=a; bad.version=1; assert(!Valid(bad));
     bad=a; bad.sequence=0; assert(!Valid(bad));
     bad=a; bad.reserved=1; assert(!Valid(bad));
     bad=a; bad.padding[2]=1; assert(!Valid(bad));

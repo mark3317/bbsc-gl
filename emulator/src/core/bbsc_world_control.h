@@ -32,7 +32,7 @@ enum class ControlKind : u8 { Owner=1, Flags=2, Enemies=3, Request=4, Altar=5, A
 struct Control {
     char magic[4]={'S','H','A','D'};
     u8 type=Protocol::WorldControl;
-    u8 version=1;
+    u8 version=2;
     ControlKind kind=ControlKind::Owner;
     u8 reserved=0;
     Scope scope{};
@@ -42,10 +42,10 @@ struct Control {
     std::uint16_t part=0,parts=1,size=0,padding=0;
 };
 #pragma pack(pop)
-static_assert(sizeof(Control)==80);
+static_assert(sizeof(Control)==84);
 inline bool Valid(const Control& c) {
     return !std::memcmp(c.magic,"SHAD",4) && c.type==Protocol::WorldControl &&
-        c.version==1 && !c.reserved && !c.padding && Valid(c.scope) &&
+        c.version==2 && !c.reserved && !c.padding && Valid(c.scope) &&
         c.kind>=ControlKind::Owner && c.kind<=ControlKind::AltarProgress &&
         c.parts>0 && c.parts<=32 && c.part<c.parts && c.size<=2048 &&
         (c.kind!=ControlKind::Owner || (c.parts==1 && c.part==0 && c.size==0 && c.epoch!=0));
