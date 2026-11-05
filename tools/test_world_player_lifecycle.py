@@ -43,10 +43,11 @@ s32 hp=594;s32 GetCharacterHp(u64){return hp;}
 u64 BbscCharacterDrawState(u64 ch){return ch && !missing_model?reinterpret_cast<u64>(draw.data()):0;}
 bool IsValidMemberId(u64){return true;}
 bool IsEbootCodeAddress(u64 p){return p==image_base+0x18f27c0;}
-int binds=0,inserts=0,resets=0;
+int binds=0,inserts=0,resets=0,removals=0;
 void PS4_SYSV_ABI Bind(u64 ch,u64 member){assert(ch==remote&&member==reinterpret_cast<u64>(task.data())+0xc8);++binds;}
 void PS4_SYSV_ABI Insert(u64 member,s32 state){assert(member==reinterpret_cast<u64>(task.data())&&state==4);++inserts;}
 void PS4_SYSV_ABI Reset(u64 ch,u8 value){assert(ch==remote&&value==1);++resets;}
+void PS4_SYSV_ABI Remove(u64 world,u64 ch){assert(world==0x70000&&ch==remote&&ch!=GetLocalPlayerCharacter());++removals;remote=0;}
 void PS4_SYSV_ABI Disable(u64 ch,u8 value){assert(ch==remote);WriteValue(reinterpret_cast<u64>(control.data()),0x20,value);}
 void MarkBbscRecreatedMember(u64){}
 bool RepairBbscLocalMemberBinding(s32,const std::vector<u64>&,bool){return true;}
@@ -58,38 +59,34 @@ void Hear(){peer.sequence++;assert(bbsc_world_presence_book.Hear(22,peer.world,p
 MAIN=r'''
 int main(){
  image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,0x2000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));assert(image_base);
- Link(0x18c6390,reinterpret_cast<void*>(&Disable));Link(0x18f27c0,reinterpret_cast<void*>(&Bind));Link(0x18bcf30,reinterpret_cast<void*>(&Reset));Link(MultiPlayerInsSetStateOffset,reinterpret_cast<void*>(&Insert));
+ Link(0x18f27c0,reinterpret_cast<void*>(&Bind));Link(0x18c6390,reinterpret_cast<void*>(&Disable));
+ Link(MultiPlayerInsSetStateOffset,reinterpret_cast<void*>(&Insert));Link(0x19186e0,reinterpret_cast<void*>(&Remove));
+ WriteValue(reinterpret_cast<u64>(task.data()),0xe8,s32{1});WriteValue(reinterpret_cast<u64>(task.data()),0x50,s32{6});WriteValue(reinterpret_cast<u64>(task.data()),0x54,s32{6});
  WriteValue(reinterpret_cast<u64>(child.data()),0,reinterpret_cast<u64>(vtable.data()));WriteValue(reinterpret_cast<u64>(vtable.data()),0xd0,image_base+0x18f27c0);
- const u64 t=reinterpret_cast<u64>(task.data());WriteValue(t,0xe8,s32{1});WriteValue(t,0x50,s32{6});WriteValue(t,0x54,s32{6});
- WriteValue(reinterpret_cast<u64>(control.data()),0x38,reinterpret_cast<u64>(flags.data()));
  WriteValue(reinterpret_cast<u64>(control.data()),0x10,s32{4});WriteValue(reinterpret_cast<u64>(control.data()),0x14,s32{4});
  bbsc_world_presence_local.world={11,99};bbsc_world_presence_local.map=0x15000000;bbsc_world_presence_local.visit=1;bbsc_world_presence_local.sequence=1;bbsc_world_presence_local.phase=World::Phase::Playing;bbsc_world_presence_local.alive=1;
  peer=bbsc_world_presence_local;bbsc_world_presence_book.Bind(peer.world,11);Hear();
  remote=reinterpret_cast<u64>(actor1.data());Actor(remote);
- TickBbscWorldPlayers();assert(binds==1&&draw[0xc]==0);
- now+=750;Hear();TickBbscWorldPlayers();assert(draw[0xc]==1&&ReadValue<float>(remote,0x208)==1&&resets==0);
- // Apart uses the native presence switch; a return enables the same actor before repair.
+ TickBbscWorldPlayers();assert(binds==1&&inserts==0);
+ now+=1000;Hear();TickBbscWorldPlayers();assert(draw[0xc]==0&&ReadValue<float>(remote,0x208)==0&&resets==0); // no manual visibility/opacity writes
  peer.map=0x18000000;now++;Hear();TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==1);
- peer.map=0x15000000;peer.visit++;now++;Hear();TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==0);
- now+=750;Hear();TickBbscWorldPlayers();assert(draw[0xc]==1);
- // Native load owns old storage; reused addresses/new graph get a fresh binding.
- loading=true;draw[0xc]=0xa5;now++;TickBbscWorldPlayers();assert(draw[0xc]==0xa5);
- loading=false;bbsc_world_presence_local.visit++;remote=reinterpret_cast<u64>(actor2.data());Actor(remote);draw[0xc]=0;now++;Hear();TickBbscWorldPlayers();
- now+=750;Hear();TickBbscWorldPlayers();assert(draw[0xc]==1&&ReadValue<float>(remote,0x20c)==1);
- // Death owns fading. An authoritative later alive visit repairs render/physics.
- peer.alive=0;hp=0;draw[0xc]=0;now++;Hear();TickBbscWorldPlayers();now+=1000;Hear();TickBbscWorldPlayers();assert(draw[0xc]==0&&resets==0);
- peer.alive=1;peer.visit++;hp=594;WriteValue(reinterpret_cast<u64>(control.data()),0x114,u16{1});now++;Hear();TickBbscWorldPlayers();
- now+=750;Hear();TickBbscWorldPlayers();assert(draw[0xc]==1&&resets==1&&ReadValue<u16>(reinterpret_cast<u64>(control.data()),0x114)==0);
- // Missing actor/model retries are bounded per journey, not per frame/address.
- remote=0;now++;Hear();TickBbscWorldPlayers();now+=2500;Hear();TickBbscWorldPlayers();assert(inserts==1);
- now+=4000;Hear();TickBbscWorldPlayers();assert(inserts==2);now+=4000;Hear();TickBbscWorldPlayers();assert(inserts==2);
- // Independent lifecycles cover all room peers without a hardcoded host/guest slot.
- for(int i=0;i<4;++i){World::PlayerVisualLife life;World::PlayerVisualInput in;in.loading=false;in.here=true;in.alive=in.actor_alive=in.actor_ready=in.task_ready=true;in.local_visit=1;in.peer_visit=i+1;in.actor=i+100;in.model=i+200;in.draw_off=true;
-  assert(life.Observe(in,1000).rebind);assert(life.Observe(in,1750).show);in.actor_ready=false;assert(!life.Observe(in,2000).show);assert(!life.Observe(in,6000).insert);in.loading=true;assert(!life.Observe(in,7000).show);}
- remote=reinterpret_cast<u64>(actor1.data());Actor(remote);WriteValue(reinterpret_cast<u64>(control.data()),0x20,u8{0});
- peer.map=0x18000000;now++;Hear();task_present=false;TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==1);
+ peer.map=0x15000000;peer.visit++;now++;Hear();TickBbscWorldPlayers();assert(removals==1&&inserts==1&&remote==0);
+ // Native creation supplies a NEW actor; subsequent observations must not recreate it again.
+ remote=reinterpret_cast<u64>(actor2.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();assert(inserts==1&&binds==2);
+ loading=true;bbsc_world_presence_local.visit++;now++;TickBbscWorldPlayers();assert(inserts==1);
+ loading=false;now++;Hear();TickBbscWorldPlayers();assert(inserts==2&&removals==2&&remote==0); // address retained across local journey
+ // Missing/unfinished native actors can recover; retries remain bounded.
+ now+=2500;Hear();TickBbscWorldPlayers();now+=4000;Hear();TickBbscWorldPlayers();assert(inserts<=4);
+ for(int i=0;i<4;++i){
+  World::PlayerVisualLife life;World::PlayerVisualInput in;in.loading=false;in.here=true;in.alive=in.actor_alive=in.actor_ready=in.task_ready=true;in.local_visit=1;in.peer_visit=i+1;in.actor=i+100;in.model=i+200;
+  assert(life.Observe(in,1000).rebind);assert(!life.Observe(in,2000).insert);
+  in.actor_ready=false;assert(!life.Observe(in,2001).insert);assert(life.Observe(in,4501).insert);
+  assert(!life.Observe(in,4502).insert);assert(life.Observe(in,8501).insert);assert(!life.Observe(in,15000).insert);
+  in.loading=true;assert(!life.Observe(in,16000).insert);
+ }
  active=false;TickBbscWorldPlayers();VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
+
 '''
 def main():
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
@@ -99,5 +96,5 @@ def main():
         subprocess.run([compiler,'-std=c++20','-O2','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
-    print('PASS production per-peer player lifecycle: native binding/insertion, load/address reuse, apart/reunion, alive/dead render repair, bounded retries, four remote peers')
+    print('PASS production per-peer player lifecycle: native binding/insertion, load/address reuse, apart/reunion, native stale-actor removal/recreation, unfinished actor recovery, no visibility writes, bounded retries, four remote peers')
 if __name__=='__main__':main()
