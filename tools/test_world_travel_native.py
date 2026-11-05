@@ -107,10 +107,10 @@ int main(){
  bbsc_world_travel_point=0;bbsc_world_catalog_ready=true;
  auto& altar=bbsc_world_altars[3];altar.entry.occupied=true;altar.entry.ritual=36;
  altar.mount.key={55,66,88,0};altar.mount.stage_map=0x1D000000;altar.mount.layout_map=0x1D0A5A00;
- command(210080,0x40000,78);assert(r.rax==41);
+ command(210080,0x40000,78);assert(r.rax==78);
  BbscWorldTalkAllowed(210721); // another script evaluated: command mapping must still select our altar
- r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==41);
- r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==41);
+ r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==78);
+ r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==79);
  altar.entry.occupied=false;r.rax=79;BbscWorldAltarCommand(0,&r);assert(r.rax==88);altar.entry.occupied=true;
  state=3;r.rax=78;BbscWorldAltarCommand(0,&r);assert(r.rax==78);state=6;
  assert(!QueueBbscWorldTravel(72100423,1));
@@ -135,8 +135,9 @@ int main(){
  const auto unchanged=global;TickBbscWorldTravel();assert(sent==1&&sets==0&&arms==0);
  snapshot_ready=true;TickBbscWorldTravel();assert(sets==1&&released==destination.flag&&arms==0&&global==unchanged);
  for(int i=0;i<4;++i){now+=1000;TickBbscWorldTravel();}assert(sets==1&&arms==0);
- r.rsi=destination.point;BbscWorldNativeWarpBegin(&r);BbscWorldNativeWarpBegin(&r);assert(arms==1);
+ r.rdi=destination.point;r.rsi=12345;BbscWorldNativeWarpBegin(&r);BbscWorldNativeWarpBegin(&r);assert(arms==1);
  ++bbsc_load_generation;current_map=bbsc_world_requested_scope->map;TickBbscWorldTravel();assert(!bbsc_world_travel_inflight&&applies==1);
+ r.rdi=2102950;BbscWorldNativeWarpBegin(&r);assert(arms==2); // original unqueued return also prepares native admission
  std::array<u8,0xc0> instance{};std::array<u8,0x20> instruction{},reference{};std::array<u8,0x200> file{};
  Set(instance,0xb0,reinterpret_cast<u64>(instruction.data()));Set(instance,0xa8,reinterpret_cast<u64>(reference.data()));
  Set(instance,0x78,u8{1});Set(reference,8,reinterpret_cast<u64>(file.data()));Set(file,0x78,u64{0x100});
@@ -156,7 +157,7 @@ def check_original_altar_scripts(game):
     for slot in range(7):
         script=esd.Esd(files[f't{210050+slot*10}.esd'][1])
         commands=[c for g in script.groups.values() for state in g['states'].values() for c in state['entry']]
-        assert any(b==1 and i==(78 if slot==0 else 79) for b,i,args in commands)
+        assert any(b==1 and i==(78 if slot==0 else 79) and not args for b,i,args in commands)
         choices={int(args[0][0]) for b,i,args in commands if b==1 and i==19 and args and args[0][0].isdigit()}
         assert set(range(1,11))<=choices
         assert any(str(72100420+slot) in str(args) for b,i,args in commands)

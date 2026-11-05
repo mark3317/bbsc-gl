@@ -1,3 +1,42 @@
+## 05.11.2026 — correct native warp entry and original altar commands
+
+Fixes the two confirmed native-flow defects from20:33 run. Functional travel
+entry is013CDF30, actual EMEVD2003[49] target, point argument EDI. FirstSync
+reinsertion arms at that native stage request, including original unqueued
+returns to Dream; original animation/waits remain untouched. Guest occupied
+altars retain original zero-argument78/79 and native asynchronous menu result.
+Removed incompatible78/79->41 substitution: native41 requires one argument
+and rejected the original command before opening any UI. Empty/unready guest
+altars remain denied; host commands unchanged.
+
+Added bounded-by-command logs: native altar selection/ritual, local travel
+rejection reason, actual warp point and queued/untracked status. Existing
+native event release/arrival/admission logs give the remaining sequence.
+Production fixtures, all seven original zero-argument altar ESDs, original
+animation order, actual2003[49] jump-table/call target/EDI ABI, native41 argument
+check and trampoline PASS. These checks do not establish visible UI/models or
+successful gameplay. Build/deploy/start and game results recorded separately.
+No computer-use, game asset edits, save rollback or process termination.
+
+## 05.11.2026 — current native-flow log diagnosis: wrong warp hook CONFIRMED
+
+Read-only20:33–20:44 run diagnosis, source420c200. Actual native EMEVD2003[49]
+dispatch:017C2C38[48] ->017C1CCC -> call013CDF30 at017C1CF0 -> StageTransition
+013CDE30 at013CE002. It bypasses0132E050, where the new functional travel callback
+arms FirstSync reinsertion. Both profiles release native travel flags and load,
+but neither records native stage request. The fixture manually called callback;
+it did not validate the actual command49 call graph. Fix must use the real native
+transition path and ABI, preserving original animation/wait. Gameplay remains OPEN.
+
+Guest occupied altar210060 reaches replacement command41 repeatedly, but no guest
+m29 request follows. Host m29 arrival works. Exact guest altar failure still OPEN:
+command entry does not establish visible menu or correct native selection/result
+contract. No native fault/new BBSC error/travel timeout observed; only NP/SSL stubs,
+queues0/dropped0. Intro24010005 replay not observed; Yharnam resident owner retained.
+Model repair logs do not confirm visibility. Full current snapshots/findings in
+parent out/coop-dev/runs/independent-native-flow-20261105. No code changes, rebuild,
+deploy, save edits, process termination or computer-use in this diagnostic turn.
+
 ## 05.11.2026 — native travel events and pre-event native admission
 
 Source420c200 DLL build/delta exit0. Backup independent-native-flow-20261105-

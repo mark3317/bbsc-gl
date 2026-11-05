@@ -22948,7 +22948,7 @@ bool BbscFunctionalTraceSite(const TraceSite& site) {
     if (site.offset == 0x018F9720 || site.offset == 0x018C9160) return true;
 #endif
     return site.kind == TraceKind::LuaSessionEvent || site.offset == 0x01873269 ||
-           site.offset == 0x0132E050 ||
+           site.offset == 0x013CDF30 ||
            site.offset == MultiPlayStopRequestOffset ||
            site.offset == ItemUsableResultOffset || site.offset == SummonBuildEntryOffset ||
            site.offset == CrossMapGuestHandoffOffset ||
@@ -22982,7 +22982,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     BbscPerfScope perf_scope{perf_site};
 
     const auto& site = Sites[tag];
-    if(site.offset==0x0132E050)BbscWorldNativeWarpBegin(registers);
+    if(site.offset==0x013CDF30)BbscWorldNativeWarpBegin(registers);
     if (site.offset == SosStatusUpdateOffset) {
         CompleteBbscResidentSummons(registers->rdi);
     }
@@ -25810,7 +25810,7 @@ void InstallReverseEngineeringTrace() {
         }
         ++hook_count;
 #ifdef BBSC_MOD
-        if(site.offset==0x0132E050)bbsc_world_native_warp_hook=true;
+        if(site.offset==0x013CDF30)bbsc_world_native_warp_hook=true;
 #endif
     }
 

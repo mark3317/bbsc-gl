@@ -137,7 +137,20 @@ def check_original_sites(elf):
     prologue=bytes.fromhex('55 48 89 e5 41 57')
     for address in [0x1AB2A40,0x1AB1DB0,0x1AB3070,0x1AB31C0,0x18C6390,0x18BCD40,0x12B2960]:
         assert original(address,len(prologue))==prologue,f'Native callable mismatch {address:x}'
-    assert original(0x0132E050,7)==bytes.fromhex('55 48 89 e5 48 63 c6')
+    assert original(0x013CDF30,6)==bytes.fromhex('55 48 89 e5 41 57')
+    # Validate the real EMEVD2003[49] dispatch and its EDI argument ABI.
+    table=0x017C2C38
+    case=table+struct.unpack('<i',original(table+48*4,4))[0]
+    assert case==0x017C1CCC
+    assert original(0x017C1CEE,2)==bytes.fromhex('8b 39')
+    call=0x017C1CF0
+    assert original(call,1)==b'\xe8'
+    assert call+5+struct.unpack('<i',original(call+1,4))[0]==0x013CDF30
+    assert original(0x02040E1B,3)==bytes.fromhex('83 f8 01') #41 requires one arg
+    assert original(0x02040E1E,2)==bytes.fromhex('0f 85')
+    source=(ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+    assert 'if(site.offset==0x013CDF30)BbscWorldNativeWarpBegin(registers);' in source
+    assert 'if(site.offset==0x013CDF30)bbsc_world_native_warp_hook=true;' in source
     print(f'PASS original 1.09 ELF: {total} native hook spans + 7 callable prologues')
 
 def main():
