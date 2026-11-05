@@ -169,6 +169,7 @@ public:
     void Forget(u32 sender) { members_.erase(sender); }
     void Clear() { Bind({}, 0); }
     const std::map<u32, Member>& Members() const { return members_; }
+    bool Known(u32 sender) const { return last_.contains(sender); }
     static bool Fresh(const Member& m, s64 now) {
         return now >= m.received && now - m.received < PresenceFreshMs;
     }
@@ -228,13 +229,11 @@ constexpr NativePolicy ChannelPolicy(u32 channel) {
     switch (channel) {
     case 0x04: case 0x05: case 0x06: case 0x0E: case 0x0F: case 0x12:
     case 0x14: case 0x15: case 0x16: case 0x17: case 0x24: case 0x25:
-    case 0x29: case 0x2A: case 0x2B: case 0x2D: case 0x2E: case 0x30:
+    case 0x29: case 0x2A: case 0x2B: case 0x2D: case 0x2E: case 0x2F: case 0x30:
     case 0x31: case 0x34: case 0x36: case 0x37: case 0x3D: case 0x3E:
     case 0x40: case 0x41: return NativePolicy::SamePlace;
     case 0x2C: return NativePolicy::Personal;
     case 0x27: return NativePolicy::Drop;
-    // 0x2F needs the world log before native corrections can be suppressed.
-    // This prototype deliberately keeps it on the existing path.
     default: return NativePolicy::Session;
     }
 }

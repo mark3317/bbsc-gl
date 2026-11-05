@@ -1,8 +1,53 @@
 # Independent travel — development branch, 05.11.2026
 
 Branch (parent and BBSC): `codex/independent-world-travel`, based on BBSC `bdd59b7`.
-User authorized implementation and a two-profile launch on this PC. This is an
-incremental implementation, NOT a completed independent-travel feature.
+User authorized implementation and a two-profile launch on this PC.
+
+## Native integration, second gate (17:58 MSK)
+
+Implemented: negotiated independent travel; per-place native enemy ownership,
+HP source and hit routing; host-ordered scoped flag/enemy snapshots; host altar
+catalog and guest-only native layer selection. Code/fixtures are ready for a
+DLL build and two-profile connection test. Gameplay is not yet confirmed.
+
+`bbsc_independent_world.inc` owns native channel boundary hooks (before reliable
+sequence assignment), awake-enemy words, activation around same-place players,
+off-map actor hiding and scoped reinsertion. The host coordinates leases even
+while its own game thread is loading. Scope includes room, map, complete decoded
+layout proof and per-slot ritual incarnation. Leases never migrate the session
+host. Presence freshness gates actors; transient loading does not re-enable follow.
+
+`bbsc_world_state.inc` reads all seven complete native altar records using the
+same four read-only getters as the stage loader. It does not need a cached
+FormData pointer or a visit to each dungeon. Guests journal personal altar groups
+before installing the host's live Dream view; cached personal ritual pointers
+are not replaced. Native progress-bit proposals are accepted only from the
+current scoped owner and acknowledged by the host catalog. Enemy snapshots hold
+up to1024 records and include HP, transform and active fighting state for takeover.
+
+`bbsc_world_travel.inc` allows audited original lamp/headstone talks and occupied
+host altars. R12 supplies the real ESD talk identity, R15 supplies the actor.
+An explicit local request waits for the host's destination snapshot before a
+native kept-session load. Actual altar command order is slot first, layer second;
+the first half must not start travel. Guests use the original headstone list
+command with the altar ESD's ten layer entries; special creation/removal UI is
+unavailable. Host ritual changes fence old requests and return stranded visitors
+to Dream. Personal inventory rewards and native root generation remain native.
+
+Death/spectating/scaling, remote cutscenes and retained actor tasks are filtered
+by place. Initial native admission and host exit retain their existing ownership.
+Both peers must negotiate the capability before follow is disabled or lamps open.
+
+Targeted validation PASS: world presence/model/bridge, relay dispatcher, chalice
+scope, follow transition, actual native authority callbacks, actual native altar
+getters/progress/view, actual ESD/travel callbacks and production hook trampoline.
+Original1.09 ELF matches16 new hook spans and7 callable prologues. Full MOD syntax
+check PASS. These fixtures use synthetic memory and never edit real saves.
+
+Required in-game observations: admission and capability activation; separate
+maps/fights and reunion; damaged enemy takeover; guest selection of a host cup
+while host is elsewhere; restored personal cups on leaving; host departure.
+Build/deploy/launch results will be appended below separately.
 
 ## Agreed behavior
 
@@ -28,7 +73,7 @@ on meeting. Their server selects an enemy owner per map and routes native game
 channels. Their team altars replicate rituals to teammates, which is incompatible
 with the agreed personal-altar model and must NOT be copied unchanged.
 
-## Implemented first integration gate
+## Historical first integration gate
 
 - `bbsc_world_presence.h`: fixed-size/versioned presence wire format, room/world
   scope, finite-position validation, loading/playing/leaving states, monotonic

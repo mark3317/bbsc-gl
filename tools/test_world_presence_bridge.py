@@ -45,6 +45,10 @@ std::optional<Transform> ReadCharacterTransform(u64){return positioned?std::opti
 u32 GetCurrentPackedMap(){return map;}
 Chalice::Key dungeon;
 Chalice::Key ReadBbscChaliceKey(){return dungeon;}
+u32 BbscIndependentCapabilities(){return World::PresenceCapability;}
+Chalice::Key BbscIndependentDungeonKey(const Chalice::Key& key){return key;}
+u64 BbscIndependentRitual(const Chalice::Key&){return 0;}
+void BbscWorldCoordinate(){}
 s32 GetCharacterHp(u64){return hp;}
 std::vector<World::Presence> sent;
 namespace Libraries::Np::NpSignaling::Helpers {

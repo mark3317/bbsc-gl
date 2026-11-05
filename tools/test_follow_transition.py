@@ -36,7 +36,7 @@ std::atomic<u64> bbsc_world_load_pending{0};std::atomic<bool> bbsc_reload_finish
 s32 state=3,hp=100;bool loading=false,own=true,quitting=false,flags=true;
 u32 map=0x18000000;int requests=0,sends=0;bool bbsc_join_teleport_done=true;
 bool BbscWarpTogetherEnabled(){return true;}bool BbscQuitInProgress(){return quitting;}
-bool BbscDreamFinaleHolding(){return false;}u64 GetGlobalState(){return 0x10000;}
+bool BbscDreamFinaleHolding(){return false;}bool BbscIndependentActive(){return false;}u64 GetGlobalState(){return 0x10000;}
 bool ReadablePointer(u64,size_t){return true;}
 template<class T>T ReadValue(u64,size_t off){
  if(off==8)return loading;if(off==0x1592)return own;return 0;

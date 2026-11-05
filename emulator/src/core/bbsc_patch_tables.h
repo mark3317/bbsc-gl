@@ -169,7 +169,7 @@ struct ByteEdit {
     Group group;
 };
 
-constexpr std::array<ByteEdit, 17> ByteEdits{{
+constexpr std::array<ByteEdit, 16> ByteEdits{{
     // The lamp prompt in 0x012F5C40 needs all four of +0x48, +0x49, +0x4A and +0x4B to be zero.
     // +0x49 is the "I am in a multiplayer session" flag, built right here:
     //     CMP dword ptr [RBX + 0x14], 0x1
@@ -196,7 +196,7 @@ constexpr std::array<ByteEdit, 17> ByteEdits{{
     // Clearing it makes every talk script on the HOST see a solo game (lamp prompt, and anything
     // else the scripts gate on co-op). The guest keeps the vanilla answer: Group::Lamp is a role
     // group that is only switched on while hosting.
-    {"Lamp.TalkMultiplayerCheck", 0x0203C564, {0x08, 0xC1}, {0x30, 0xC9}, Group::Lamp},
+    // Scoped f52 hook is installed by InstallBbscWorldTravel.
 
     // Guest item pickup, part 2 (part 1 is below in WideEdits). Picking up a map treasure is
     // 0x017D8570(item manager [0x0553D6E0], &item id). For a treasure (item +0x48 bit 0x80) it asks
