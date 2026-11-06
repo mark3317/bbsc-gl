@@ -10,6 +10,12 @@ depth = 1
 while depth:
     depth += (source[end]=='{')-(source[end]=='}'); end += 1
 production = source[start:end]
+start_entry=source.index('void BeginBbscCoopDeath(std::string_view name, s32 session_state) {')
+end_entry=source.index('{',start_entry)+1;depth=1
+while depth:
+    depth+=(source[end_entry]=='{')-(source[end_entry]=='}');end_entry+=1
+entry=source[start_entry:end_entry]
+
 negative=os.environ.get('BBSC_TEST_DEATH_OLD')=='1'
 if negative:
     production=production.replace('const bool independent = BbscIndependentActive();','const bool independent = false;')
@@ -43,7 +49,13 @@ std::mutex bbsc_follow_mutex;
 struct BbscFollowMessage{s64 received_ms=100000;u32 packed_map=0x18000000;float x=9,y=0,z=0,heading=0;};
 BbscFollowMessage bbsc_follow_latest;
 struct SummonPlacementDescriptor{u32 packed_region;float x,y,z,heading;};
-int warps=0,reloads=0,suspends=0,releases=0,revives=0,penalties=0;
+int warps=0,reloads=0,suspends=0,releases=0,revives=0,penalties=0,curtains=0;
+bool fade_ok=false,boss=false;
+std::atomic<bool> bbsc_own_dead{false};std::atomic<u32> bbsc_revivals_at_own_death{0};
+struct NativeRearm {u64 player,global;int retry;u32 load;};NativeRearm bbsc_native_death_rearm{};
+u64 GetLocalPlayerCharacter(){return 1;}int GetLocalCharacterType(){return role==6?1:0;}
+bool IsInvaderType(int){return false;}int RemoteInvaderCount(){return 0;}
+bool BbscBossFightAtDeath(){return boss;}void StashBbscOwnWorldSnapshot(){}
 namespace Bbsc {void CinematicForceOff(){} void CinematicSetWatching(bool){}}
 void NoteBbscBossBar(){}void RestoreBbscOwnWorldSnapshot(){}
 void RequestBbscDeathReload(std::string_view){++reloads;}
@@ -53,7 +65,7 @@ bool LivingPartnerExists(){return living;}bool IsUsablePackedMap(u32){return tru
 u64 GetGlobalState(){return 0;}bool RequestBbscSessionWarp(u64,SummonPlacementDescriptor,std::string_view){++warps;return true;}
 bool BbscDiedRightAfterRespawn(std::string_view){return loop;}
 void BbscApplyDeathPenalty(std::string_view){++penalties;}
-bool StartBbscDeathCurtain(std::string_view){return false;}
+bool StartBbscDeathCurtain(std::string_view){++curtains;return fade_ok;}
 bool BbscRespawnInPlace(std::string_view){++revives;return revive_ok;}
 void SuspendBbscPersistenceOnce(std::string_view){++suspends;}
 void ReleaseBbscGuestRespawnPoint(std::string_view){++releases;}
@@ -61,7 +73,7 @@ template<class T>T ReadValue(u64,size_t){return 0;}
 bool ReadablePointer(u64,size_t){return false;}
 '''
 main = r'''
-void reset(){warps=reloads=suspends=releases=revives=penalties=0;
+void reset(){warps=reloads=suspends=releases=revives=penalties=curtains=0;fade_ok=false;boss=false;
  bbsc_spectate_active=true;bbsc_spectate_releasing=false;bbsc_request_death_reload=false;
  bbsc_spectate_saw_wipe=true;bbsc_spectate_wipe_warped=false;
  bbsc_spectate_waiting_host_reload=false;bbsc_spectate_alone_since_ms=0;
@@ -69,6 +81,13 @@ void reset(){warps=reloads=suspends=releases=revives=penalties=0;
  bbsc_spectate_host_back_ms=1;bbsc_load_generation=1;bbsc_spectate_load_generation=1;}
 int main(){
  for(s32 r:{3,6}){role=r;
+  // The old common entry must preserve ordinary no-load fade and boss spectate.
+  reset();fade_ok=true;bbsc_spectate_active=false;BeginBbscCoopDeath("watchdog",role);
+  assert(bbsc_spectate_active&&bbsc_death_mode==BbscDeathMode::RespawnNow);
+  TickBbscSpectate();assert(curtains==1&&revives==0&&reloads==0&&!bbsc_spectate_active);
+  reset();fade_ok=true;boss=true;bbsc_spectate_active=false;BeginBbscCoopDeath("watchdog",role);
+  assert(bbsc_spectate_active&&bbsc_death_mode==BbscDeathMode::Spectate);
+  TickBbscSpectate();assert(curtains==0&&revives==0&&reloads==0&&bbsc_spectate_active);
   reset();TickBbscSpectate();assert(revives==1&&warps==0&&reloads==0&&!bbsc_spectate_active);
   assert(!bbsc_spectate_waiting_host_reload&&penalties==1);
   reset();loop=true;TickBbscSpectate();assert(reloads==1&&warps==0&&suspends==0&&releases==0);
@@ -94,7 +113,7 @@ int main(){
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-death-destination-') as tmp:
     cpp, exe = Path(tmp)/'death.cpp', Path(tmp)/'death.exe'
-    cpp.write_text(prefix+production+main, encoding='utf-8')
+    cpp.write_text(prefix+entry+production+main, encoding='utf-8')
     compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
     subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
     env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')

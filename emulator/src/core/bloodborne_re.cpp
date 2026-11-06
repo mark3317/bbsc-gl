@@ -19772,8 +19772,9 @@ constexpr u64 SoloPlayDeathOffset = 0x01381B60;
 constexpr u64 SoloPlayDeathFirstOffset = 0x01381D90;
 constexpr u64 PartyGhostDeathOffset = 0x01381FD0;
 constexpr s64 BbscDeadWatchdogMs = 15'000;
-// Native callbacks own every death. The tick observes stalled scripts only;
-// it never manufactures YOU DIED or bypasses the native death/status cleanup.
+// Native callbacks normally hand over to the retained-death controller.
+// Keep the original bounded handoff when a native script stalls; never revive
+// directly here, so boss/wipe/invasion and the existing fade remain authoritative.
 s64 bbsc_dead_since_ms = 0;
 s64 bbsc_death_script_ms = 0;
 
@@ -19981,14 +19982,15 @@ void TickBbscEchoTrace() {
     last = now;
 }
 
-// Observe native deaths without substituting a second mod-only death pipeline.
+// Native detector rearm plus the pre-fb4d600 bounded handoff to the SAME co-op
+// death controller used by the native final step (not a direct HP-only revival).
 void TickBbscDeathLifecycle() {
     if (!BbscSpectateEnabled()) return;
     const s64 now = SteadyNowMs();
     const s32 state = GetSessionState();
     const u64 global = GetGlobalState();
     const bool loading = ReadablePointer(global, 0x10) && ReadValue<u8>(global, 8) != 0;
-    if ((state != 3 && state != 6) || loading) {
+    if ((state != 3 && state != 6) || loading || BbscQuitInProgress() || BbscReturningToTitle()) {
         bbsc_native_death_rearm = {};
         bbsc_dead_since_ms = bbsc_death_script_ms = 0;
         return;
@@ -20007,13 +20009,16 @@ void TickBbscDeathLifecycle() {
     if (!bbsc_dead_since_ms) {
         bbsc_dead_since_ms = now;
         bbsc_boss_at_own_death = BbscBossFightAtDeath();
+        bbsc_echoes_at_death = GetBloodEchoes(); // before native drop / rewards earned while dead
         return;
     }
     if (now - bbsc_dead_since_ms >= BbscDeadWatchdogMs) {
-        LOG_ERROR(Debug, "BBSC death: native death handler has not completed after {} ms "
-                        "(state {}, entry {}); retaining native processing", BbscDeadWatchdogMs,
-                  state, bbsc_death_script_ms);
-        bbsc_dead_since_ms = now; // bounded diagnostics, no fake revive/UI/effect reset
+        bbsc_dead_since_ms = 0;
+        LOG_WARNING(Debug, "BBSC death: restoring retained death handoff after {} ms "
+                           "(state {}, native entry {}, boss at death {})", BbscDeadWatchdogMs,
+                    state, bbsc_death_script_ms, bbsc_boss_at_own_death);
+        BBSC_TIMELINE("DEATH", "delayed native death: entering existing co-op death rules");
+        BeginBbscCoopDeath("watchdog", state);
     }
 }
 
@@ -22087,30 +22092,6 @@ void PS4_SYSV_ABI BbscMultiDopingHook(u64 tag, const GuestRegisterSnapshot* regi
              BbscScalingEnabled() ? "skipped" : "applies", BbscScalingEnabled() ? "applies" : "off");
 }
 
-// Original Lua timers for a local death are registered with event+8A=0,
-// but 0139A9D0 matches incoming channel0E timers without checking that mode.
-// A foreign timer with the same (kind,4000,delay,clock) consumes the one-shot
-// local continuation; PartyGhostDeath_1 then rejects its remote-origin context.
-// Fence only those foreign continuations, before native dispatch can delete them.
-// Native local timers, YOU DIED, cleanup, boss waits and the final step stay intact.
-u8 bbsc_death_continuation_skip = 0;
-void PS4_SYSV_ABI BbscDeathContinuationHook(u64, const GuestRegisterSnapshot* r) {
-    bbsc_death_continuation_skip = 0;
-    if (!r || !BbscSpectateEnabled() || static_cast<u32>(r->rdx) != 4000) return;
-    const u32 kind = static_cast<u32>(r->rsi);
-    if (kind != 15 && kind != 16) return;
-    // 0133A1F0 passes from-network=false; 01339B50/0133A150 pass true.
-    // SysV's ninth argument is at entry RSP+0x18, after lua and source id.
-    if (!ReadablePointer(r->rsp + 0x18, 1)) return;
-    const bool incoming = ReadValue<u8>(r->rsp, 0x18) != 0;
-    const s32 state = GetSessionState();
-    BBSC_TIMELINE("DEATH", "native death continuation kind={} foreign={} session={} group=4000", kind, incoming, state);
-    if (!incoming || (state != 3 && state != 6)) return;
-    const_cast<GuestRegisterSnapshot*>(r)->rax = 0;
-    bbsc_death_continuation_skip = 1;
-    BBSC_TIMELINE("DEATH", "foreign native death continuation ignored kind={} group=4000", kind);
-}
-
 void InstallBbscDeathTraceHooks() {
     if (image_base == 0 || !BbscSpectateEnabled()) {
         return;
@@ -22118,11 +22099,6 @@ void InstallBbscDeathTraceHooks() {
     static constexpr std::array<u8, 6> PushR15{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
     static constexpr std::array<u8, 6> PushRbxRax{0x55, 0x48, 0x89, 0xE5, 0x53, 0x50};
     static constexpr std::array<u8, 6> PushR14Rbx{0x55, 0x48, 0x89, 0xE5, 0x41, 0x56};
-    if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x0139A9D0),
-                              std::span<const u8>{PushR15}, 0, BbscDeathContinuationHook,
-                              &bbsc_death_continuation_skip)) {
-        LOG_ERROR(Debug, "BBSC death: native continuation isolation unavailable");
-    }
     bbsc_native_death_api_ready =
         std::memcmp(reinterpret_cast<const void*>(image_base + 0x01329B70),
                     PushR15.data(), PushR15.size()) == 0 &&
