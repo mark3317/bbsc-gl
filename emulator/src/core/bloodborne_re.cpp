@@ -6380,14 +6380,17 @@ bool IsBbscKidnapEvent(s64 event) {
     return event == 9421 || event == 9422 || event == 12400780 || event == 12700500;
 }
 bool IsBbscKidnapFlag(u32 flag) { return flag >= 9420 && flag <= 9423; }
-bool BbscKidnapDeathPending() {
-    return BbscIndependentTravelAllowed() && !BbscEventFlag(9423) &&
-           (BbscEventFlag(9420) || BbscEventFlag(9421));
-}
 bool BbscKidnapRespawnReady() {
     const u64 global = GetGlobalState();
     return BbscEventFlag(9421) && ReadablePointer(global, 0x1530) &&
            ReadValue<u32>(global, 0x1528) == 2802959;
+}
+bool BbscKidnapDeathPending() {
+    if (!BbscIndependentTravelAllowed() || BbscEventFlag(9423)) return false;
+    // 9420 is the native lethal-hit request. 9421 is also a durable event
+    // completion bit: by itself it must not hold an unrelated ordinary death.
+    // After native9421 clears9420, keep only its actually prepared prison load.
+    return BbscEventFlag(9420) || BbscKidnapRespawnReady();
 }
 
 // A hidden quest actor's replicated death is not evidence of this player's

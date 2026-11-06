@@ -16,6 +16,12 @@ while depth:
     depth+=(source[end_entry]=='{')-(source[end_entry]=='}');end_entry+=1
 entry=source[start_entry:end_entry]
 
+def function(signature):
+    a=source.index(signature+' {');b=source.index('{',a)+1;depth=1
+    while depth:
+        depth+=(source[b]=='{')-(source[b]=='}');b+=1
+    return source[a:b]+'\n'
+kidnap_production=function('bool BbscKidnapRespawnReady()')+function('bool BbscKidnapDeathPending()')
 negative=os.environ.get('BBSC_TEST_DEATH_OLD')=='1'
 if negative:
     production=production.replace('const bool independent = BbscIndependentActive();','const bool independent = false;')
@@ -30,8 +36,11 @@ using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s
 #define BBSC_TIMELINE(...)
 #define PS4_SYSV_ABI
 bool kidnap=false,prison_ready=false;
-bool BbscKidnapDeathPending(){return kidnap;}
-bool BbscKidnapRespawnReady(){return prison_ready;}
+bool BbscKidnapDeathPending();bool BbscKidnapRespawnReady();
+bool BbscIndependentTravelAllowed();
+// Match live historical9421/9422 on an ordinary checkpoint by default.
+bool BbscEventFlag(u32 f){return f==9420?kidnap:(f==9421||f==9422);}
+
 bool independent=true,living=true,host_reload=true,loop=false,revive_ok=true;
 bool bbsc_request_death_reload=false,bbsc_spectate_active=true,bbsc_spectate_releasing=false;
 bool bbsc_spectate_waiting_host_reload=false,bbsc_spectate_saw_wipe=true,bbsc_spectate_wipe_warped=false;
@@ -59,18 +68,19 @@ bool BbscBossFightAtDeath(){return boss;}void StashBbscOwnWorldSnapshot(){}
 namespace Bbsc {void CinematicForceOff(){} void CinematicSetWatching(bool){}}
 void NoteBbscBossBar(){}void RestoreBbscOwnWorldSnapshot(){}
 void RequestBbscDeathReload(std::string_view){++reloads;}
+bool BbscIndependentTravelAllowed(){return independent;}
 bool BbscIndependentActive(){return independent;}s64 SteadyNowMs(){return now;}
 s32 GetSessionState(){return role;}bool BbscHostReportsDeathReload(){return host_reload;}
 bool LivingPartnerExists(){return living;}bool IsUsablePackedMap(u32){return true;}
-u64 GetGlobalState(){return 0;}bool RequestBbscSessionWarp(u64,SummonPlacementDescriptor,std::string_view){++warps;return true;}
+u64 GetGlobalState(){return 0x10000;}bool RequestBbscSessionWarp(u64,SummonPlacementDescriptor,std::string_view){++warps;return true;}
 bool BbscDiedRightAfterRespawn(std::string_view){return loop;}
 void BbscApplyDeathPenalty(std::string_view){++penalties;}
 bool StartBbscDeathCurtain(std::string_view){++curtains;return fade_ok;}
 bool BbscRespawnInPlace(std::string_view){++revives;return revive_ok;}
 void SuspendBbscPersistenceOnce(std::string_view){++suspends;}
 void ReleaseBbscGuestRespawnPoint(std::string_view){++releases;}
-template<class T>T ReadValue(u64,size_t){return 0;}
-bool ReadablePointer(u64,size_t){return false;}
+template<class T>T ReadValue(u64 p,size_t off){return p==0x10000&&off==0x1528?T(prison_ready?2802959:2412951):T(0);}
+bool ReadablePointer(u64 p,size_t){return p==0x10000;}
 '''
 main = r'''
 void reset(){warps=reloads=suspends=releases=revives=penalties=curtains=0;fade_ok=false;boss=false;
@@ -113,7 +123,7 @@ int main(){
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-death-destination-') as tmp:
     cpp, exe = Path(tmp)/'death.cpp', Path(tmp)/'death.exe'
-    cpp.write_text(prefix+entry+production+main, encoding='utf-8')
+    cpp.write_text(prefix+kidnap_production+entry+production+main, encoding='utf-8')
     compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
     subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
     env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')

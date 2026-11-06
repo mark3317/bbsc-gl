@@ -38,9 +38,13 @@ template<class T>void WriteValue(u64 p,size_t off,T v){memcpy((void*)(p+off),&v,
 s64 BbscEventIdOf(u64){return event;}
 '''
 for sig in ['bool IsBbscKidnapEvent(s64 event)', 'bool IsBbscKidnapFlag(u32 flag)',
-            'bool BbscKidnapDeathPending()', 'bool BbscKidnapRespawnReady()',
+            'bool BbscKidnapRespawnReady()', 'bool BbscKidnapDeathPending()',
             'void EnableBbscKidnapEvent(u64 instance)']:
     code += function(sig)
+negative_pending = os.environ.get('BBSC_TEST_KIDNAP_PENDING_OLD') == '1'
+if negative_pending:
+    code=code.replace(function('bool BbscKidnapDeathPending()'),
+        'bool BbscKidnapDeathPending(){return BbscIndependentTravelAllowed() && !BbscEventFlag(9423) && (BbscEventFlag(9420)||BbscEventFlag(9421));}\n')
 negative = os.environ.get('BBSC_TEST_SNATCHER_OLD') == '1'
 if negative:
     code = code.replace('void EnableBbscKidnapEvent(u64 instance) {',
@@ -48,9 +52,19 @@ if negative:
 code += r'''
 int main(){
  assert(!BbscKidnapDeathPending()); flags={9420};assert(BbscKidnapDeathPending());
- assert(!BbscKidnapRespawnReady());flags={9421};assert(BbscKidnapDeathPending());
+ assert(!BbscKidnapRespawnReady());
+ // Exact live failure: historical9421/9422, no9420/9423, ordinary/Dream checkpoint.
+ flags={9421,9422};
+ for(u32 point:{2412951u,2102961u,2702951u}){
+  WriteValue<u32>(GetGlobalState(),0x1528,point);
+  assert(!BbscKidnapDeathPending()&&!BbscKidnapRespawnReady());
+ }
+ flags={9421};assert(!BbscKidnapDeathPending());
  WriteValue<u32>(GetGlobalState(),0x1528,2412950);assert(!BbscKidnapRespawnReady());
- WriteValue<u32>(GetGlobalState(),0x1528,2802959);assert(BbscKidnapRespawnReady());
+ WriteValue<u32>(GetGlobalState(),0x1528,2802959);assert(BbscKidnapRespawnReady()&&BbscKidnapDeathPending());
+ flags.clear();assert(!BbscKidnapDeathPending()); // point alone is not a request
+ flags={9420};assert(BbscKidnapDeathPending()); // request still waits for native preparation
+ flags={9421};
  flags.insert(9423);assert(!BbscKidnapDeathPending());
  flags={9420};allowed=false;assert(!BbscKidnapDeathPending());allowed=true;
  for(s64 e:{9421,9422,12400780,12700500})assert(IsBbscKidnapEvent(e));
@@ -80,6 +94,10 @@ with tempfile.TemporaryDirectory(prefix='bbsc-snatcher-') as tmp:
     subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
     env=dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     result = subprocess.run([str(exe)],env=env)
+    if negative_pending:
+        assert result.returncode != 0, 'Historical9421-only guard passed ordinary-death regression'
+        print('PASS negative control: historical9421-only guard FAILS captured ordinary-death case')
+        raise SystemExit(0)
     if negative:
         assert result.returncode != 0, 'Old host-only gates passed the guest regression'
         print('PASS negative control: original host-only gates FAIL local abduction regression')
