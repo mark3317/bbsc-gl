@@ -79,6 +79,36 @@ class DynamicHelpers:
 
 
 class DynamicTests(DynamicHelpers, unittest.TestCase):
+    def test_native_login_with_expired_idle_roster_peer(self):
+        from compat import Compatibility, account, packet
+        a,b,c=self.node('A'),self.node('B'),self.node('C')
+        self.discover()
+        with a.lock:
+            # A previous idle session still remembers B; only A/C are online.
+            a.disk['home']['roster']=['A','B','C']
+            a.signs.pop('B',None)
+            atomic_json(a.peers_file,[a.identity,c.identity])
+            a.refresh_peers()
+            self.assertNotIn('B',a.members)
+            before=copy.deepcopy(a.state)
+        bridge=Compatibility(a).start()
+        self.engines.remove(a) # bridge.close owns engine shutdown
+        try:
+            with socket.create_connection(('127.0.0.1',bridge.np_port),timeout=5) as sock:
+                sock.settimeout(5)
+                recv_exact(sock,15); recv_exact(sock,4)
+                request=native.encode('LoginRequest',{'npid':'HunterA','password':bridge.token})
+                sock.sendall(packet(0,0,9,blob(request)))
+                kind,cmd,size,ident=struct.unpack('<BHIQ',recv_exact(sock,15))
+                body=recv_exact(sock,size-15)
+                self.assertEqual((kind,cmd,ident,body[0]),(1,0,9,0))
+                result=native.decode('LoginReply',body[5:])
+                self.assertEqual(result['user_id'],account('A'))
+                self.assertEqual(result['friends'],[{'npid':'HunterC','online':True}])
+                self.assertEqual(a.state,before) # login never rewrites membership
+        finally:
+            bridge.close()
+
     def test_unresponsive_discovery_peer_does_not_delay_healthy_sign(self):
         a,b=self.node('A'),self.node('B')
         self.config('C')

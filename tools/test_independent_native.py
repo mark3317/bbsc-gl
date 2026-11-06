@@ -19,12 +19,21 @@ PREFIX=r'''
 #include <cassert>
 #include <set>
 #include <mutex>
+#include <string_view>
 #include "core/bbsc_world_control.h"
+#include "core/bbsc_world_native_initial.h"
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 using namespace Core::Bloodborne;
 #define PS4_SYSV_ABI
+void TraceBbscCombatActor(std::string_view,uint64_t,int32_t,bool){}
 struct GuestRegisterSnapshot {u64 rax{},rbx{},rcx{},rdx{},rsi{},rdi{},rbp{},rsp{},r8{},r9{},r10{},r11{},r12{},r13{},r14{},r15{},rflags{};};
 bool active=false,here=true;
+bool BbscWorldBlocksActive(){return false;}
+bool BbscWorldBlockSimulation(){return false;}
+bool BbscWorldBlockPacketSend(GuestRegisterSnapshot*){return false;}
+bool BbscWorldBlockOwnsAny(){return false;}
+u64 BbscWorldBlockHpMember(){return 0;}
+u32 BbscWorldBlockRole(u64){return 0;}
 std::atomic<bool> bbsc_independent_hooks{true},bbsc_independent_travel_hooks{true};
 std::mutex bbsc_world_presence_mutex;
 World::PresenceBook bbsc_world_presence_book;
@@ -39,14 +48,20 @@ template<class T>T ReadValue(u64 task,size_t offset){return offset==0xE8?T(task=
 s64 SteadyNowMs(){return 10000;}
 bool BbscIndependentActive(){return active;}
 thread_local u8 bbsc_independent_send_depth=0;
+thread_local u32 bbsc_world_initial_sending=0;
+thread_local u64 bbsc_world_initial_fingerprint=0;
+bool ReadablePointer(u64 p,size_t){return p!=0;}
 u8 bbsc_independent_send_skip=0;
 std::atomic<u32> bbsc_independent_role{0},bbsc_independent_owner{0};
 u32 BbscWorldPeer(u64 member){return member==100?11:member==200||member==2200?22:0;}
 bool BbscWorldPeerHere(u32){return here;}
 bool BbscWorldSendHere(u32){return here;}
+bool BbscWorldPlayerSendHere(u32){return here;}
+u64 GetLocalPlayerCharacter(){return 0;}
 u64 BbscWorldNativeMember(u32 peer){return peer==22?200:0;}
 alignas(16) std::array<u8,0x130> bbsc_world_host_state{},bbsc_world_guest_state{};
 thread_local u64 bbsc_world_hp_original=0;
+thread_local u64 bbsc_world_hp_receive_frame=0;
 '''
 MAIN=r'''
 int main(){
@@ -61,6 +76,12 @@ int main(){
     GuestRegisterSnapshot r;r.rsi=100;r.rdx=0x27;r.rax=77;
     BbscWorldPacketSend(0,&r);assert(r.rax==77&&!bbsc_independent_send_skip);
     active=true;BbscWorldPacketSend(0,&r);assert(r.rax==0&&bbsc_independent_send_skip);
+    const std::array<u8,4> initial{1,2,3,4};
+    r.rdx=0x11;r.rsi=200;r.rcx=reinterpret_cast<u64>(initial.data());r.r8=initial.size();
+    bbsc_world_initial_sending=22;bbsc_independent_send_skip=0;BbscWorldPacketSend(0,&r);
+    assert(bbsc_world_initial_fingerprint==World::NativeInitialFingerprint(initial)&&!bbsc_independent_send_skip);
+    bbsc_world_initial_fingerprint=0;r.rsi=100;BbscWorldPacketSend(0,&r);assert(!bbsc_world_initial_fingerprint);
+    bbsc_world_initial_sending=0;
     for(u32 ch:{7u,0x10u,0x11u,0x19u,0x42u}){
         bbsc_independent_send_skip=0;r.rdx=ch;here=false;BbscWorldPacketSend(0,&r);
         assert(!bbsc_independent_send_skip); // joining is never blocked by a map filter
@@ -134,8 +155,10 @@ def check_original_sites(elf):
             expected=bytes(int(v.strip(),0) for v in values.split(','))
             assert original(int(addr,16),len(expected))==expected,f'Native hook mismatch {addr}'
             total+=1
+    assert original(0x018EF6C6,16)==bytes.fromhex('4d 8d bc 24 28 07 00 00 4d 8d ac 24 2c 07 00 00')
     prologue=bytes.fromhex('55 48 89 e5 41 57')
-    for address in [0x1AB2A40,0x1AB1DB0,0x1AB3070,0x1AB31C0,0x18C6390,0x19186E0,0x12B2960]:
+    for address in [0x1AB2A40,0x1AB1DB0,0x1AB3070,0x1AB31C0,0x18C6390,0x19186E0,0x18F4A50,0x15BC080,0x12B2960,
+                    0x1786360,0x1789200,0x190E8B0]:
         assert original(address,len(prologue))==prologue,f'Native callable mismatch {address:x}'
     assert original(0x013CDF30,6)==bytes.fromhex('55 48 89 e5 41 57')
     # Native per-character cleanup used by CSMultiPlayerIns.Delete: world in RDI,
@@ -144,6 +167,22 @@ def check_original_sites(elf):
     remove_call=0x01E50C54
     assert original(remove_call,1)==b'\xe8'
     assert remove_call+5+struct.unpack('<i',original(remove_call+1,4))[0]==0x019186E0
+    # Native per-handle arrival cleanup precedes character removal. FirstSync
+    # registers new arrival state by handle and rejects an existing entry.
+    assert original(0x01E50C15,4)==bytes.fromhex('41 8b 76 08')
+    clear_call=0x01E50C19
+    assert original(clear_call,1)==b'\xe8'
+    assert clear_call+5+struct.unpack('<i',original(clear_call+1,4))[0]==0x015BC080
+    assert original(0x015BC5FA,4)==bytes.fromhex('48 83 c0 14')
+    assert original(0x015BC603,3)==bytes.fromhex('44 39 e2')
+    # Player native virtual+B0 attaches parts to the current global scene;
+    # these are the exact offsets observed by BbscWorldPlayerMesh.
+    assert original(0x018F4ABA,7)==bytes.fromhex('4c 8b b8 c8 5f 00 00')
+    assert original(0x018F4ACA,7)==bytes.fromhex('48 8b 8b d0 04 00 00')
+    assert original(0x018F4ADA,4)==bytes.fromhex('4c 89 79 10')
+    assert original(0x018F4AFD,4)==bytes.fromhex('4c 8b 68 18')
+    assert original(0x018F4B01,4)==bytes.fromhex('49 8b 45 70')
+    assert original(0x018F4B21,4)==bytes.fromhex('49 8b 7d 18')
     # Validate the real EMEVD2003[49] dispatch and its EDI argument ABI.
     table=0x017C2C38
     case=table+struct.unpack('<i',original(table+48*4,4))[0]

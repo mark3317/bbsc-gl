@@ -10,7 +10,7 @@ assert (2005,3,struct.pack('<II',2101800,0)) in ev[12100800]
 assert (2006,1,struct.pack('<II',2103800,0)) in ev[12100800]
 for flag in (12101802,12104800):
     assert any(struct.pack('<I',flag) in a for b,i,a in ev[12104811])
-a=s.index('void TickBbscDreamFirstAudience() {');b=s.index('\nbool PrepareBbscSharedFinaleActor()',a)
+a=s.index('void TickBbscDreamFirstAudience() {');b=s.index('\nvoid TickBbscRomFirstEncounter()',a)
 body=s[a:b].replace('image_base + 0x01315E50','reinterpret_cast<u64>(&NativeDelete)')
 code=r'''
 #include <array>

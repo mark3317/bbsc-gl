@@ -59,14 +59,6 @@
       "env": "SHADPS4_BBSC_DREAM"
     },
     {
-      "id": "dream_own",
-      "name": "Own Hunter's Dream",
-      "description": "In the host's Hunter's Dream a guest sees its own Dream (own messengers, shops, Doll, workshop tools); off = the host's copy of the Dream",
-      "type": "bool",
-      "default": true,
-      "env": "SHADPS4_BBSC_DREAM_OWN"
-    },
-    {
       "id": "no_fog_walls",
       "name": "No co-op fog walls",
       "description": "Leaving the area is allowed",

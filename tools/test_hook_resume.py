@@ -123,6 +123,18 @@ int main() {
         should_skip=false; assert(yes()==99);
         should_skip=true; assert(yes()==13 && skip==0);
     }
+    // Native event dispatch may leave its existing stack through a VERIFIED
+    // epilogue, without running the warp or instruction-advance body.
+    const u8 tail_code[]={0x55,0x48,0x89,0xe5,0x48,0x89,0xf8,
+        0xc7,0,7,0,0,0,0xc7,0x40,4,9,0,0,0,0xb8,42,0,0,0,0x5d,0xc3};
+    auto* tail_start=start+0x4000;memcpy(tail_start,tail_code,sizeof(tail_code));
+    assert(Core::InstallGuestCodeHook(tail_start+7,{tail_code+7,6},0,callback,&skip,false,tail_start+20));
+    using Tail=u64 PS4_SYSV_ABI (*)(int*);auto tail=(Tail)tail_start;
+    for(bool pending:{true,false,true,false}){
+        should_skip=pending;int fields[]={1,2};
+        assert(tail(fields)==42 && fields[0]==(pending?1:7) && fields[1]==(pending?2:9));
+        assert(skip==0);
+    }
     // Exact Stop entry prologue: observer reads the original caller before
     // PUSH RBP/PUSH R15, then the native body and epilogue run unchanged.
     const u8 stop_code[]={0x55,0x48,0x89,0xe5,0x41,0x57,

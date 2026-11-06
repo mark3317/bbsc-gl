@@ -1,3 +1,1524 @@
+## 06.11.2026 — boss victory respawn восстановлен: SOURCE, gameplay OPEN
+
+Подтверждённая победа: мёртвые участники обеих ролей снова используют лампу
+этого босса до зажигания. Общая last-lit остаётся для обычной смерти/fallback;
+соседняя карта по-прежнему требует загрузки. Production+negative+spectate PASS.
+Сборки/установки не было. См. fixes/2026-11-06-host-death-void.md, новый верх.
+
+## 06.11.2026 — ноутбук не возрождается: native guest death stall, анализ OPEN
+
+Laptop run065448: PartyGhostDeath06:56:18; до57:42 нет native-final handoff,
+watchdog каждые15с сообщает native handler incomplete, не возрождает. Игра
+при этом37.7–42.1FPS. Только session-ended/send-home57:42 даёт ordinary reload,
+57:55 Central Yharnam. Host lamp3202950 выбран55:34; lamp load ещё не достигнут.
+Native wait/_1 промежуточные условия в live не трассировались: конкретная
+ветвь блокировки пока не доказана. Код/сборка/деплой/сейвы не менялись.
+Evidence parent laptop-no-revival-20261106; fixes/2026-11-06-laptop-guest-death-stall.md.
+
+## 06.11.2026 — именованный бэкап ПЕРЕД РОМ сохранён на ПК
+
+По прямой просьбе пользователя текущий основной профиль twin сохранён при
+закрытой игре в D:/Games/Bloodborne/coop-dev/saves/before-rom-20261106-064652.
+Полный savedata(22files)+own-world/bell-pending/shared-progress/item-ledger;
+метаданные исходных файлов неизменны во время копирования. info.json keep=true,
+active slot1; пометка «перед Ромом» по сообщению пользователя. Этот снимок
+сохранять для повторных прогонов; старый forest-host не заменялся. Исходный
+сейв не откатывался. Запуск primary profile ПК helper34904,06:46:52,
+Native36980 старт06:47:12/log064712,35/35hooks; успешные NP0/39/12/100/111,
+видимое окно Responding. One-hit/сетевая конфигурация сохранены. Ноутбук не менялся.
+Evidence parent rom-pc-laptop-20261106/before-rom-snapshot.json.
+
+## 06.11.2026 — отказ NP входа на ПК: SOURCE FIX / INSTALLED / RESTART
+
+Primary profile idle durable roster ссылался на отсутствующего discovery peer;
+login friends индексировал native_names без проверки и возвращал reject32.
+Party np_reject command0/KeyError доказывает причину. Теперь login friends
+пропускает отсутствующие native identities, сохраняя auth и membership.
+Real NP socket regression+known friend+membership и delayed-login PASS;
+old unguarded negative FAIL ожидаемо. Только compat.py установлен на ПК,
+backup rom-login-roster-20261106-064202; пользователь закрыл игру, helper14988
+старт06:42:02. Сейвы/identity/journal не сбрасывались, one-hit ON сохранён.
+Live login06:42:31 PASS: np_reply0,39,12,100,111; native1456/log064223,
+35/35 hooks;06:42:47 loaded Forbidden Woods. Rom gameplay OPEN.
+fixes/2026-11-06-idle-roster-login.md.
+
+## 06.11.2026 — Ром / общая лампа: INSTALLED ПК+ноут, forest-host RESTORED, STARTED
+
+Общая DLL build exit0/8warnings, входы сборки size/mtime неизменны; HEAD/pin4989896.
+Связанные чаты завершены до сборки. Safe guest Rom jump, original post-cutscene
+Rom tail и shared-lamp/safe-map respawn включены из общего дерева.8-file delta
+на обоих exit0: DLL/launcher/mod+runtime metadata, physics patches.py, Party
+compat/chalices. VPS не затронут. Быстрый деплой без installed-file audit.
+По прямой просьбе пользователя forest-host30.10 восстановлен на ОБОИХ основных
+профилях: ПК LocalAppData/Bloodborne Game Launcher/twin, ноут C:/Games/Bloodborne/test.
+До замены сохранены полные savedata+4категории BBSC metadata+bbport.ini;
+исторически отсутствующая metadata очищена после backup для запрета replay
+позднего прогресса. Accounts/settings.json/game assets и оригинальный forest-host
+не менялись. cheat_one_hit_kill=1 в основном профиле каждого устройства.
+PC native36020 старт06:32:40; laptop15992 старт06:33:01, интерактивныйmarkn.
+Оба fresh logs35/35 hooks, enemies/travel=true, One-Hit Kill в applied patches.
+Подключение/состояние Ром/исправления gameplay OPEN. Никакие игры не завершались.
+PC save backup D:/Games/Bloodborne/coop-dev/saves/before-rom-forest-restore-20261106-063200;
+laptop C:/Games/Bloodborne/coop-dev/saves/before-rom-forest-restore-20261106-063152.
+Binary backups rom-pc-laptop-20261106-20261106-063200/063151 в coop-dev/backups.
+Evidence parent out/coop-dev/runs/rom-pc-laptop-20261106; прежние SOURCE ONLY
+статусы ниже исторические по установке, не по игровому подтверждению.
+
+## 06.11.2026 — delayed NPC death: predicted0/confirmed0 native edge SOURCE corrected
+
+0556 COMBAT logs now prove the missing edge: P2 handle285c HP0 at06:18:18.030;
+P1 native hit/death1 at18.078. P2 owner HP0 setter18.304 sees old0; state3D
+sent18.955/received18.967 (12ms), yet death6 only21.229.285d repeats (28ms
+state delivery); non-predicted6028 immediately gets native death1 on received0.
+Original01916F38 calls native death only oldHP>0: prediction already0 skips it.
+New01916EF5 hook repairs ONLY original old-HP scratch for accepted remote HP0,
+awake/no-death/no-proxy actors. Original setter/Kill/revival/loot remain native;
+duplicates/dead/sleep/local/unadmitted cannot repeat death. Both roles enter
+native confirmation loop by block responsibility; guest local native death kept.
+Original pending/HP apply + original Kill/proxy/revival + real Windows hooks PASS;
+negative old FAIL; native hit/state/HP/blocks+ABI30 spans PASS; MOD syntax exit0.
+SOURCE ONLY, no build/deploy/termination/save/settings/assets/commit/pin/push.
+Fresh PID26932 running; gameplay OPEN. See latest section
+fixes/2026-11-06-guest-enemy-death-delay.md; logs pc-repeat-0556,2files/stable.
+
+## 06.11.2026 — Ром: загрузка гостя после катсцены SOURCE, gameplay OPEN
+
+П1/П2 live logs:06:12:08 общий32000000 запущен у обоих; хост06:12:41
+native2802958 и06:12:47 Яаар’гуль, гость остаётся. Standalone RequestRemo
+не выполнял host-only13201803 tail; follow отключён независимым режимом.
+По уточнению пользователя восстановлена native цепочка: host scene передаёт
+гостевой instance к оригинальной2002[7] через native condition cleanup/iterator;
+сам интерпретатор ждёт Remo, выполняет штатный кадр/flags/warp2802958.
+Нет mod movie-duration timer, ожидания прибытия хоста или ручного warp.
+World/load/role/source/duplicate/row guards, channel31 isolation Rom; прочие
+поездки/общий старт сохранены. Original event+iterator+Remo bank/production,
+old standalone negative, scene-only replay/native transport/doors/travel/Dream
+bridge PASS; MOD syntax exit0. SOURCE ONLY, DLL не собрана/не установлена,
+игровой контроль OPEN. Нет saves/settings/assets/live memory/process stop/
+commit/pin/push. См. fixes/2026-11-06-rom-post-cutscene-native.md;
+логи parent out/coop-dev/runs/rom-post-cutscene-20261106/pc (live snapshots).
+
+## 06.11.2026 — безопасный прыжок гостя к Ром SOURCE; gameplay OPEN
+
+EnableBbscRomJumpEvent снимает только prerequisite13204800 в локальном
+13204821 для state6/m32, сохраняя region3202800, invincibility/SFX932210,
+5секунд и снятие защиты. Исходный predicate восстанавливается при смене роли.
+13204800/13201802 не пишутся; штатный13204801 нужен только музыке. Шаги
+13204821 изолированы существующими native transport filters. Original EMEVD+
+production guest jump/negative original/region/repeat/active/cleanup/role/load,
+Rom entrance и original native send/receive trampolines PASS, в том числе
+при выключенных NPC/travel features. MOD C++ syntax exit0. DLL не собиралась
+и не устанавливалась, игровой контроль OPEN. Анализ ниже исторический по коду.
+См. fixes/2026-11-06-rom-first-jump.md, новый верхний раздел.
+
+## 06.11.2026 — первый прыжок гостя к Ром: анализ, OPEN
+
+Открытие первого барьера меняет только геометрию. Original13204820 включает
+неуязвимость+SFX932210 в области3202800 только игроку type0; гостевой13204821
+ждёт13204800 (активация Ром). До боя у гостя оба пути закрыты: объясняет
+отсутствующий эффект и смерть от падения. Original EMEVD/EMEDF read-only audit
+PASS; прежний test_rom_first_encounter PASS, но покрывает только проход.
+Runtime/build/deploy не менялись, свежий trace HP/смерти не собирался.
+См. fixes/2026-11-06-rom-first-jump.md; parent rom-first-jump-20261106.
+Нужен локальный безопасный прыжок до активации без подделки общих boss flags.
+
+## 06.11.2026 — общая последняя зажжённая лампа: SOURCE FIX, gameplay OPEN
+
+Любой игрок через native activation выбирает checkpoint группы; host control13
+упорядочивает/повторяет его с replay/ack/world/ritual fences. Без загрузки
+возрождение только в текущей карте/той же чаше, resident-сосед запрещён.
+Другая карта — подготовка scope/mount и native013CDF30; missing30с/removed cup
+оставляет штатный local death fallback, Snatcher prison load не меняется.
+Production+original native/negative/dependencies и MOD syntax PASS.
+DLL не собиралась/не устанавливалась, обе игры работают, gameplay OPEN.
+См. fixes/2026-11-06-host-death-void.md. Личное checkpoint-правило ниже историческое.
+
+## 06.11.2026 — падение хоста после смерти: OPEN
+
+P1 смерть в Бюргенверте, личная last lamp2702951 Леса; два retained revival
+без загрузки к одной точке, после второго смерть через1.594с. Native lookup
+resident-соседа принимается без проверки безопасной карты назначения.
+Нужен безопасный local-lamp admission либо штатный local death load;
+конкретная Y/коллизия не измерена. Анализ без правок runtime/деплоя.
+См. fixes/2026-11-06-host-death-void.md; parent host-death-void-20261106/pc.
+
+## 06.11.2026 — лифты при FPS ниже лимита: USER CONFIRMED
+
+После установленной physics-frame-step correction и запуска П1/П2 пользователь
+сообщил: «готово все работает ок». Игровой сценарий провала через движущийся
+лифт при просадке FPS закрыт подтверждением пользователя. Другие OPEN кейсы
+этим сообщением автоматически не закрываются. Логи обоих профилей собраны:
+parent out/coop-dev/runs/elevator-fps-20261106/pc-confirmed,2files/warnings0.
+Прежние gameplay OPEN ниже исторические для данного сценария.
+См. fixes/2026-11-06-elevator-fps-drop.md.
+
+## 06.11.2026 — исправление FPS/лифтов INSTALLED, П1/П2 STARTED
+
+Parent patches.py и свежая общая DLL установлены6-file delta, exit0;
+DLL build exit0/8warnings, metadata входов неизменны. Включены завершённые
+правки границ игроков, одной анимации поездки и штатной синхронизации лифтов.
+Backup D:/Games/Bloodborne/coop-dev/backups/elevator-fps-2p-20261106-20261106-055538.
+P1 native26192 старт05:56:37, P2 native35512 старт05:57:31: оба35/35 hooks,
+enemies/travel=true, раздельные профили/порты3658/3659. У обоих189patch writes;
+точечное read-only чтение15bytes подтверждает новую physics-инструкцию в ОБОИХ
+процессах. TIMELINE/BBSC_PERF/COMBAT_TRACE/PERF/PACING включены transient env.
+Запуск через существующие установленные Player1/2.cmd. Процессы не завершались
+агентом; ручных правок сейвов/settings/game assets нет. Commit/pin/push прежние.
+Gameplay поездки при просадке OPEN; прежний SOURCE ниже исторический по установке.
+Evidence: parent out/coop-dev/runs/elevator-fps-20261106/startup-evidence.json.
+Подробности: fixes/2026-11-06-elevator-fps-drop.md, новый верх.
+
+## 06.11.2026 — провал через лифты при просадках: SOURCE FIX, gameplay OPEN
+
+Найден конкретный fixed dt hkpWorld: image17F9B71 всегда1/60, тогда как
+ChrPhysics/proxy идут по игровому кадру (50FPS=20мс). Parent scripts/patches.py
+теперь читает native current-step image54B7E08, который original143F9F0
+пишет до task dispatch. Только15bytes consumer,4original-code guards;
+60/90/120/144/Uncap, без нового таймера/storage/cap/coordinate corrections.
+Windows original producer+native writer+old/fixed consumer:4/4 PASS,
+negative controls ловят dt drift; test_patches49PASS/1skip. Игровая поездка
+остаётся OPEN. См. fixes/2026-11-06-elevator-fps-drop.md, новый верх;
+parent out/coop-dev/runs/elevator-fps-20261106. Запрошен запуск2профилей;
+общая DLL последних завершённых border/travel/native-elevator правок собирается.
+Сейвы/settings/game assets/pin не менялись. Предварительная гипотеза ниже историческая.
+
+## 06.11.2026 — отдельная рассылка лифтов УДАЛЕНА; штатный путь проверен
+
+По просьбе пользователя убраны Elevators=13, runtime каталог/опрос/receive/tick
+и тест дополнительного канала; ранее добавленная рассылка не устанавливалась.
+Original1.09 десять unlock events остаются net-sync, production personal filters
+их пропускают; оба native emitters/receive и remote pending-step через реальные
+Windows trampolines PASS. Обычные CaptureFlags/ApplyFlags переносят все10 flags
+хосту/гостю без relock; off-map guest получает снимок при входе через существующий
+pre-event bootstrap. Целевые native transport/policy/bootstrap/authority и MOD
+syntax PASS. Новый тест tools/test_elevator_native_sync.py; подробности/границы
+в fixes/2026-11-06-shared-elevator-unlocks.md. DLL не собиралась/не устанавливалась,
+игровой контроль OPEN. Сейвы/settings/assets/pin/push и чужие правки не менялись.
+
+## 06.11.2026 — одна штатная анимация и блокировка взаимодействий SOURCE
+
+Убран eager ForceAnimation и пропуск всей2004[14]: original событие — один
+владелец анимации/native action state. Новый gate на входе01CD91F0 отклоняет
+действия с принятия итоговой команды до загрузки/отмены, привязан к world/load.
+Native bank/action через production DLL trampolines, обе роли/лампы/7алтарей,
+2negative controls, travel/parallel/ordinary/chalice dependencies и MOD syntax PASS.
+Анимация теперь начинается со штатным событием; его прежнее ожидание условия
+не сокращено. Ветка старого suppression в логах не доказана. Игры37636/24204
+работают: DLL не установлена, gameplay OPEN. Сборка DLL exit0. Подробности:
+fixes/2026-11-06-double-travel-animation-analysis.md, новый верхний раздел.
+
+## 06.11.2026 — провал через лифты при FPS ниже лимита: анализ OPEN
+
+Пользователь: любые лифты/обе роли, пример50 при лимите60. Свежие П1/П2
+логи подтверждают ~50FPS с кадрами60–72мс. Production60 FPS++ сочетает
+fixed1/60 и measured dt(+0x264), отдельный путь ограничен1/30; оригинальный
+ELF+patched disassembly/bytes PASS. Главный кандидат — смешанный учёт
+времени платформой/персонажем, но конкретный support/перенос не прослежен:
+причинная связь с потерей контакта пока НЕ доказана. Старое предупреждение
+только>64FPS это не покрывает. Runtime/build/deploy не менялись.
+См. fixes/2026-11-06-elevator-fps-drop.md; raw+analysis/disassembly в parent
+out/coop-dev/runs/elevator-fps-20261106. Для доказательства нужен bounded
+platform/character-support trace. Сейвы/settings/assets/processes не менялись.
+
+## 06.11.2026 — двойная анимация поездки: анализ, OPEN
+
+Свежие П1/П2 логи: пустой Лес даёт ~5.3–5.6с между ранней анимацией
+и продвижением native события, затем штатные4с до stage; занятый — ~4с всего.
+Флаг выпускается за2–7мс; block leases ждут уже после stage. Ранний запрос
+не вводит общий запрет взаимодействий. Причина обхода animation suppression
+и внутреннего ожидания условия пока не доказана: результат callback не логируется.
+См. fixes/2026-11-06-double-travel-animation-analysis.md. Runtime/build/deploy
+не менялись; логи parent out/coop-dev/runs/double-travel-animation-20261106.
+
+## 06.11.2026 — граница локаций повтор FAIL; новая правка SOURCE
+
+На установленной05:18 DLL переход пешком всё ещё удалял peer на обоих
+клиентах; send filters блокировали его groups/state через границу. Border
+visit теперь сохраняет actor при прежнем native load; player-only native
+records34/4/5/3D/41 пропускаются, NPC по прежним правилам. Production/native/
+negative-control и MOD syntax PASS, не собрано/не установлено (игры работают).
+Игровой контроль OPEN. См. fixes/2026-11-06-player-map-borders.md, верх.
+
+## 06.11.2026 — последние исправления INSTALLED; gameplay OPEN
+
+Первый051406/051440 запуск упал: RIP-relative observer принятого действия двери.
+Observer перенесён на safe epilogue; original native function через реальный DLL
+trampoline PASS. Пересборка/delta exit0; P1/P2 перезапущены051904/051926,
+native37636/24204,35/35 hooks и enemies/travel=true. Прежний старт ниже исторический.
+См. fixes/2026-11-06-local-action-observer-crash.md и HANDOFF.
+
+DLL build/delta exit0; P1/P2 native35256/5088 старт05:14:40/05:14:06.
+Empty-location reset, last-lit checkpoint, lamp animation, native transitions
+и player-map-borders теперь установлены вместе с прежними правками.
+SOURCE ONLY ниже историческое по установке. Игровые кейсы остаются OPEN.
+Состав/бэкап/startup/collector: parent out/coop-dev/runs/latest-fixes-2p-20261106.
+Подробности общей сборки — верх HANDOFF.
+
+## 06.11.2026 — последняя зажжённая лампа / смерть SOURCE; gameplay OPEN
+
+П2 в04:53 вернулся из леса в округ: native activation пропускает checkpoint
+у гостя/с remote member. Личные7100/12907010 дополняют checkpoint entity+1000
+после native animation/wait для обеих ролей; shared discovery не меняет его.
+Production/original native/EMEVD/negative control и целевые death/boss/transport
+PASS; MOD syntax0. SOURCE ONLY, игры работают; сборка/деплой/gameplay OPEN.
+См. fixes/2026-11-06-last-lit-lamp-respawn.md; логи в parent
+out/coop-dev/runs/death-last-lit-lamp-20261106/pc,2files,warnings0.
+
+## 06.11.2026 — опустевшая локация не обновлялась SOURCE; gameplay OPEN
+
+Логи04:59/05:00: новый вход гостя применял старые death leases до новых.
+Исправлен broadcast vacancy и admission только по ack текущего visit/load;
+fresh native seed после vacancy, occupied/streaming history сохранены.
+Production/regression/2negative controls/native states+HP/MOD syntax PASS.
+DLL не собрана/не установлена: обе игры работают. Нужен игровой контроль
+первого входа хоста/гостя после полного ухода группы и занятой локации.
+См. fixes/2026-11-06-empty-location-reset.md.
+
+## 06.11.2026 — чужая анимация зажигания лампы SOURCE; gameplay OPEN
+
+Логи P1/P2 собраны в parent out/coop-dev/runs/lamp-light-animation-20261106/pc
+(8 файлов,warnings0). Common7100/m29/12907010 выполняют101170 на local10000,
+но отсутствовали в изоляции channel31 и защите команд зажигания от snapshots.
+Оба события теперь local + send/receive isolation; activation flags сохраняют
+свои0/1 для обеих ролей, общий Lamps mask не изменён. Production native
+transport/snapshot/localization, original53 calls и session lamp sharing PASS.
+SOURCE ONLY: DLL не собрана/не установлена, две игры оставлены работать.
+Сам вызов101170 в логах не записан; игровой результат OPEN.
+См. fixes/2026-11-06-lamp-light-animation.md. Сейвы/настройки/assets/pin/push нет.
+
+## 06.11.2026 — добровольные переходы клиента SOURCE; gameplay OPEN
+
+Убраны старые запреты двух дверей Лекционного корпуса и host/client gates
+перехода через тело Миколаша/Амигдалу; native путь кареты Хемвик→Кейнхёрст и три
+параметризованных warp-шаблона также локализованы. Единый список14 travel
+событий используется в pre-event/type0 и обоих channel31 schemas. Местные
+ролики не рассылаются/не принимаются. Принятое оригинальное действие двери
+наблюдается без изменения результата: чужой ObjAct не начинает местную поездку.
+По уточнению пользователя Ром/сюжет/финал остаются групповыми. Production
+original6chains/allsteps/type/native destinations/door intent+native action/
+transport+original ELF/lamps/snatcher/shared finale PASS; MOD syntax exit0.
+SOURCE ONLY: обе игры оставлены работать, DLL не собрана/не установлена,
+игровой контроль OPEN. Нет save/game-asset/settings edits, commit/pin/push.
+Список и границы: fixes/2026-11-06-native-client-transitions.md. Старые записи
+о намеренно закрытых гостевых выходах02–04.11 исторические.
+
+## 06.11.2026 — игроки на границах карт SOURCE; gameplay OPEN
+
+Снято явное mod-скрытие игроков между14 прямыми соседними картами, включая
+Cathedral/Forest. Lifecycle/task/FirstSync render используют SamePlayerSpace;
+состояние локаций и NPC остаётся SamePlace. Production/negative/native renderer/
+MSB и MOD syntax PASS; DLL не собрана/не установлена, два клиента работают.
+См. fixes/2026-11-06-player-map-borders.md; нужен игровой контроль после установки.
+
+## 06.11.2026 — BBSC hotpath optimization BUILT/INSTALLED; next2P launch requested
+
+Measured peak paths optimized without dropping functional polls: event identity
+now shares validated indexed ranges with localization (thread-local caches,
+reload epoch, live header/row checks, original directory priority on overlap).
+Already-local event steps skip redundant net-byte writes. Message pass resolves
+FMG category once and reuses slot identities; keeps lightweight overwrite checks,
+missing-category retry/language/load/permission fences. NPC own flags read each
+freshly validated group span instead of repeated per-bit ReadValue queries;
+both tick and pre-event/talk restoration passes remain.
+Production identity/reference512events PASS, warm2000lookups18000→8000queries;
+message cold/warm/overwrite/reuse/language/protection retry PASS; NPC native
+completion/foreign isolation/span denial+retry and no per-bit checks PASS.
+Native19controllers/channel31,12pickup gates, original two door chains PASS.
+DLL exit0 (8 inherited warnings), input metadata unchanged;5-file delta exit0.
+Backup D:/Games/Bloodborne/coop-dev/backups/bbsc-hotpath-2p-20261106-20261106-043627.
+Includes completed Rom entry, personal Snatcher and independent revival changes
+from shared tree. Existing P1/P2 CMD requested04:36:45 MSK; native PIDs30784/17376
+started04:37:14. Both fresh run_20261106_043714.log confirm35/35 hooks,
+enemies/travel=true and separate profile user_dir/ports3658/3659. Startup confirmed.
+PERF/PACING/timeline retained, GPU error/classes empty, No Dead remainsOFF.
+Parent run out/coop-dev/runs/bbsc-hotpath-20261106; measured speedup/gameplay OPEN.
+See fixes/2026-11-06-bbsc-hotpath-optimization.md. No save/game-asset changes,
+termination, protocol/VPS work, commit/pin change or push.
+
+## 06.11.2026 — первый проход к Ром без тумана хоста SOURCE
+
+Гостю временно убирается локальный барьер до13201802/13201800, аналогично
+первой аудиенции Германа, включая отдельную коллизию3204010. Начало боя
+возвращает штатный туман; повторные попытки остаются native. Production,
+оригинальные EMEVD, негативный контроль, Герман и MOD syntax PASS. Не собрано/
+не установлено; игровой результат OPEN. См. fixes/2026-11-06-rom-first-encounter.md.
+
+## 06.11.2026 — личное похищение Похитителем SOURCE; gameplay OPEN
+
+По уточнению пользователя в тюрьму попадает только погибший, один раз для каждого.
+Оригинальные детекторы12400780/12700500 и common9421/9422 локализованы; гостю
+разрешены native type0/EndIfClient gates. Флаги9420..9423 личные, включая native
+completion/journal. Death controller ждёт9421+точку2802959 и выполняет штатную
+загрузку; катсцена28000010 не рассылается партнёрам. Условия врага/сюжета и
+одноразовость9423 остаются оригинальными. Production gate/death/flags/journal/
+type/localization/bootstrap + original native transport/EMEVD PASS, old gate
+negative control FAIL, MOD/relay syntax0. Только исходники: DLL не собрана и
+не установлена, игра26236 оставлена работать; реальные сейвы/настройки/игровые
+файлы не менялись. Нет commit/pin change/push. Подробности и игровой сценарий:
+fixes/2026-11-06-snatcher-abduction.md.
+
+## 06.11.2026 — independent revival targets / host respawn fallback SOURCE
+
+Same-visit remote death->alive now recreates each peer via original native
+cleanup/removal/FirstSync; previously independent mode only rebound the corpse.
+Bounded native stale-dead fallback covers missed presence death. Independent
+respawn uses own selected lamp/local reload, without host-coordinate/wipe pull.
+Production lifecycle/destination/spectate and old-policy negative controls,
+native FirstSync/render/repeat death/lamp guards PASS; MOD syntax0. Not built/
+installed while both games run. Enemy acquisition of BOTH players after repeated
+deaths and own-lamp gameplay OPEN; exact live AI rejection not logged. Details:
+fixes/2026-11-06-independent-revival-targets.md.
+
+## 06.11.2026 — death delay persists on03:18; combat timing diagnostics SOURCE
+
+User again FAILS gameplay after BOTH fixes installed.031857 logs collected after
+exit in guest-enemy-death-delay-20261106/pc-repeat-0318,2 files,warnings0,stable.
+P2 Old Yharnam ready03:21:41.294, block17000000 stays P1-owned until departure
+03:22:25.382. Sampled control queues empty; steady worst frame P1~64/P2~77ms.
+No per-enemy lethal-hit/death timings exist, so exact remaining cause UNPROVEN.
+Added bounded read-only combat observer: target hit/native receive, HP-set,
+death-worker and real HP/death/action transitions plus5/15/3D/41 route intents/
+admissions. SOURCE ONLY, default OFF (extra hooks not installed when off).
+NEXT diagnostic build/launch needs SHADPS4_BBSC_COMBAT_TRACE=1 + TIMELINE=1 on
+BOTH clients; do not assume ordinary PERF logs contain it.8 targets/15s expiry,
+512 lines/load with packet cap128, fresh native handle lookup and context fences.
+Observer/read-only/disabled fixture, original native hit/state/HP+ABI27 sites PASS;
+MOD/relay syntax exit0. No build/deploy/start, settings/save/game-asset writes,
+termination, commit/pin change or push. Bug OPEN. Latest details:
+fixes/2026-11-06-guest-enemy-death-delay.md.
+
+## 06.11.2026 — HP fast/death late repeat; native TARGET + state ownership SOURCE corrected
+
+User reproduces on installed02:54 build, P2 guest/P1 host (first bridge enemies).
+Both logs recollected pc-repeat-0254; read-only03:03 snapshots: handle6159 HP0
+both, host death6/guest0. First HP fix did NOT close gameplay. Native01A2A102
+used ATTACKER RBX instead of TARGET [R12+8], suppressing channel15 for local
+attacks on remotely owned NPCs. Now uses original packet's target. Native
+animation/state3D and status41 also fenced to current block owner on send/receive,
+without new delays/cache/forced death. Original full native hit/packet and native
+state receivers + production Windows hooks PASS both roles/proxy/stale rejection;
+independent old-hit/old-state negative controls FAIL. Block/native ABI24 sites/
+original HP regression PASS, MOD+relay syntax exit0, enemy-state-target-syntax.log.
+SOURCE ONLY: no competing build/deploy/start; user's next common optimization
+run is prepared in another chat. No termination, save/settings/game-asset writes,
+mixed commit/pin change or push. Gameplay OPEN. Details:
+fixes/2026-11-06-guest-enemy-death-delay.md (latest section).
+
+## 06.11.2026 — all-device immediate travel animation SOURCE; gameplay OPEN
+
+Extended button-time native animation to headstones12107000/101164 and FIRST
+altar selection12107100/101164, plus existing lamp returns7200/12907020/101160.
+Altar animation precedes seed/send; second layer command12107200 retains its
+first animation without replay. Duplicate native bank command completion is
+fenced by exact event/animation/world/load/stage. Original timers and warp
+readiness remain. Both-role production all-headstone/7-altar/lamps regression,
+old return-only negative control, native ABI/original EMEVD/ESD and travel/
+parallel/return dependencies PASS; MOD syntax exit0. No DLL build/install:
+games1984/34844 running; HEAD/pin4989896 unchanged, no mixed commit or push,
+save/settings/game-asset edits. See fixes/2026-11-06-lamp-immediate-animation.md
+(final section). Earlier return-only scope below superseded in SOURCE only.
+
+## 06.11.2026 — personal cup model after same-slot host removal BUILT/INSTALLED
+
+Functional personal cup survives, model does not: Dream delta contaminated its
+94x05 journal. Preserve first-kept personal ritual groups during Dream restore.
+Production7-slot removal/replacement/native-edit and original EMEVD checks PASS;
+old policy FAIL. Build/deploy/start: parent personal-altar-model-20261106/run.md.
+Gameplay OPEN. Details: fixes/2026-11-06-personal-altar-model.md.
+Shared DLL build/delta deploy exit0 at02:54 MSK, P1/P2 launch requested.
+
+## 06.11.2026 — Central Yharnam lower elevator plate OPEN
+
+P1 guest cannot depress lower plate of Gascoigne-bridge lift. Both014900 logs
+collected; movement-event lever tails occur on both peers02:35/02:36, relay
+healthy. Original plate-region/ObjAct OR paths verified. Exact failed condition
+unproven: logs omit region results/animations and deduplicate commands per load.
+No behavior change/build/deploy. See fixes/2026-11-06-yharnam-elevator-plate.md.
+
+## 06.11.2026 — guest lethal-hit HP delay SOURCE corrected; gameplay OPEN
+
+Block mode forced native HP role6 for EVERY participant, suppressing the role3
+dirty HP producer. Only the separate ten-entry/every-fourth-frame periodic sweep
+remained. Owners now run original dirty production then ONCE original receive in
+the same native frame; non-owners keep reception. Existing per-handle ownership
+filters retain correct sources/recipients; no global role/HP/death/reward writes.
+Original1.09 native worker + production Windows trampolines PASS both roles,
+slot199 immediate kill/other-owner receive/foreign filtering/load/legacy;
+negative control FAILS old. Block/native/ABI checks PASS; MOD+relay syntax exit0,
+build/native-hp-routing-syntax.log. DLL not built/installed while games37524/29340
+run; no mixed commit/pin change, termination, saves/settings/game assets or push.
+See fixes/2026-11-06-guest-enemy-death-delay.md. Gameplay remains OPEN.
+
+## 06.11.2026 — lamp button-time animation SOURCE corrected; gameplay OPEN
+
+P1 guest014900: return72900100 accepted02:22:47.487/released47.489,
+condition progress53.852, stage57.941 (+10.454s). User reports no animation;
+exact internal condition wait remains unproven. Accepted local Dream return
+now immediately requests native013CBFD0/101160 on local10000, before tick,
+load-marker waits or destination preparation. Original event continues in
+parallel; bank2004 completes only its duplicate nonblocking return animation.
+No shortened timers/warp-readiness bypass. Both-role production queue/bank,
+negative control FAIL old, original1.09 ABI/local actor, lamp/bootstrap/parallel
+and real Windows trampoline tests PASS; MOD syntax exit0. DLL not built or
+installed: games37524/29340 running. HEAD/pin4989896 unchanged, no mixed commit,
+save/settings/game-asset writes, termination or push. Details:
+fixes/2026-11-06-lamp-immediate-animation.md. Gameplay remains OPEN.
+
+## 06.11.2026 — guest cup Hall-only fallback SOURCE corrected; gameplay OPEN
+
+User clarified: before host enters/lights first lamp, guests must see only Hall.
+Missing/zero ritual mask now replaces stale guest personal lit/menu flags.
+Guest travel admission independently checks confirmed world/dungeon/ritual mask;
+Hall allowed, stale native flags cannot authorize other layers. Existing first
+lamp synchronization unlocks confirmed destinations; host fallback unchanged.
+Production lamp + actual travel queue/scoped lookup PASS; old menu and bypassed
+admission independently FAIL new regressions. Native menu/helper trampolines,
+original1.09 ABI + seven altar/ten-layer/native travel scripts PASS. Full MOD/
+relay syntax exit0 (existing warnings), build/guest-cup-menu-syntax.log.
+No DLL build/deploy/save edits/termination/push; HEAD/pin4989896 unchanged.
+Details: fixes/2026-11-06-guest-cup-menu-lamps.md. Earlier investigation below
+is superseded for source status; in-game menu/first lamp check remains OPEN.
+## 06.11.2026 — NPC owner/native unload conflict SOURCE corrected; gameplay OPEN
+
+P1 first-entrant report + live read-only samples reveal backread1/current4/
+requested0/owner1 persisting. Production callback now releases native ownership
+on backread-off/disabled/requested!=4 instead of regranting from stale current4.
+New fixture FAIL old/PASS fixed, native block/HP checks and MOD syntax PASS.
+No DLL build/install or gameplay confirmation. Full render causality remains
+open; see fixes/2026-11-06-cathedral-npc-duplicates.md.
+
+## 06.11.2026 — Cathedral inert NPC repeat02:11, bug OPEN
+
+P2 host enters first in current visit02:11:26.469; P1 remains Dream. Native
+admission ready26.502; personal disable commands26.553–554, but user again
+sees inactive NPC. Same014900 installed session; new lifecycle diagnostics
+not installed. Both logs saved as pc-repeat; see Cathedral duplicates fix doc.
+
+## 06.11.2026 — Cathedral NPC lifecycle diagnostics SOURCE; bug OPEN
+
+Read-only bounded native NPC lifecycle logs added at original wake/history
+boundaries. Original backread-off branch and production diagnostic fixtures,
+personal-event transport/native blocks and full MOD syntax PASS. No proven
+behavior fix, DLL build/install or game verification. Details/evidence:
+fixes/2026-11-06-cathedral-npc-duplicates.md.
+
+## 06.11.2026 — Cathedral Ward duplicate/inert NPC investigation OPEN
+
+User screenshot: host sees extra inactive NPC variants after m24_00 travel;
+re-entry removes symptom. Live logs show world ready02:00:47.376, followed
+by personal native backread-off commands47.427–428, so not a prolonged
+bootstrap stall. Native model/activation vs shared CHR lifecycle remains
+unproven; no fix/build/deploy. See fixes/2026-11-06-cathedral-npc-duplicates.md.
+
+## 06.11.2026 — guest host-cup menu lamps investigation OPEN
+
+P1 guest sees personal-cup destinations in host ritual menu (user screenshot).
+Live P1/P2 logs collected: parent out/coop-dev/runs/guest-cup-menu-20261106/pc,
+2 files,warnings0,both changing. P1 selects slot1/ritual34, request2902951
+accepted01:59:39.862, native stage39.880; loader40.444 uses host channel
+2286771891767986/revision34/layout0x1d0a5a00. Correct cup loading confirmed.
+Source: missing ritual lamp mask leaves current flags; travel admission reads
+same global flags, not independent host ritual progress. Exact live mask/row
+producer unlogged; stale personal bits hypothesis, not fully proven. No code,
+build/deploy/save changes. See fixes/2026-11-06-guest-cup-menu-lamps.md.
+## 06.11.2026 — native block authority BUILT/INSTALLED; Player1/2 launch requested
+
+Related travel/chalice/lamp/shop/Mark/profile-watcher chats reviewed and completed.
+Shared-tree DLL build exit0 (8 existing warnings), source size/mtime unchanged
+through build. Five-file delta prepare/deploy exit0 at01:48 MSK. Backup:
+D:/Games/Bloodborne/coop-dev/backups/native-block-authority-2p-20261106-20261106-014827.
+Player1/2 separate-profile CMDs launched01:48:35 MSK; TWO bb-probe processes
+37524/29340 started01:49:00. Both fresh profile logs confirm35/35 BBSC hooks,
+independent enemy/travel hooks and native loot ready. Startup evidence:
+parent out/coop-dev/runs/native-block-authority-20261106/run.md.
+HEAD/pin4989896 unchanged; no mixed commit, process termination, save/settings/
+game-asset writes or push. Gameplay OPEN: distance, door/lamp, kills/reunion,
+role reversal and map/ritual boundaries. Source/runtime/ABI/progress/rewards
+checks PASS. See fixes/2026-11-06-native-block-authority.md.
+
+## 06.11.2026 — distributed native block responsibility SOURCE implemented; gameplay OPEN
+
+User requests native distributed responsibility, shared progress/no repeated enemies
+or awards, then install/start2p. New bbsc_world_blocks.{h,inc} assign one owner per
+canonical native CHR block, separate from map flags. Native0190E750 records and
+0190E8B0 historical removal; no HP/position/AI/inventory cache or reward replay.
+Revocation + quiescence/final acknowledgement precede takeover; native damage/HP
+routing follows the block owner. Scope/room/ritual/visit/epoch fences, additive
+native death history and explicit full-map reset; adjacent map overlap has one key.
+Metadata coordination also works on receive while host loads elsewhere. Shared
+flags, progress/reward ledgers, joining and Dream checks remain. Capability8
+negotiated, bounded waiting/admission logs added. Source/runtime/native ABI,
+bootstrap, legacy authority, trampoline, progress and rewards checks PASS.
+Build/deploy/start pending in parent out/coop-dev/runs/native-block-authority-20261106.
+No mixed commit/pin update, save/settings/game asset writes or push. Details:
+fixes/2026-11-06-native-block-authority.md. Original gameplay bug remains OPEN.
+
+## 06.11.2026 — local travel admission / parallel preparation SOURCE corrected; gameplay OPEN
+
+Latest installed01:00 run010053 includes failures for BOTH roles. Fresh live
+collections in parent out/coop-dev/runs/chalice-guest-return-followup-20261106/
+{pc,pc-host-followup,pc-old-yharnam,pc-return-latest};2 files each,warnings0.
+P2 Old Yharnam return72300101 at01:09:33.273 stages44.577 (+11.304s).
+Second72300100 released01:10:52.911,90s timeout01:12:22.919. Crucially NPC
+initial-state/world admission completes ONLY01:12:54.647; local7200 resumes
+54.677, native stage58.798, Dream arrival01:13:01.564. This establishes the
+local travel being held behind world/NPC bootstrap, independent of the earlier
+m29 requested-Dream scope error. The exact reason native CHR admission itself
+arrived late is outside this fix; world-event synchronization is not bypassed.
+
+Fixes in shared source:
+- Five exact ORIGINAL local travel events7200/12107000/12107100/12107200/
+  12907020 bypass the world/NPC bootstrap for established roles3/6. They only
+  drive personal requests/animation/loading. Joining role4 and every shared
+  world/NPC event retain original bootstrap/owner admission. Native warp
+  dispatch still checks DESTINATION readiness.
+- Central World::ScopeForMap used by bootstrap, snapshot availability and
+  arrival application. Pending Dream cannot replace current cup scope;
+  ordinary queries cannot inherit a dungeon key; other-world requests ignored.
+- Keep current cup's visiting-altar identity until native warp begins, so
+  presence/bootstrap cannot lose the departing ritual during its animation.
+- Start cup destination seed/request on the FIRST native altar selection,
+  together with12107100 animation, without treating it as a warp request.
+- Release original travel flag without waiting for cup flags or mount prepare.
+  The verified pre-dispatch boundary holds ONLY2003[49] for all FOUR warp
+  templates (including12107200/12907020); animation and native timers continue.
+  At this boundary cup flags AND native PrepareBbscChaliceLoad are required.
+  Destination wait cannot be released by90s timeout while native warp is unarmed.
+No shortened native animation/wait, synthetic warp or NPC-cache workaround.
+Important environment state continues through the owner's existing shared
+snapshot/epoch/native authority pipeline; this is personal travel admission.
+
+Validation: production bootstrap fixture PASS both roles/five local events
+with unavailable world/NPC data; shared events/joining still BLOCK. Source
+scope/actual Dream arrival/ritual entry regressions PASS. Restoring the old
+world admission independently FAILS the new local-travel regression. New
+production parallel fixture PASS ordinary/chalice return/headstone/cup entry,
+both roles, early request, same-tick original release despite missing data,
+animation/wait passthrough, warp-only hold, late mount and no timeout/replay.
+Restoring old pre-release cup wait independently FAILS this regression.
+Existing travel/original ESDs, ten-cup return, unqueued Dream loader,
+46 ordinary/DLC+10 dungeon return/snapshot and native altar fixtures PASS.
+Real Windows hook trampoline PASS (first attempt missing runtime DLL path;
+rerun with compiler runtime in PATH PASS). Full MOD syntax exit0, existing CRT
+warnings, build/travel-admission-parallel-syntax.log. No unrelated full suite.
+
+HEAD/pin4989896 unchanged; shared dirty tree preserved, no mixed commit.
+No DLL build/deploy: current games41272/41860 still running. No termination,
+live-memory, settings/save/game-asset writes or push. Installed01:00 build
+DOES NOT contain these new fixes. Gameplay OPEN after coordinated rebuild:
+both roles return from cup/Old Yharnam while other player stays elsewhere;
+animation must start without waiting for owner/NPC world admission, destination
+preparation overlaps it, shared NPC/world events still wait for correct state.
+
+## 06.11.2026 — Old Yharnam distance blocks door/lamp; investigation OPEN
+
+Latest01:00 run collected in parent out/coop-dev/runs/old-yharnam-distance-20261106/pc
+(6 files,warnings0; latest two ChangedDuringCopy=true). P2 HOST/P1 GUEST,
+but m23 owner P1/6830fdc5. P2 arrives01:10:07.045; native CHR admission only
+01:12:54.647 (~168s), immediately releasing door2301000/event12300100 and
+lamp2301950/event7000; pending return then executes01:12:58.798.
+Confirmed shared pre-event bootstrap wait; likely owner lacks distant LOCAL
+CHR blocks required by visitor preflight. Earlier streaming fix allows extra
+provider records, not missing local coverage. Rejected block IDs/reasons absent:
+exact streaming rejection remains hypothesis. User reports recovery as P1 approaches.
+No source/build/deploy/save changes. See fixes/2026-11-06-old-yharnam-distance.md.
+## 06.11.2026 — chalice departure bootstrap deadlock SOURCE corrected; gameplay OPEN
+
+Installed01:00 run010053, P1 GUEST/P2 HOST. Logs collected live in parent
+out/coop-dev/runs/chalice-guest-return-followup-20261106/{pc,pc-host-followup},
+2 files each,warnings0,ChangedDuringCopy=true. P1 enters host channel
+2286771891767986/ritual26, requests72900101 at01:05:03.154; original flag
+released03.156, repeated selections rejected busy,90s timeout01:06:33.160.
+Second request01:06:34.908; while STILL in cup/load2 bootstrap certifies Dream
+at42.889; native stage01:06:47.098, Dream arrival49.805. P2 enters cup at
+01:06:47.413, return72900101 released01:07:11.012; repeat01:07:28.120 busy,
+no return stage in this snapshot. User confirms P1 recovered after P2 moved;
+then reports P2 unable to return. Not an absent DLL/old ordinary-return bug.
+
+Exact production gap: GuardBbscWorldBootstrap unconditionally replaces CURRENT
+m29 event scope with requested destination, even when destination is Dream.
+BbscNpcPassHook calls this BEFORE native event update. Thus the running cup's
+exit event waits for destination owner/FirstSync/Dream data, or consumes Dream
+snapshot before actual departure. Require matching CURRENT event map before
+borrowing requested ritual scope. Cup remains admitted during departure; actual
+Dream arrival still receives full original bootstrap/owner/catalog checks.
+Works both roles; no readiness bypass, native warp/animation/timing replacement
+or owner-state sharing change.
+
+Extended actual production bootstrap fixture FAIL old condition / PASS fixed
+for host+guest with requested Dream and unavailable destination owner/NPC/Dream/
+altar readiness, no source flags reapplied. Existing m29 ritual entry, real
+Dream joining/state4->6 and native owner admission checks PASS. Chalice return,
+unqueued Dream loader, ordinary/dungeon routing/snapshot tests PASS. Full MOD
+syntax exit0 (existing CRT warnings), log build/chalice-departure-bootstrap-
+syntax.log. HEAD/pin4989896 unchanged; shared dirty source preserved. No DLL
+build/deploy, game termination, live-memory/save/settings/game-asset writes or
+push. Gameplay OPEN for both-role independent return while peer stays elsewhere.
+
+## 06.11.2026 — coordinated shop/lamp return update BUILT/INSTALLED; 2p launch requested
+
+User requested fix/install/start2p. Personal reward shop receipt repair and completed
+ordinary/chalice return/local travel-command isolation work included from the shared
+main tree after reading related chat outcomes. DLL build exit0; source size/mtime
+unchanged during build; no other related active edits. Five-file delta preparation/
+deploy exit0 at01:00 MSK. Backup D:/Games/Bloodborne/coop-dev/backups/
+ritual-blood-shop-2p-20261106-20261106-010020. HEAD/pin4989896 unchanged; shared dirty
+source not mixed-committed. Both games were already closed; no termination.
+Player1/2 existing separate-profile CMDs launched01:00:28 MSK. Startup observation
+recorded in parent out/coop-dev/runs/ritual-blood-shop-install-20261106/run.md.
+Gameplay OPEN: check Ritual Blood1 for2500 on each character and persistence after
+returning to Dream; no duplicate cup expected. No save/settings/game-asset writes,
+no push/publication. Earlier source-only statuses superseded by this installation.
+
+## 06.11.2026 — personal reward shop receipts, SOURCE corrected; gameplay OPEN
+
+RestoreBbscRewardShopReceipts repairs original lot get flags only when listed as
+shop unlocks and this character has recorded the award or owns its persistent
+item under confirmed victory/chalice entitlement. Applies BSB5000/Ritual Blood1
+and analogous native cup shop gates. No award replay, duplicate cup or host stock.
+Updates held personal Dream overlay and existing own-world exact bit; native
+SetFlag executes outside ledger mutex. Extended production shared-boss fixture
+PASS for both roles, bag/storage/journal, actual Dream overlay, failures and
+negative eligibility; new scenario FAIL with repair calls removed. Original5
+shop offers/PARAM receipt verified read-only. Build/deploy/gameplay separately.
+See fixes/2026-11-06-ritual-blood-shop.md. Shared dirty tree; no mixed commit/pin change.
+
+## 06.11.2026 — independent ordinary lamp returns SOURCE corrected; gameplay OPEN
+
+P1 return72300100 was absent from the travel predicate and wrongly QUEST-
+journaled; owner snapshots could overwrite local trip bits. Centralized native
+return classification covers46 ordinary/DLC +10 dungeon lamps; includes newly
+found missing t211000. Match local actor/lamp/map, queue original Dream return
+and release its ORIGINAL flag without waiting for owner presence. Native
+animation/waits/load remain. Preserve both0/1 local return/headstone/altar/layer
+command bits across map and dedicated Dream snapshots. Owner environment
+state remains shared; local travel commands do not propagate another's trip.
+Activation and workbench70000100 stay native. User explicitly requests shared
+important world state from the owner; existing owner/epoch/native authority
+rules checked and retained, no parallel enemy cache.
+
+New production routing/snapshot fixtures and exhaustive original ESD survey
+PASS. Old predicate and old snapshot preservation independently FAIL new
+regressions in-memory; corrected PASS. Direct native travel/altar/dungeon,
+authority/presence/bootstrap/lamps/unqueued Dream/shared-progress dependencies
+PASS. Full MOD syntax exit0 (existing CRT warnings). HEAD/pin4989896 unchanged,
+shared dirty sources preserved. No DLL build/deploy: both games running; no
+termination, live-memory/save/settings/game-asset writes or push. Gameplay
+OPEN for owner leaves/P1 remains/return, both roles and repeated reunion.
+Details: docs/fixes/2026-11-06-ordinary-lamp-dream-return.md.
+
+## 06.11.2026 — Ritual Blood (1) shop investigation, OPEN
+
+Both profiles logs collected in parent out/coop-dev/runs/ritual-blood-shop-20261106/pc
+(6 files, warnings0). Original shop rows100008..140008 require personal flag5000,
+price2500/unlimited. Original BSB event12301800 awards lot80000000/goods6109,
+whose getItemFlagId is5000. Thus boss death alone is not the direct shop gate.
+Logs show dead-boss paths on both clients and2 unspecified guest/host shop-flag
+differences; actual5000 at shop open and exact clearing transition are NOT logged.
+Code gap: existing-lot/item shared-reward catch-up does not restore low receipts;
+global-loot restoration excludes5000; Dream explicitly preserves it personally.
+Likely missing personal award receipt, not proven exact live reset. No code/build/
+deploy, save/game asset/live-memory changes. See fixes/2026-11-06-ritual-blood-shop.md.
+
+## 06.11.2026 — Old Yharnam guest lamp return misclassified; owner dependency OPEN
+
+User: P1 return selection does nothing; lamp becomes active again after map
+owner P2 returns (P2 had left for Dream). Both00:31 logs collected live in
+parent out/coop-dev/runs/old-yharnam-dream-return-20261106/{pc,pc-followup},
+2 files each,warnings0. P1 guest arrives Old Yharnam00:42:36.345; t230000
+sets72300100=1 at00:45:20.955, incorrectly journaled as personal QUEST;
+no queued independent return follows. Original t230000 ESD identifies this
+as native return:70000100+230*10000+lamp0. BbscWorldTravelFlag admits the
+m29 return range but omits ordinary72300100; QueueBbscWorldTravel therefore
+never handles this request. This concrete routing gap is established.
+Follow-up: flag clears00:46:34.719; native UNQUEUED Dream stage00:46:38.894,
+arrival00:46:41.847. Thus request eventually executes through original7200
+~78s after selection, not a permanent load failure. P2 native Dream departure
+00:46:23.869; its Dream-side snapshots even apply map72300/flag72300100 at
+00:46:26.562 and35.116. Correlation alone does not prove the precise owner/
+snapshot event that reactivated the lamp; user-observed residency dependence
+must be retained as an additional regression scenario. No code/build/deploy,
+process termination, save/game asset or live-memory writes. Gameplay bug OPEN.
+
+## 06.11.2026 — P2 unsolicited chalice return, SOURCE corrected; gameplay OPEN
+
+Latest00:31 two-profile run collected live in parent
+out/coop-dev/runs/chalice-unwanted-dream-20261106/pc (2 files,warnings0,
+ChangedDuringCopy=true). Actual roles P2 HOST/P1 GUEST. P2 selects slot1,
+layer3/channel2286771891767986, arrives00:34:23.815; unqueued native return
+point2102955 at00:34:28.151, Dream arrival00:34:31.786. No local queued
+lamp-return request. Another entry00:35:05.084 remains in cup in collected
+interval. Exact incoming packet responsible is NOT recorded/proven.
+
+Original read-only m29.emevd identifies2102955 in event12907020: native
+chalice lamp return, separate from common7200. Existing local travel
+update/send/receive fences omitted12907020. Add it to all those boundaries,
+including visitor EndIfClient admission and bounded travel observations.
+Foreign channel31 condition/continuation cannot steer this local return;
+original local flag/animation/1+3s waits/altar-based Dream point remain native.
+No arbitrary delayed-warp suppression or replacement travel.
+
+Extended production fixtures FAIL old code independently at network send
+and native event localization; PASS corrected for host/guest, both message
+schemas, NPC switch on/off, independent off passthrough. Existing travel/
+chalice return fixtures PASS. Original seven altar scripts, dungeon lamp ESDs,
+m29 return event/init flags/native waits PASS. Full BBSC_MOD syntax exit0
+(5 pre-existing HTTP warnings). HEAD/pin4989896 unchanged, shared dirty tree
+not committed. No DLL build/deploy: both games still running. No save/game
+asset/live-memory changes. Exact gameplay regression remains OPEN.
+Details: docs/fixes/2026-11-06-chalice-unsolicited-return.md.
+
+## 06.11.2026 — P1 guest chalice animation cancelled: explicit layer rejection, OPEN
+
+Read-only investigation of installed00:31 run, P1 GUEST / P2 HOST. Both live
+logs collected in parent out/coop-dev/runs/chalice-animation-cancel-20261106/pc
+(2 files,warnings0,ChangedDuringCopy=true). P1 selects slot1/ritual10 at
+00:35:15.020; at00:35:19.130 QueueBbscWorldTravel rejects72100305 with
+reason=layer-locked. No guest independent request/native stage/load follows.
+Selected helper host_channel=decoded_channel=0x81fce924a8ab2. P2 successfully
+loads same host channel2286771891767986 twice, destination2902953 (00:34:18.767,
+00:35:00.315); P1 requests2902955, a different lamp index. Rejection checks
+runtime flag12907910 in bbsc_world_travel.inc. This establishes the immediate
+cancellation boundary, NOT why native guest menu offered that destination or
+why the scoped availability flag was false. Personal menu/projection mismatch
+remains a hypothesis; no evidence sufficient to bypass the lock safely.
+Source/build/deploy unchanged; no game termination, live-memory/save/game writes.
+
+## 06.11.2026 — coordinated lamp/altar/travel/Mark update BUILT/INSTALLED; 2 clients started
+
+User requested build/start2p. All related source chats completed/read in shared
+tree, including the native occupied-altar host-panel path; input size/mtime
+unchanged during build. DLL build exit0 (8 existing warnings), five-file delta
+prepare/deploy exit0 at00:31 MSK. HEAD/pin4989896 unchanged, shared dirty source;
+no mixed-worktree commit or binary verification. Backup:
+D:/Games/Bloodborne/coop-dev/backups/session-lamps-2p-20261106-20261106-003118.
+Prior games closed before copying, no termination. Existing Player1/2 CMDs
+started00:31:28, TWO bb-probe processes14124/21528 created00:31:55; both loaded
+installed coop/client/bbsc/bbsc.dll. No third profile, save/settings/game-asset
+writes, push or publication. Gameplay OPEN: new ordinary/chalice discoveries
+for every member; guest personal cups stay personal after leaving; host-panel
+first altar, travel timing/Dream return and Hunter Mark require game confirmation.
+Parent run: out/coop-dev/runs/session-lamps-20261106/run.md.
+Source-only statuses immediately below are superseded by this installation.
+
+## 06.11.2026 — session-wide lamp discoveries, SOURCE ready; gameplay OPEN
+
+Any member's native lamp discovery now queues an additive Lamps control packet,
+independent of map/NPC owner role. Host repeats canonical per-map/per-ritual masks;
+guests retry pending discoveries until host acknowledgement. Both native lit
+7800+20*i and travel-menu7810+20*i bits are applied, including remote headstones.
+All44 ordinary/DLC flags checked read-only against original common7000 calls.
+Chalice masks use world+channel/layout key+ritual generation, project at selected
+native altar/layer menu, and never enter the guest's personal progress merge.
+Guest group backup precedes native discovery/projection. Scoped independent m29
+snapshot replaces previous cup lamps; legacy unscoped copy preserves personal
+lit+travel bits for all10 lamps. Existing altar-record progress stays native.
+
+Production new lamp fixture PASS: guest non-owner->host->two guests in other maps,
+all44/two setter widths,10 dungeon lamps, snapshot recovery, protocol roundtrip,
+retry/ack/duplicates, separate rituals, personal backup, stale/malformed/world
+rejection. Native altar/scoped snapshot, travel and actual menu trampoline,
+shared progress and chalice-scope fixtures PASS. Full MOD syntax exit0 PASS.
+No live process/save/game-file writes. Build/install/gameplay are separate;
+coordinated build requested by user, recorded in parent run session-lamps-20261106.
+Details: docs/fixes/2026-11-06-session-lamps.md.
+
+## 06.11.2026 — occupied guest altar visible panel, SOURCE corrected; gameplay OPEN
+
+P2 guest NEW slot2 entry into P1 cup confirmed by user/logs; slot1 still shows
+personal cup when both peers occupy that altar. Native visible panel inlines
+personal altar+108 into RSI at01B77227, bypassing prior helper getters/promises.
+Route this panel to same scoped host helper; original rendering retained.
+Same-slot distinct-cache regression FAIL old/PASS corrected via Windows hook;
+original ELF inputs, menu/travel fixtures and MOD syntax PASS. No build/deploy
+while two games run. Recheck occupied guest slot glyph/layers in next build.
+See HANDOFF and fixes/2026-11-05-chalice-selected-loader.md.
+
+## 06.11.2026 — guest return from host chalice, SOURCE corrected; gameplay OPEN
+
+Original dungeon lamps request72900100..109, omitted by shared travel routing.
+P2 guest00:09:00 flag72900100 was journaled, no warp followed; later exited
+through Silencing Blank. Added exact return range to native command/queue,
+matching talk and current m29; activation72900200..209 unchanged. New production
+test FAIL old/PASS corrected,10 lamps/both roles/negative contexts; original
+ESDs, existing travel/Dream-loader and MOD syntax PASS. No DLL deploy while
+two games run. See fixes/2026-11-06-chalice-dream-return.md and HANDOFF.
+
+## 06.11.2026 — Bold Hunter's Mark in retained co-op, SOURCE ready
+
+Original1400/2101 now usable for host/white guest and returns via the existing
+open-world in-place respawn, without penalty/curtain on success. Native item
+consumption/dialog/animation retained; ordinary mark untouched. Original native
+return + Windows trampoline/repeated both-role, lamp/status reset and full MOD
+syntax PASS. Emergency respawn failure retains native load fallback. No build/
+deploy while two games run and related chalice work continues; gameplay OPEN.
+See fixes/2026-11-06-bold-hunter-mark.md and HANDOFF.
+
+## 06.11.2026 — destination preparation concurrent with departure animation, SOURCE ready
+
+User explicitly requests starting preparation together with native animation.
+Ordinary-map trips now send/retry the destination flag request while releasing
+original local travel in the SAME tick. Animation and original4s wait proceed.
+If flags are late, a byte-verified native update boundary012ECF6B holds ONLY
+2003[49] dispatch for7200/12107000; conditions/timers have already updated at
+012ECDEF->012EC380. It branches to original stack epilogue012ECFAD BEFORE command
+execution and PC advance. No animation replay, frozen timer, direct/synthetic
+warp or copied guest arguments. Resume original dispatcher when flags arrive.
+Existing chalice preparation (animation before layer request) remains unchanged.
+Pending pre-dispatch readiness is not discarded by a90s load timeout, which
+would release the original warp without its destination; native leave remains.
+
+Extended the existing hook skip API with an optional verified native resume
+address in BOTH DLL/emulator implementations, defaults unchanged. Production
+Windows trampoline fixture confirms original stack/epilogue and no command/PC
+side effects on hold; existing skip/resume paths PASS. Production travel fixture
+confirms request+release together despite missing flags, animation/wait admitted,
+warp held, request retry during animation, then one native release/arrival.
+Original ELF validates gate/timer-call/dispatcher-call/tail bytes; MOD syntax PASS.
+Native event transport isolation from previous entry is included in the source.
+
+A DLL rebuild was started; a newly active related Hunter's Mark chat was found
+while it was running. This attempted binary is NOT declared coordinated/latest
+and is not installed. Current games continue; no termination/input, live memory,
+save or game-asset edits. Finish related work and rebuild before shared deployment.
+Gameplay confirmation remains OPEN.
+
+## 06.11.2026 — installed chalice menu correction FAILED
+
+P1 still sees personal8e3bc7fy, P2 own3gtfrffz. Latest guest helper/menu hooks
+execute00:04:46 with correct HOST decoded channel, but rendered menu remains
+personal by user observation. Added helper updates did not solve this case.
+Exact UI source OPEN; selected-loader gameplay untested (no m29 requests).
+Fresh two-profile logs: parent out/coop-dev/runs/chalice-glyph-followup-20261106.
+See HANDOFF and fixes/2026-11-05-chalice-selected-loader.md; no new code/deploy.
+
+## 05.11.2026 — travel delay survey / native transport isolation, SOURCE ready
+
+User prioritizes recurring delay, also P2 return-to-Dream selection doing nothing.
+Installed23:48 build includes prior cache/log fixes; do not blame missing install.
+Survey71 completed native stage requests from both profiles05.11,10 destinations.
+Abnormal release->stage intervals: Central Yharnam points2412951/2412953
+8.081,8.362,8.767,9.942,10.294 seconds (plus earlier5.630); OLD Yharnam
+point2302950 at23:58:33.543 takes8.505s. Preflight0-2ms in latest cases.
+P2 latest slow request23:56:07.494 -> release07.495 -> condition observation07.511
+(flag=true) -> next-instruction animation observation11.047 -> stage15.576.
+These observations precede actual dispatch and do NOT timestamp visible animation.
+Ordinary headstone sequence is about4s; loading is a separate measured interval.
+Latest P2 returns eventually occur23:55:57.266 and23:57:45.192; failed selection
+itself has no queued travel/stage request in logs, so it is not proven diagnosed.
+Survey data: parent out/coop-dev/runs/travel-delay-survey-20261105/transitions.json.
+
+Found original transport isolation gap: local travel events7200/12107000/12107100/
+12107200 set native+78=0, but012EE660 ignores this when sending timed continuation
+and012EE420 ignores it when applying foreign condition/progress. This exact path
+was fenced only for personal NPC events. Extended the EXISTING send/receive
+boundary to those four independently negotiated local travel events, for BOTH
+roles and regardless of the NPC quest switch. No map-specific timer, direct warp,
+shortened animation/wait, or native shared door/boss event changes. Bounded per-
+load TRAVEL records expose suppressed send/receive event IDs and native kinds.
+
+Actual original emitters + Windows receive trampolines: old production source
+FAIL on travel continuation send; fixed PASS for all4 events,both kinds,host/guest,
+NPC-switch off/on,independent off passthrough,shared doors/malformed/drain. Full
+BBSC_MOD syntax exit0. This proves a concrete transport defect, not receipt of
+one particular foreign packet during each observed stall. Delay/failed return
+remain gameplay OPEN pending new binary and testing. DLL build follows below;
+no game termination/input, save/game-asset edits or live-memory writes.
+
+## 05.11.2026 — selected chalice loader/menu lifecycle, INSTALLED23:48; gameplay OPEN
+
+Both-role selected catalogue injection replaces stale host native loader input;
+guest borrowed menu helper receives original native updates/frame. Production
+host regression FAIL old/PASS corrected; helper/trampoline/native-byte and travel
+checks PASS. Latest logs show same P2 catalogue channel for both, so do not claim
+guest-owned destination proven. User's visible menu/dungeon symptom still needs
+gameplay confirmation. DLL/delta/deploy exit0, two profiles started23:48 with
+fresh35/35 hook logs. See fixes/2026-11-05-chalice-selected-loader.md and HANDOFF.
+
+## 05.11.2026 — personal native continuation isolation, SOURCE corrected; gameplay OPEN
+
+Original012EE660 ignores event NoNetSync; original012EE420 accepts remote
+step/conditions even when event+78=0, and012ECE95 executes past FALSE local
+conditions. Existing personal events now fenced at BOTH native senders and
+native receive callsite, without stage/actor writes. Complete original sender/
+receiver/condition decision + real Windows trampoline regression PASS; targeted
+dispatcher/pickup/bootstrap and full MOD syntax PASS. Event/command/transport/
+snapshot logs added. No product DLL/deploy; both games running. User's distant
+resident/Gilbert/door scene still needs exact live trace and gameplay check.
+See HANDOFF and docs/fixes/2026-11-05-gilbert-ghost.md.
+
+## 05.11.2026 — retained-session player summon render hold, SOURCE fixed; gameplay OPEN
+
+Follow-up to second Dream entrant diagnosis below. Read-only observations of the
+same still-running230550 pair found P2 HOST's remote guest has activation4/4,
+disabled0, assembly_visible1, alpha1/1/1, correctly attached16 mesh parts, but
+PlayerIns+1E2 bit4 CLEAR. Native part node+210 bit0 is consequently CLEAR (3E),
+while the corresponding guest's own nodes and opposite-direction host copy have
+3F. Both peers' coordinates agree. Evidence: parent run player-dream-second-
+20261105/live-render.jsonl and live-render-gates.jsonl. These are later same-run
+samples, not an atomic capture of the exact original23:07:43 Dream frame.
+
+Original1.09 establishes the cause chain: constructor018B9DAA starts draw bit12
+of+1E1 (=+1E2 bit4) enabled. FirstSync01E502C3 explicitly clears it for types
+1/2/12. Native PlayerIns render gate018F4830 tests that bit; failure at018F48E6
+clears ALL part node+210 draw bits, regardless of valid scene/opacity. Normal
+StageFlow admission193A93C enables it, but retained-session recreation happens
+AFTER the stage has finished; ordinary summon-only presentation completion no
+longer covers this new actor. Retrying FirstSync simply repeats the render hold.
+
+Correction: arm a one-shot native-task/member/world/local+remote visit admission
+ONLY when the independent controller explicitly requests native recreation.
+At exact FirstSync AND, production Windows trampoline skips ONLY those8 bytes
+and resumes01E502CB; constructor flags and ALL following native setup execute.
+No mesh/draw-byte/opacity/death writes, native renderer/culling still controls
+visibility. Initial/legacy summon is unchanged. Guard role, task4, exit bit,
+phantom type, living same-place peer, world/both visits, native task identity,
+15-second expiry; prune on world/visit/member/timeout and completed binding.
+Other types follow original native branches; log hold bypass and draw_admitted.
+
+PASS: tools/test_world_player_render_admission.py executes ORIGINAL FirstSync
+branches/AND and COMPLETE ORIGINAL018F4830 renderer through the ACTUAL Windows
+trampoline. Original path makes a ready/attached synthetic player invisible;
+scoped hook keeps it drawable for both roles/types1/2/12. One-shot/expiry,
+world/visit/dead/loading/self/leave/initial-summon guards, types0/3/9 original
+branch, native hide/render-off gates, stack and native R15 continuation PASS.
+Production lifecycle (actual arm/completion/prune), original scene attachment,
+authority/routing/native19 hook spans and full BBSC_MOD syntax exit0 PASS.
+Fixture memory only, no game input/process memory writes/save or asset edits.
+No DLL build/deploy/restart; two games continue running and other source chats
+are active. Installed23:05 remains unchanged. New gameplay confirmation OPEN.
+This supersedes the earlier cause-unknown diagnosis for the reproduced native
+hold mechanism; exact original Dream frame was not captured.
+
+## 05.11.2026 — Yharnam departure delay follow-up, SOURCE fix / gameplay OPEN
+
+Latest both run_20261105_230550. P1 guest23:12:06.247 request ->06.249
+release (2ms) -> first pre-update animation observation12.474 (+6.226s)
+-> native stage request16.543 (+10.294s) -> arrival23.329. Previous guest
+23:10:34.984 release ->39.023 stage request (+4.039s). Host trips +4.048s
+and +4.056s. Extra pause is after release, before observed native progress;
+the observation is NOT proof of the visible animation or actual dispatch.
+
+Found/reproduced two source defects. Native event lookup can initially return
+-1 while the instance's file exists but its instruction is not ready. The cache
+retained this failure for the whole load when ref stayed unchanged, preventing
+later localization/client admission. Retry failed lookups on the next update.
+Also ONE shared previous-step tuple logs interleaved idle travel instances on
+EVERY frame: P1 has19212 phase lines, P2 has20180. Track phase bits per instance
+and journey, bounded128 instances/four phase types. Add original flag-condition
+phase and selected flag readback; label these pre-update OBSERVATIONS honestly.
+No native script, animation, four-second delay, condition, event scheduler,
+warp coordinates or load speed changes.
+
+Production regression FAIL old lookup / PASS retry; old logger with corrected
+lookup FAIL at interleaved-instance count / new logger PASS, repeated phases and
+new journey covered. Existing production ESD/native release fixture PASS and
+full BBSC_MOD syntax exit0. No build/deploy/restart; both games are running.
+No process-memory/game-asset/save writes. The cache defect and log flood are
+fixed in source. Neither defect is proven to explain this exact6.226s pause;
+that latency remains OPEN pending precise new condition/flag observations.
+
+## 05.11.2026 — second Dream entrant still cannot see resident, diagnosis ONLY
+
+User reports the second Dream entrant cannot see the first. Installed23:05
+coordinated build INCLUDES player mesh scene admission/arrival cleanup; do not
+attribute this to the earlier fix being absent. Both230550 profile logs collected
+in parent out/coop-dev/runs/player-dream-second-20261105/pc (2, warnings0,
+ChangedDuringCopy=true; live snapshots). P1 is GUEST, first Dream arrival
+23:07:25.130; P2 is HOST, second Dream arrival23:07:43.377. P2 requests P1
+recreation23:07:43.377 and binds actor1026bac670/mesh1026bf5140 at23:07:43.835.
+P1 recreates P2 at23:07:43.399 and binds23:07:43.684. No scene-attachment
+correction/retry/hide for P1 on P2 is logged during this Dream meeting.
+Thus native creation AND the new assembled-parts/scene-link readiness passed,
+but neither proves rasterized visibility. Prior scene fix did not solve the
+user-observed case; player visibility remains OPEN.
+
+Additional read-only process snapshot saved as live-scene.jsonl in the same run
+folder: both actors have16 populated part nodes, all scene/root links match.
+Native tasks6/6 and activation4/4. Coordinates match the other process. Snapshot
+is non-atomic and already overlaps P2's NEXT travel to Yharnam (native request
+23:09:01.852; P1 hides departed P2 at23:09:01.898; P2 arrives23:09:06.750).
+Do NOT infer the earlier Dream failure from snapshot fade/disabled fields or
+from global+0C (a pending/stale selected destination, not current rendered map).
+No per-part draw/cull submission or exact-incident render trace is available;
+the actual invisible-model cause remains unproven. No gameplay source edits,
+build/deploy/restart, game input, live-memory writes or save/asset changes.
+
+## 05.11.2026 — Gilbert after installed4989896, OPEN / gameplay FAILED
+
+User sees Gilbert on HOST after return to Yharnam23:09:06.749; guest remains
+Dream. Both fresh230550 profiles collected, warnings0/live snapshots. Host load3
+has world-ready23:09:02.713, no CHR-initial application log for this load.
+Previous local-event fix did not resolve the reported appearance; no evidence
+of exact quest flags/controller/native actor change. No new fix/build/deploy.
+See docs/fixes/2026-11-05-gilbert-ghost.md and HANDOFF.
+
+## 05.11.2026 — personal NPC native dispatchers, installed; gameplay OPEN
+
+Original personal NPC appearance dispatchers now use existing local event
+execution along with their already-personal flag workers (19 controllers,
+catalogue50->69). No custom stage/visibility checks or actor writes. New fixture
+FAILS old catalogue / PASSes corrected production and COMPLETE original012EE540
+native event sender; original-data catalogue check and personal authority/pickup
+fixtures PASS. Mod4989896 + completed common dirty source built/installed23:05
+(DLL/delta exit0), TWO profiles started; fresh230550 logs BOTH35/35 hooks,
+enemies/travel=true. Backup/run details in HANDOFF. Gameplay still OPEN. See
+docs/fixes/2026-11-05-gilbert-ghost.md.
+
+## 05.11.2026 — Gilbert ghost after independent travel, earlier diagnosis
+
+Expected absent on BOTH peers (user clarification). Guest sees inert/unhittable
+beast, then attacks on guest screen after host arrives; host sees no beast.
+Collected both live profiles, established guest-first arrival and host native
+initial from guest. Latest guest bootstrap was already ready before host came;
+do not claim existing streaming fix covers this. Actor/flags at exact instant
+not logged. Diagnosis only, no gameplay changes/build/deploy. See
+docs/fixes/2026-11-05-gilbert-ghost.md.
+
+## 05.11.2026 — unqueued guest Dream return, SOURCE fixed; gameplay OPEN
+
+Follow-up to wrong-map/death diagnosis below. Found a concrete uncovered native
+load path: Native7200 calls WarpNextStage_Bonfire013CDF30 directly (point EDI),
+bypassing QueueBbscWorldTravel. BbscWorldNativeWarpBegin armed reinsertion only;
+travel_inflight stayed false, so BbscWorldBonfirePhase did not protect the load.
+Original1.09 writes the bonfire's map to global+0C and spawn to+153C, but loader
+0192997A phase3 chooses old summoned map+14C4 instead of selected map+0C.
+Thus the first unqueued Dream return after cross-map summon can load m24_01
+with a Dream bonfire selection. Prior successful returns had queued-trip history;
+this incident followed a fresh cross-map join and had queued=false, scope absent.
+The live log did NOT capture phase3/registers or the falling trajectory; exact
+branch behavior is proven by original ELF and executable allocated fixture.
+
+Native begin now adopts known non-chalice bonfire requests into existing scoped
+travel lifecycle before teardown. It starts no second load and preserves native
+animation/wait/point selection. The existing phase guard now covers unqueued
+returns too, expires on arrival/cancellation, and leaves native phase/placement
+banks untouched. Initial summon, non-coop and unknown destinations are excluded;
+queued Chalice/mount handling remains unchanged. Added a phase3 destination
+preservation log for actual selected/summon maps at the loader guard.
+
+PASS: tools/test_world_dream_return_native.py executes production callbacks and
+original1.09 CMP/JNE + both map-read opcodes. BEFORE fix it fails by choosing host
+m24_01 for Dream; AFTER fix selects m21_00. Repeated trips/dedup/arrival expiry,
+unknown/offline/joining/leaving/disabled/host paths, untouched native memory and
+existing full production travel fixture PASS. Original ELF branch/targets/bonfire
+map+spawn stores PASS. No real save/process/game-file writes. Full BBSC_MOD syntax
+and docs diff status recorded in diagnosis report. No DLL build/deploy/restart;
+include in coordinated build. In-game confirmation remains OPEN.
+Details: docs/fixes/2026-11-05-dream-return-fall.md.
+
+## 05.11.2026 — late-arrival enemy AI streaming wait, SOURCE ready; gameplay OPEN
+
+Native CHR admission now tolerates extra streamed blocks at the resident while
+requiring complete matching local actor records. The former set equality held
+visitor events/AI until map streaming matched. Regression proves old failure and
+corrected admission; native-initial/bootstrap/full MOD syntax PASS. No build or
+deploy (two running games). Gameplay remains OPEN after coordinated build:
+living enemies active immediately, historical dead absent, original owner keeps
+authority, including host visiting a guest-owned map. See
+docs/fixes/2026-11-05-enemy-arrival-streaming.md.
+
+## 05.11.2026 — headstone session exit after separation: SOURCE fixed
+
+Confirmed live chain: guest22:48:32.245 suspends persistence (host gone180s),
+then22:48:46.648 headstone travel reaches native StageTransition.Stop and
+guest6->0. Host was connected in another map. Missing-character watchdog now
+resets in independent mode for both roles; actual departure paths retained.
+Production regression FAIL before/PASS after; native leave-release PASS.
+No DLL build/deploy in this task; gameplay remains OPEN on next common build.
+See docs/fixes/2026-11-05-headstone-session-leave.md and HANDOFF.
+
+## 05.11.2026 — guest Dream return after rejoin: wrong-map load and death, diagnosis ONLY
+
+User reports falling into the void and dying after joining the host and returning
+to Dream. Fresh live snapshots of BOTH profiles collected in parent
+out/coop-dev/runs/dream-fall-20261105/pc (2 logs, warnings0,
+ChangedDuringCopy=true). P1 guest run222014 / P2 host run222015.
+At22:41:13.904 guest handoff selects host m24_01; join teleport22:41:24.767.
+At22:42:26.078 guest requests native point2102950 (Dream), selected0,
+queued=false. At22:42:27.743 the completed-load presence is STILL m24_01,
+visit12; native bootstrap also admits m24_01. No Dream AREA transition then.
+At22:43:05.585 PartyGhostDeath;22:43:09.126 penalty640 echoes;
+in-place reset unavailable, real reload22:43:09.859. Only22:43:12.366
+AREA becomes Dream. Host remains m24_01; no session departure in interval.
+This establishes failed requested destination followed by death, NOT exact
+spawn coordinates/collision state or the native instruction causing it.
+The logged map0 is optional requested_scope absence, NOT proof of a zero
+native destination. Prior unqueued Dream returns22:23/25/34 succeeded.
+No gameplay fix/build/deploy/restart or save/live-memory/game-file writes.
+Bug OPEN. Details: docs/fixes/2026-11-05-dream-return-fall.md.
+
+## 05.11.2026 — player mesh scene admission, SOURCE ready; gameplay OPEN
+
+User again reports missing player meshes in the installed22:19 build. Collected
+both profiles in parent out/coop-dev/runs/player-models-20261105-followup/pc
+(2 logs, warnings0; live snapshots, ChangedDuringCopy=true). P1 guest222014 / P2
+host222015 both request recreation and bind at repeated reunions22:22–22:25.
+The earlier per-journey admission DOES run; binding is not mesh visibility.
+
+Read-only process observations additionally found active4/4 remote PlayerIns,
+normal alpha1/1, disabled0 and mutually consistent remote/local positions.
+Draw-state+0C was0 for BOTH local and remote actors. These observations do NOT
+prove visible meshes or establish detached scene links in that live incident.
+No writes to running game memory, game inputs, save edits or game asset changes.
+
+Confirmed source gaps: DrawModule+28 is an allocated state, not assembled meshes;
+its presence let an empty/detached mesh become Resident and bypass recovery.
+Native player virtual+B0/018F4A50 attaches c0000 parts+4D0 to WorldChrMan+5FC8;
+FirstSync calls it before asynchronous actor activation/model completion.
+The controller now checks actual assembled part nodes and their scene/root
+links, calls the ORIGINAL idempotent attachment for settled, living, same-place
+peers with detached parts, then rechecks. Empty assemblies retain bounded native
+recreation. No opacity/death/draw-byte overrides. Binding logs include actor/mesh.
+Per-character recreation now also calls native015BC080(manager,handle) BEFORE
+019186E0 removal, matching native Delete01E50C19/54. This clears retained arrival
+entries before a handle is reused; native arrival creation rejects duplicates.
+
+PASS: previous production Tick fails the detached-scene regression; corrected
+production fixture passes detached/empty/ready assembly, no repeated attachment,
+bounded recreation, local/remote travel, task absence, apart/loading/pending-task
+gates and per-handle cleanup order. ORIGINAL1.09 018F4A50 executed on allocated
+fixture parts/scene, dispatching to fixture list callbacks via native ABI. Native authority/routing
+fixture and original callable/callsite/part offsets PASS; full BBSC_MOD syntax
+exit0; diff --check PASS. These tests do not establish the live symptom's exact
+scene links or visible gameplay result. No DLL build, deploy or restart in this
+task; integrate with coordinated build. Bug remains OPEN for gameplay.
+
+## 05.11.2026 — guest altar host glyph/layers, SOURCE ready; gameplay OPEN
+
+User reports the installed22:19 native menu omits Remove Chalice but still
+shows PERSONAL glyph/layers. Collected both profiles under parent
+out/coop-dev/runs/altar-host-content-20261105/pc (2 logs, warnings0).
+P1 guest run222014 at22:21:28.145 /39.551 /50.292: slot1=native_slot1,
+host_channel0x81fce924a8ab2, personal_state5, current=true, removal omitted.
+Thus old branch/Remove hooks worked; menu CONTENT was not switched to host.
+The previous menu SOURCE-ready entry does not establish host glyph/layers.
+
+Original1.09: native79 captures selected PERSONAL helper+108 at01B661CF,
+and its async payload carries that same helper into01B66330/01B66EF0.
+Added a separate native helper per altar with stable process lifetime (7 total),
+constructed by the ORIGINAL altar helper constructor01AA3110 (as at01AB457C).
+Original01AA6860 decodes it from the atomically installed HOST backing flags:
+channel, seed, parts and persisted glyph via native getters. No memcpy of owning
+pointers, custom menu, guest personal helper/channel replacement or asset edits.
+Native73 establishes the scoped selection before79 without changing its command.
+Native79's pointer capture and selected-helper accessor now borrow that helper;
+the original promise, rendering, layer results and Remove-only omission remain.
+Refresh occurs on first read / changed record, load or world, not timer polling.
+Context remains world/load/slot/ritual-bound; stale travel remains rejected.
+Native caches/refs are owned by those seven native helpers, kept until process
+exit because async menu callbacks retain raw pointers across ESD/map lifetimes.
+
+PASS: new production allocated-memory helper ABI/capture/getter fixture, distinct
+host vs personal channel/glyph/layer metadata for all7 slots, native73 ordering,
+record refresh, stale world/load/ritual/catalog and host/wrong-slot exclusions;
+REAL Windows capture and return-epilogue trampolines (including native RET).
+Original1.09 constructor/decoder arguments, helper size and async pointer chain
+PASS. Existing production travel and native branch/Remove trampoline fixtures
+PASS. Full BBSC_MOD syntax exit0. No real save/live process/game file writes.
+Fixture native decoder is a stand-in; original code checks do NOT replace an
+in-game appearance/travel check. DLL NOT built/deployed, both games still running.
+Gameplay OPEN: guest host glyph/layer list/locks, selection into the host cup,
+personal altars on return home; also empty guest personal slot vs occupied host.
+
+## 05.11.2026 — host lamps through general shared progress, SOURCE ready
+
+User clarifies HOST list is incomplete too: guests must receive every host lamp
+and retain them through the ordinary shared story merge. Removed the separate
+ordinary-lamp mask, read/apply code, catalog comparison and transmission. Altar
+wire retains a zero reserved word for layout compatibility; incoming old masks
+are ignored. Chalice layer availability remains in the native host ritual view.
+
+General host kind1 block snapshots now also merge eligible progress into the
+co-op guest live flag table on the game thread (existing shared-progress tick,
+complete host blocks, no writes while loading). The same general exclusions as
+the home merge apply. The existing trip journal/home merge collects these same
+host blocks, including unvisited areas; there is no destination allowlist here.
+Ordinary independent map-state application preserves eligible existing kind1
+progress for BOTH roles, so a resident guest's older snapshot cannot erase
+already-open host lamps/story. Runtime kinds6/7 and scoped m29 copy are unchanged.
+
+PASS: production shared-progress policy/live byte merge for all44 base/DLC
+headstone destinations, older/empty input, encounter/NPC/ritual exclusions;
+production altar fixture: ordinary flags untouched by altar application,
+older peer state cannot relock host progress; native bootstrap fixture and
+full BBSC_MOD syntax exit0 (existing unused-argument warning). Allocated fixture
+memory only, no real save/process/game-asset edits. No DLL build/deploy/restart.
+Gameplay remains OPEN for both roles: complete headstone menus before/after
+independent travel, new lamp activation and persistence through normal play.
+Earlier diagnosis below is historical; it did not establish live overwrite order.
+
+## 05.11.2026 — Dream lamp list incomplete/changing, OPEN
+
+Latest two-profile logs collected in parent out/coop-dev/runs/lamp-list-20261105/pc.
+Travel2412951 succeeds for both roles; this does not validate list completeness.
+Diagnosis found missing ordinary-lamp catalog invalidation, destructive catalog
+bit application competing with map state, and state4/6 lamp admission mismatch.
+No live mask/row trace yet: exact cause remains unproven. No behavior edits,
+build/deploy/restart or save changes. See HANDOFF diagnosis for evidence/limits.
+
+## 05.11.2026 — headstone travel + native guest menu built/installed, gameplay OPEN
+
+User requested fix/logs, build/install and TWO-profile startup. Related native
+altar menu work completed before build; final thread list had no other active
+source work. Own travel commit db9a6b9, parent pin98defb9; common dirty source
+also includes completed native altar menu, historical enemy and Dream fixes.
+Exact source status recorded in out/coop-dev/runs/headstone-travel-20261105.
+DLL build exit0; five-file delta preparation/deploy exit0 to MAIN installation.
+Backup D:/Games/Bloodborne/coop-dev/backups/headstone-travel-20261105-20261105-221939.
+Existing Player1/2 CMD entrypoints launched22:19:51 MSK, no third profile.
+Earlier SOURCE ONLY/no-build statuses below are historical for installation.
+Fresh P1 run_20261105_222014 / P2 run_20261105_222015 confirm35/35 hooks,
+independent enemies/travel=true and native UDP3658/3659. Gameplay still OPEN:
+headstone travel by BOTH roles and guest host-cup layer menu/travel.
+No game termination/input, live memory/save edits or game asset changes.
+
+## 05.11.2026 — native guest altar menu restricted, SOURCE ready
+
+User requests correction through the original call rather than a custom menu.
+Kept zero-argument native command79/promise/ESD layer result; occupied guest
+slot0 uses the same normal altar path instead of short-ritual78. Host unchanged.
+Read-only1.09 confirms native79's async builder01B75280 chooses a ritual/search
+or layer screen using PERSONAL SprjHolygrail slot+364, even after host backing
+flags have been installed. Native01B66110 still uses its existing wait/promise.
+
+At01B75353 and its continuation01B74F4B only the CMP operand is redirected to a
+constant state4 observation; original CMP/Jcc and all original stack/async code
+execute. Selected native branches overwrite RAX before any other dereference.
+Personal ritual helper/channel/cache pointers are NOT overwritten or rebuilt.
+Thus existing native01B66330/01B66EF0 renders the ESD's original layer list,
+localized labels, locks, cancel and selection. The continuation cannot reopen
+the host ritual/search UI. No new renderer, custom list, synthetic ESD argument
+or incompatible78/79->41 switch. Raw/native altar flags and scoped travel still
+supply host ritual/destination; empty/missing host altars remain denied.
+
+The layer screen also unconditionally adds Remove Chalice. Native list::Add
+entry01B76150 skips ONLY caller01B67A7F (the removal row); returns original
+builder/RDI and leaves caller cleanup intact. Host and all layer/other-menu rows
+continue natively. Original rusru confirms200/262005 = "Убрать Чашу".
+Permission context is world/load/slot/ritual-specific and separate from unrelated
+ESD commands. Host ritual changes cannot restore mutation actions; stale altar
+or layer selections are rejected on BOTH halves of the travel request.
+
+Added bounded per-menu logs: requested/native slot, host channel, personal native
+state and current-catalog match, layer result and omission of removal row.
+PASS: production travel fixture including all7 altars, empty/missing view, host,
+world/load/ritual expiry and two-phase stale choice; NEW actual Windows trampoline
+fixture executing both CMP paths and exact removal caller against synthetic
+memory, native return ABI and untouched personal memory. Original ELF branch
+bytes/targets/RAX lifetimes/removal-call/return ABI PASS. Full BBSC_MOD syntax
+exit0 (existing warnings). No real save/process memory or game asset edits.
+DLL has NOT been rebuilt/deployed in this follow-up; installed21:54 build remains.
+Native menu appearance, selection and occupied host-cup travel need gameplay
+verification. Previous diagnostic-only entry below is historical for source status.
+
+## 05.11.2026 — headstone travel stalls, SOURCE fix / build pending
+
+P1 guest run215520 requests2412951 at21:58:13 and21:59:07; P2 host run215519
+requests the same destination at21:59:11. Neither releases native travel.
+A repeated guest request is busy while its first request waits. No queue backlog.
+Reproduced production defect: EnsureSeed rejects a foreign owner lease even
+AFTER that owner has left the destination. No one can provide the missing flags.
+Host now seeds missing ordinary-map flags when the former owner is elsewhere
+or has left the room, retaining the lease epoch. A resident/loading provider in
+the same scope remains protected; guests cannot seed. Chalice policy unchanged.
+This proven code defect is consistent with logs; old logs do not expose the
+exact wait branch, so the live cause still needs confirmation.
+Added bounded travel wait reasons/load flags, cancellation and seed diagnostics.
+Regression FAIL with previous production function / PASS with fix. Production
+bootstrap and ESD/native travel fixtures PASS; full MOD syntax PASS. No live
+memory/save edits. Build/install/two-profile start requested; waiting for related
+native altar menu work before common build. Gameplay remains OPEN.
+
+## 05.11.2026 — altar menu regression reproduced in installed21:54 build, diagnosis ONLY
+
+User reports guest still sees personal cup menu with host removal actions.
+Current P1 run_20261105_215520 is GUEST; P2 run_20261105_215519 is HOST.
+P1 receives host catalog occupied=1 at21:56:27.888; world active21:56:29.969,
+guest state6 at21:56:30.101, Dream/native admission ready21:56:38.769.
+P1 opens guest altar talk210060/slot1 with UNCHANGED native command79 at
+21:56:46.410 and21:57:03.987. This proves full native menu dispatch survives;
+it does NOT identify the displayed cup/channel because those are not logged.
+P2 stays host in Dream; no guest-menu opens on P2 in this interval.
+
+Source BbscWorldAltarCommand intentionally preserves78/79 and only changes to88
+when altar view is unavailable. It does not construct the requested restricted
+visitor menu. Current test_world_travel_native explicitly expects78 unchanged;
+that verifies dispatch/argument ABI, NOT the guest-only menu requirement.
+Thus successful catalog reception/flag replacement did not establish the required
+menu behavior. Personal menu content is user-observed; exact native decoded/menu
+cache selecting that cup remains unproven. Nearby QUEST talk210050 vs command
+210060 is a diagnostic discrepancy, not yet proof of an incorrect executor.
+
+Both profiles' logs collected under parent out/coop-dev/runs/
+altar-menu-20261105-after2155/pc (2 files, warnings0). Both ChangedDuringCopy=true:
+games were still running; collection is a live snapshot, not final stopped logs.
+Exact menu lines additionally read from live run files. No source behavior edits,
+build/deploy/restart, game input or save modifications in this diagnosis.
+Guest restricted altar menu/personal cup display remain OPEN after installation.
+
+## 05.11.2026 — coordinated player/enemy/altar build installed, gameplay OPEN
+
+User requested installation and TWO-profile startup after player-model fixes.
+Related enemy/host-altar/travel/ritual chats completed and read before build;
+final list confirmed no other active source work. Own commits bded5c4/813bfb1,
+parent pin be1c36a. Shared dirty source additionally includes completed native
+historical-enemy admission, host-altar joining/preparation and travel phase logs;
+exact HEAD/status recorded in parent out/coop-dev/runs/player-arrival-20261105.
+DLL build exit0, five-file delta preparation/deploy exit0 to MAIN installation.
+Backup D:/Games/Bloodborne/coop-dev/backups/player-arrival-fix-20261105-215440.
+Existing Player1/2 CMD entrypoints launched21:54:53 MSK, no third profile.
+Fresh run logs P1 run_20261105_215520 / P2 run_20261105_215519 confirm separate
+profiles/user_dirs and native UDP ports3658/3659.
+Gameplay models, historical dead enemies and host cups remain OPEN for manual
+verification. No game termination/input, manual save edits or game asset changes.
+Earlier SOURCE ONLY/no-build statuses below describe their individual tasks;
+this explicitly requested common build supersedes those installation statuses.
+
+## 05.11.2026 — native historical enemy admission, SOURCE ONLY
+
+Repeated user report: on entering an occupied map, previously killed enemies
+appear alive and inert. Native player FirstSync/CreateWait is not NPC initial
+state. Read-only original1.09 ELF establishes the missing separate path:
+0178C7EF calls01786360 during summon; native channel11 includes a CHR section
+(tag43485220/version15091700). Serializer0190E750 marks HP<=0 characters;
+loader0191BF6B invokes0190E8B0, which sets the native historical-removal reason
+and calls018C49F0. This differs from ordinary HP5 updates and proxy Kill018BF9A0.
+Retained native session travel never re-enters that initial CHR load path.
+
+Added explicit pre-event admission from the current resident map owner. Owner
+builds the ORIGINAL native11 packet with01786360 for the actual native member;
+visitor reads it from that member's native queue with01789200 and passes only
+its native CHR records to0190E8B0. All native block IDs/counts are preflighted
+before any application. Native game code owns death/removal and exclusions.
+No mod enemy cache, capture, custom NPC payload, HP writes, repeated Kill or
+model hiding. No initial-state claim for NPC positions/AI beyond this native
+historical-death path; existing native replication remains responsible there.
+
+Control8/9 carry request/correlation metadata ONLY, scoped to world/map/ritual,
+owner epoch and local load/request generation. Native packet fingerprint rejects
+old/unrelated queued data; no NPC state is retained. An explicit loading request
+may name the destination instead of its previous committed map; provider must
+actually reside in that destination. Different Playing maps are denied. Native
+send failure retries only while admission is pending; apply is once per load.
+No resident owner (including a departed stale lease) preserves first-map native
+admission. Existing presence simulation/routing permissions are not broadened.
+All participants need this source revision for the new request/reply metadata.
+
+PASS: allocated-memory production admission fixture (malformed/truncated data,
+all-block preflight, old request/epoch/load, loading destination, wrong-map denial,
+native send failure, once-only apply); original ELF serializer/dead-bit/handler
+ABI; production native authority/send fingerprint + original hook spans;
+pre-event bootstrap wait; world presence/routing; full BBSC_MOD syntax exit0.
+No DLL build, deploy/restart, game input, live memory writes or save changes.
+Gameplay remains OPEN: kill ordinary enemies before arrival, enter via lamp in
+both host/guest directions and repeat the trip; no live inert copies should
+remain, living enemies and personal rewards must continue working normally.
+Other active chats changed HEAD during this work (now813bfb1); no reset, pin
+update or mixed-worktree commit was performed.
+
+## 05.11.2026 — guest personal cups regression, SOURCE ready / gameplay OPEN
+
+Fixed Dream restoration firing during states4/6 when native loader temporarily
+sets global+1592 to own-world. Host Dream installation follows native readiness,
+and join completion reinstalls the host altar view within the same load. State4
+altar writes are protected too. Native altar preparation now injects the selected
+host mount BEFORE layer selection, rather than consuming an old armed cup.
+Targeted restore/bootstrap/altar/travel/chalice fixtures and full MOD syntax PASS.
+No DLL build/deploy or gameplay check here; include in coordinated pending build.
+See HANDOFF for current-run evidence and validation limits.
+
+## 05.11.2026 — player arrival admission follow-up, source ready / coordinated build requested
+
+21:29 build already included1d5d7ef; user reports models still missing. Current
+P1/2 run_20261105_212953 logs bind actors after arrival, but do not prove meshes.
+Confirmed gap: mandatory per-journey FirstSync depended on the OLD actor address;
+a newly allocated actor/draw graph bypassed it. Commit bded5c4 removes address
+identity from the journey admission decision, including missing actors. Wait for
+settled native task, request once, leave subsequent native-created actors alone.
+Commit813bfb1 additionally retains visit history while native tasks temporarily
+disappear; only actual room departure forgets it. Both production regressions
+FAIL before/PASS after; local/remote travel, pending/missing task or actor, actual
+departure, no repeated restarts, bounds and authority PASS.
+Actual visual root cause/gameplay result still OPEN. Details:
+docs/fixes/2026-11-05-player-arrival-admission.md.
+User explicitly requests install and TWO-profile startup after fixes. This chat
+will coordinate the build AFTER concurrent enemy/altar work completes. No build
+or deployment yet; no game termination, game inputs or real-save modifications.
+
+## 05.11.2026 — Central Yharnam departure delay, diagnosis / SOURCE logging only
+
+Latest main-install run: Player1/2 run_20261105_212953.log. Roles switched:
+P1 host, P2 guest after21:33. P2 request21:34:05.652 -> native event released
+21:34:05.703 (51ms) -> stage request21:34:09.731 (4.028s after release).
+P1 first request21:34:26.259 -> release21:34:26.261 (2ms) -> stage request
+21:34:30.385 (4.124s). P1 second request21:36:00.113 -> release21:36:00.115
+(2ms) -> stage request21:36:10.057 (9.942s). Thus the extra delay is AFTER
+preflight/release, not a multi-second destination-state wait. Relay samples in
+that interval show queue0/dropped0 and continuing exchange, not queue congestion.
+
+Read-only original m21_00 event12107000: EndIfClient, wait on its parameterized
+flag, native animation2004[14](player10000,101164), WaitSeconds(4.0), native
+warp2003[49]. Previous4s transitions fit that native sequence. Current logs do
+NOT timestamp visible animation start or prove which instruction consumed the
+extra~6s. Do not call the whole10s original animation or claim a proven root cause.
+
+Added bounded active-trip logs for native interpreter animation-command,
+WaitSeconds and warp-command entry with time since release. Idle instances are
+excluded; unchanged instruction does not log every frame. These are script
+progress, NOT proof of visible animation. No travel behavior/animation/wait edits.
+Production native travel fixture verifies observation leaves instructions and
+release timing unchanged PASS; full MOD syntax check PASS (exit0).
+No rebuild/deploy, process termination, game inputs, real-save/game-asset changes
+or live memory writes. Delay remains OPEN pending exact script-phase evidence.
+Prior NO BUILD was superseded by the separately requested21:29 build/install;
+this diagnosis does not replace binaries in running games.
+
+## 05.11.2026 — ritual upload numeric contract, gameplay OPEN
+
+Corrected Party signed32 ritual fields, unsigned64 CharaId and exact integral
+JSON doubles; actual HTTP test and12 channel tests PASS. Rejection reasons now
+logged normally. Previous409's exact field remains unproven; verify ritual in
+new two-profile run. Build/install/start requested; see HANDOFF/run evidence.
+
+## 05.11.2026 — host Dream/altar admission, SOURCE ONLY
+
+User reports personal chalices visible/selectable in the host world and explicitly
+requires the HOST Dream, with NO one-second corrective polling. User then requests
+removal of the personal-Dream mode altogether. Removed DREAM_OWN default, switch,
+launcher setting/hint/translations and personal-service/event branches. The own
+Dream journal remains ONLY for restoring personal data on leaving the host world.
+
+Host altar records now install atomically (all42 backing groups preflighted)
+before Dream native event initialization, including native joining state4.
+Missing full host Dream/map/catalog holds initialization, rather than letting
+personal cups initialize. Native altar menu refreshes the host view or denies
+opening if unavailable. Complete new catalogs apply on game-thread receipt;
+replayed revisions do not reapply. Removed visitor timer writes. Host catalog
+capture is driven by native flag writes, loaded table/world changes and received
+ritual progress; unchanged writes do not advance revision. Existing timed packet
+retransmission repeats the retained revision for late join/loss, without rescanning
+rituals. Canonical host Dream map and service snapshots are sent even while host
+is elsewhere; arrival applies host map/services first, newest ritual records last.
+Personal reward/receipt protections and home restoration remain in place.
+
+PASS: production altar getters/atomic42-group replacement/event-driven capture
+and unchanged retransmit; actual ESD altar menu/readiness/travel; native pre-event
+Dream barrier (state4, missing canonical state, one-time admission); chalice scope;
+shared finale runtime; full BBSC_MOD syntax check exit0; generated RU text check.
+Fixtures use allocated memory only. No DLL build, deploy/restart, game inputs,
+real save changes, game asset changes or live memory writes. Previous NO BUILD
+instruction persists. Installed25405ed unchanged; gameplay confirmation OPEN.
+
+## 05.11.2026 — ritual upload rejected with409, OPEN
+
+P1 current installed25405ed run: /channel/upload409 twice at21:19:50 and
+21:20:07 MSK, each immediately followed by quit-to-title. Local service responds;
+exact validation/catalogue reason absent because http_reject diagnostics off.
+Need actual rejection reason before correcting behaviour; do not alter live
+catalogue or blame transport. See HANDOFF and parent evidence directory
+out/coop-dev/runs/chalice-disconnect-20261105-2125. Diagnosis only, no build.
+
 ## 05.11.2026 — player lamp-reunion recreation, SOURCE ONLY
 
 User reports models missing when a player travels by lamp to other residents.

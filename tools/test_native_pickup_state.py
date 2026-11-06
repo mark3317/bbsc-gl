@@ -40,24 +40,27 @@ std::string bbsc_loot_dungeon;
 std::mutex bbsc_npc_own_mutex;std::unordered_map<u32,u8> bbsc_npc_own;
 std::unordered_map<u32,bool> bbsc_action_owner;
 int own_writes=0,loot_writes=0;
+int read_checks=0,group_resolves=0;
+bool readable_groups=true;
 void WriteBbscOwnWorldFile(){++own_writes;}
 void WriteBbscGuestLootFile(){++loot_writes;}
 std::vector<std::pair<u32,u8>> journal;
 void NoteBbscTalkFlag(u32 f,u8 v,u64,bool){journal.emplace_back(f,v);}
 bool BbscLedgerOwnAwardFlag(u32){return false;}
 bool IsBbscNativeItemStateFlag(u32);
+bool ReadablePointer(u64,size_t);
 void RecordBbscNativeItemFlag(u32,u8);
 namespace Chalice{bool IsLootGroup(u32 k){return k/10000==5&&(k%10000)/100==29;}}
-u64 BbscFlagGroupStorage(u32 k){auto it=live.find(k);return it==live.end()?0:(u64)it->second.data();}
-template<class T>T ReadValue(u64 p,size_t o){T v;memcpy(&v,(void*)(p+o),sizeof(v));return v;}
+u64 BbscFlagGroupStorage(u32 k){++group_resolves;auto it=live.find(k);return it==live.end()?0:(u64)it->second.data();}
+template<class T>T ReadValue(u64 p,size_t o){++read_checks;T v;memcpy(&v,(void*)(p+o),sizeof(v));return v;}
 '''
 code+=decl(r'constexpr std::array<u32, \d+> BbscNpcQuestFlags\{.*?\n\};')
 code+=decl(r'struct BbscScriptedPickup \{.*?\};')
 code+=decl(r'constexpr std::array<BbscScriptedPickup, \d+> BbscScriptedPickups\{\{.*?\}\};')
 for signature in ['bool IsBbscGlobalLootReceipt(u32 flag)',
                   'bool IsBbscScriptedPickupFlag(u32 flag)',
+                  'bool IsBbscKidnapFlag(u32 flag)',
                   'bool IsBbscNativeItemStateFlag(u32 flag)',
-                  'bool BbscNpcFlagBit(u64 storage, u32 flag)',
                   'void SetBbscNpcFlagBit(u64 storage, u32 flag, bool on)',
                   'void MarkBbscTakenInOwnWorld(u32 key, size_t byte, u8 bits)',
                   'void RecordBbscNativeItemFlag(u32 flag, u8 value)',
@@ -72,7 +75,7 @@ std::optional<int> bbsc_chalice_reward_context;
 u32 bbsc_native_pickup_flag=0;u64 image_base=0x800000000;
 s64 BbscLotOfFlag(u32 f){return f+1;}
 struct GuestRegisterSnapshot{u64 rsp;};
-bool ReadablePointer(u64 p,size_t){return p!=0;}
+bool ReadablePointer(u64 p,size_t){return readable_groups&&p!=0;}
 '''
 code+=fun('void BeginBbscLedgerPickup()')
 part=fun('void PS4_SYSV_ABI BbscPickupHook(u64 tag, const GuestRegisterSnapshot* registers)')
@@ -87,6 +90,20 @@ bool bit(const std::map<u32,std::array<u8,125>>& table,u32 f){
  auto p=table.find(f/1000);return p!=table.end()&&(p->second[f%1000/8]&(0x80u>>(f%8)));
 }
 int main(){
+ // Abduction progress is native and personal, including event-completion writes
+ // outside SetFlag. A host snapshot cannot grant or erase the visitor's first trip.
+ for(u32 f=9420;f<=9423;++f){
+  assert(IsBbscNativeItemStateFlag(f));
+  set(live,f,false);set(bbsc_own_world,f,false);
+  auto incoming=live.at(9);incoming[f%1000/8]|=0x80u>>(f%8);
+  KeepBbscNpcOwnBits(9,live.at(9).data(),incoming.data());
+  assert(!(incoming[f%1000/8]&(0x80u>>(f%8))));
+  set(live,f,true);RevertBbscNpcOwnFlags();assert(bit(live,f)&&bit(bbsc_own_world,f));
+  incoming.fill(0);KeepBbscNpcOwnBits(9,live.at(9).data(),incoming.data());
+  assert(incoming[f%1000/8]&(0x80u>>(f%8)));
+  set(live,f,false);RevertBbscNpcOwnFlags();assert(!bit(live,f)&&!bit(bbsc_own_world,f));
+ }
+
  // Native event writes completion directly; an old zero in the NPC cache must not undo it.
  u32 ritual=12300130;bbsc_npc_own[ritual]=0;set(live,ritual,true);set(bbsc_own_world,ritual,false);
  RevertBbscNpcOwnFlags();assert(bit(live,ritual)&&bit(bbsc_own_world,ritual));
@@ -127,6 +144,12 @@ int main(){
  RecordBbscNativeItemFlag(foreign,1);assert(!bit(bbsc_own_world,foreign));bbsc_loot_dungeon.clear();
  guest=false;RecordBbscNativeItemFlag(foreign,1);assert(!bit(bbsc_own_world,foreign));guest=true;
  RecordBbscNativeItemFlag(foreign,0);assert(!bit(bbsc_own_world,foreign));
+ // Warm unchanged passes retain protection but do not validate every bit again.
+ RevertBbscNpcOwnFlags();read_checks=group_resolves=0;RevertBbscNpcOwnFlags();
+ assert(read_checks==0 && group_resolves>0 && group_resolves<BbscNpcQuestFlags.size());
+ bbsc_npc_own[npc]=0;set(live,npc,true);readable_groups=false;
+ RevertBbscNpcOwnFlags();assert(bit(live,npc)&&bbsc_npc_own[npc]==0);
+ readable_groups=true;RevertBbscNpcOwnFlags();assert(!bit(live,npc));
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-native-pickup-state-') as folder:

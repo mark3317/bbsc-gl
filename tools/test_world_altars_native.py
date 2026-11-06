@@ -38,7 +38,12 @@ s32 GetLocalPlayerType(){return 1;}
 bool BbscBossCompletionBitsAdded(u32,size_t,u8 added){return (added&1)!=0;}
 int reward_checks=0;void RequestBbscRewardCheck(){++reward_checks;}
 bool BbscIndependentActive(){return active;}
+void QueueBbscWorldLampWrite(u32,u32,u32){}
 s32 GetSessionState(){return session;}
+u32 map=0x18010000;u32 GetCurrentPackedMap(){return map;}
+u64 GetGlobalState(){return reinterpret_cast<u64>(manager.data());}
+std::atomic<u64> bbsc_world_native_load{1};s64 now=10000;s64 SteadyNowMs(){return now;}
+int sends=0;void BbscWorldSend(const World::Control&,std::span<const u8>){++sends;}
 bool ReadablePointer(u64 p,size_t){return p>=0x10000;}
 template<class T>T ReadValue(u64 p,size_t offset){
  if(p==image_base+WorldFlagManPointerOffset)return static_cast<T>(reinterpret_cast<u64>(manager.data()));
@@ -46,7 +51,8 @@ template<class T>T ReadValue(u64 p,size_t offset){
 }
 u64 BbscFlagGroupStorage(u32 key){auto it=groups.find(key);return it==groups.end()?0:reinterpret_cast<u64>(it->second.data());}
 bool BbscEventFlag(u32 flag){const u64 p=BbscFlagGroupStorage(flag/1000);return p&&(reinterpret_cast<u8*>(p)[flag%1000/8]&(0x80>>(flag%8)));}
-u32 BbscWorldGroupKey(u32,size_t i){return static_cast<u32>(20000+i);}
+u32 BbscWorldGroupKey(u32 map,size_t i){return static_cast<u32>((Chalice::IsMap(map)?12900:20000)+i);}
+void BbscMergeSharedProgressGroup(u32,u8* live,const u8* incoming){for(size_t i=0;i<125;++i)live[i]|=incoming[i];}
 void KeepBbscOwnWorldGroup(u32 key,const u8* p){if(!own_kept.contains(key))std::memcpy(own_kept[key].data(),p,125);}
 void KeepBbscGuestTalkBits(u32,const u8*,u8*){}
 void KeepBbscNpcOwnBits(u32,const u8* before,u8* live){live[0]=(live[0]&0x7f)|(before[0]&0x80);}
@@ -91,7 +97,7 @@ int main(){
  assert(groups==before);
  groups[20000].fill(0x80);BbscWorldState state;state.flags_ready=true;state.present=1;state.groups[0].fill(0x11);
  World::Scope scope{{11,99},0x18000000,{},0};BbscWorldApplyFlags(scope,state);
- assert(own_kept[20000][0]==0x80&&groups[20000][0]==0x91&&groups[20000][1]==0x11);
+ assert(own_kept[20000][0]==0x80&&groups[20000][0]==0x91&&groups[20000][1]==0x91);
  const auto personal=own_kept;scope.map=0x15000000;BbscWorldApplyFlags(scope,state);
  assert(dream_calls==0&&own_kept==personal); // map snapshots never replay Dream services/phase
  bbsc_world_presence_local.world={11,99};bbsc_world_guest_altars.Bind({11,99});
@@ -106,18 +112,65 @@ int main(){
  assert(bbsc_world_guest_altars.Destination(3,12,0));
  assert(!bbsc_world_guest_altars.Destination(3,11,0));
  assert(groups[94300]==before.at(94300)); // receiving a guest view does not install it into a save
- groups[12417]={};groups[12417][0]=0xA5;
- bbsc_world_shared_lamps=(u64{1}<<8)|(u64{1}<<9);
- BbscWorldApplyLamps();assert(BbscEventFlag(12417810)&&BbscEventFlag(12417830));
- assert(groups[12417][0]==0xA5&&own_kept[12417][101]==0);
- assert(bbsc_progress_groups[12417][101]&0x20); // same shared kind1 progress, persists through normal home merge
- assert(!bbsc_progress_groups.contains(12907)); // ritual lamps remain in their own namespace
+ // A scoped dungeon snapshot replaces a previously mounted cup's lamps;
+ // the guest's original bits remain in its existing own-world journal.
+ {World::Scope cup{{11,99},0x1D000000,altar.mount.key,12};
+  BbscWorldState mounted;mounted.flags_ready=true;mounted.present=1u<<7;
+  groups[12907].fill(0xFF);own_kept.erase(12907);
+  BbscWorldApplyFlags(cup,mounted);
+  for(u32 flag:Chalice::LampUnlockFlags){
+   assert(!(groups[12907][flag%1000/8]&(0x80u>>(flag%8))));
+   assert(own_kept[12907][flag%1000/8]&(0x80u>>(flag%8)));
+  }
+ }
+ // Altar reception/application must leave ordinary map progress untouched.
+ groups[12417].fill(0xA5);const auto ordinary_lamps=groups[12417];
+ // A resident guest's older map state cannot erase the host's opened progress.
+ session=3;scope.map=0x18000000;state.groups[0].fill(0);
+ BbscWorldApplyFlags(scope,state);assert(groups[20000][1]==0x91);
+ session=6;state.groups[0][1]=0x04;BbscWorldApplyFlags(scope,state);
+ assert(groups[20000][1]==0x95);
  BbscWorldState shared;shared.flags_ready=true;shared.present=1;shared.groups[0][2]=1;
  World::Scope ordinary{{11,99},0x18010000,{},0};BbscWorldRememberProgress(ordinary,shared);
  assert(bbsc_progress_groups[20000][2]==1&&reward_checks==1);
  ordinary.map=0x1D000000;shared.groups[0][3]=1;BbscWorldRememberProgress(ordinary,shared);
  assert(bbsc_progress_groups[20000][3]==0); // no chalice leakage into ordinary shared progress
  ordinary.map=0x18010000;share=false;BbscWorldRememberProgress(ordinary,shared);assert(bbsc_progress_groups[20000][3]==0);
+ // Guest Dream admission atomically replaces ALL seven slots, including
+ // personal cups in slots where the host has no ritual. No timer is involved.
+ map=BbscDreamStateMap;
+ for(u32 i=0;i<7;++i)for(u32 j=0;j<6;++j)groups[94000+i*100+j].fill(0xA5);
+ const auto personal_altars=groups;
+ groups.erase(94605);assert(!BbscWorldApplyAltars(map));
+ assert(groups[94000]==personal_altars.at(94000)); // no partial installation
+ groups[94605]=personal_altars.at(94605);
+ assert(BbscWorldApplyAltars(map));
+ assert(groups[12417]==ordinary_lamps);
+ for(u32 i=0;i<7;++i)for(u32 j=0;j<6;++j){
+  const u32 key=94000+i*100+j;
+  assert(std::memcmp(groups[key].data(),bbsc_world_altars[i].entry.record.data()+125*j,125)==0);
+  assert(own_kept[key]==personal_altars.at(key));
+ }
+ assert(groups[94000][0]==0&&groups[94300][0]==29); // own cup hidden, host cup visible
+ session=4;assert(BbscWorldApplyAltars(map)); // joining events are fenced too
+ assert(BbscWorldProtectAltar(94000000,32)&&BbscWorldProtectAltar(94605999,1));
+ assert(!BbscWorldProtectAltar(9020,1)); // local native altar selector is still writable
+ session=3;groups[94000][0]=0xAA;assert(BbscWorldApplyAltars(map)&&groups[94000][0]==0xAA);
+ session=6;bbsc_world_catalog_ready=false;assert(!BbscWorldApplyAltars(map));
+ // Host capture is driven by native writes/load changes. Timer retransmission
+ // keeps the revision and does not reread the seven rituals.
+ session=3;bbsc_world_altar_world=bbsc_world_presence_local.world;
+ for(u32 i=0;i<7;++i)for(u32 j=0;j<6;++j)groups[94000+i*100+j]={};
+ for(u32 j=0;j<6;++j)groups[94300+j]=before.at(94300+j);
+ bbsc_world_altars_dirty=true;TickBbscWorldAltars();
+ const auto revision=bbsc_world_altar_revision;const auto reads=getter_slots.size();const auto sent=sends;
+ now+=2000;TickBbscWorldAltars();assert(sends==sent+7&&getter_slots.size()==reads&&bbsc_world_altar_revision==revision);
+ QueueBbscWorldAltarWrite(94300000,1,0);TickBbscWorldAltars();
+ assert(getter_slots.size()>reads&&bbsc_world_altar_revision==revision); // unchanged native write
+ groups[94000][1]=1;QueueBbscWorldAltarWrite(94000008,1,1);TickBbscWorldAltars();
+ assert(bbsc_world_altar_revision==revision+1);
+ const auto read_after=getter_slots.size();++bbsc_world_native_load;TickBbscWorldAltars();
+ assert(getter_slots.size()>read_after); // a new backing flag table needs a fresh capture
  VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
 '''
@@ -125,7 +178,7 @@ int main(){
 def main():
     section=SOURCE[SOURCE.index('struct BbscWorldAltar {'):SOURCE.index('struct BbscWorldState {')]
     state=SOURCE[SOURCE.index('struct BbscWorldState {'):SOURCE.index('std::map<World::Scope,BbscWorldState>')]
-    code=PREFIX+section+state+function('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+MAIN
+    code=PREFIX+section+state+function('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+function('void TickBbscWorldAltars()')+MAIN
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-world-altars-') as tmp:
         cpp=Path(tmp)/'altars.cpp';exe=Path(tmp)/'altars.exe';cpp.write_text(code,encoding='utf-8')

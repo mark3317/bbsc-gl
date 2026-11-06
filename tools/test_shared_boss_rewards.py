@@ -42,6 +42,12 @@ assert len(defeats) == len(bosses) == 19
 bbfiles.GAME = os.environ['BB_GAME']
 _, _, data, rows = param.load('ItemLotParam')
 _, _, goods_data, goods_rows = param.load('EquipParamGoods')
+shop_l, _, shop_d, shop_rows = param.load('ShopLineupParam')
+for shop in [100008,110008,120008,130008,140008]:
+    offer=param.row_values(shop_l,shop_d,shop_rows[shop])
+    assert (offer['equipId'],offer['value'],offer['qwcId'],offer['sellQuantity'])==(7000,2500,5000,-1)
+assert struct.unpack_from('<i', data, rows[80000000]+0x80)[0]==5000
+
 for (event, _, first, _), defeat in zip(bosses, defeats):
     name = f'm{event // 100000 % 100:02d}_{event // 10000 % 10:02d}_00_00'
     instructions = dict(emevd.Emevd(f'{bbfiles.GAME}/event/{name}.emevd.dcx').events)[event]
@@ -142,6 +148,15 @@ code += fun('void NoteBbscLedgerWindow(u64 caller_offset, u32 type, u32 id, s32 
 code += fun('bool BbscSharedBossDefeated(size_t index, const std::vector<u32>& flags,\n        const std::map<u32, std::array<u8, BbscWorldGroupBytes>>& groups)')
 code += fun('bool BbscBossRewardPersistentItem(u64 row)')
 code += fun('void MarkBbscBossRewardAccounted(s64 event)')
+code += decl(r'constexpr std::array<u16, 130> BbscDreamShopUnlockFlags\{.*?\};')
+code += r'''
+constexpr std::array<u32,2> BbscDreamStateKeys{5,6};
+struct {u64 held=0;std::array<std::array<u8,125>,2> own{},written{};} bbsc_dream_own;
+std::map<u32,std::array<u8,125>> bbsc_own_world;bool bbsc_own_world_dirty=false;
+'''
+code += 'constexpr u32 BbscDreamSoldGroup=70009;\n'
+code += fun('size_t KeepBbscOwnDreamShopFlags(size_t index, u8* live)')
+code += fun('void RestoreBbscRewardShopReceipts(u64 row)')
 code += fun('bool ReconcileBbscUniqueChaliceRewards(const std::vector<u32>& flags, u64 manager)')
 code += fun('bool ReconcileBbscSharedBossRewards(const std::vector<u32>& flags,\n        const std::map<u32, std::array<u8, BbscWorldGroupBytes>>& groups)')
 code += fun('void CollectBbscOwnBossRewardVictories(std::map<u32, std::array<u8, BbscWorldGroupBytes>>& victories)')
@@ -186,6 +201,7 @@ void SetBbscLedgerFlag(u32 f,u8 v){if(v)flags.insert(f);else flags.erase(f);}
 void PS4_SYSV_ABI NativeSet(u64,u32 f,u8 on){if(on)flags.insert(f);else flags.erase(f);}
 void reset(){bbsc_boss_reward_given.clear();bbsc_boss_reward_queue.clear();bbsc_progress_slot.reset();guest=false;guest_ready=true;bbsc_reward_check_pending=true;bbsc_reward_check_complete=false;bbsc_pending_work=0;bbsc_progress_backed_up=false;backup_ok=true;bbsc_progress_host_flags.clear();bbsc_progress_groups.clear();bag.clear();storage.clear();flags.clear();bbsc_ledger_lots.clear();
  std::filesystem::remove("ledger.bin");bbsc_ledger.clear();bbsc_ledger_host_counts.clear();bbsc_ledger_trip.clear();bbsc_ledger_retro.clear();
+ bbsc_dream_own={};bbsc_own_world.clear();bbsc_own_world_dirty=false;
  calls=writes=0;fail=fake_window=false;write_ok=true;bbsc_ledger_dirty=false;
  bbsc_ledger_slot=Slot{};active=Slot{};bbsc_ledger_home_ready=true;global.fill(0);
  bbsc_ledger_home_generation=1;bbsc_load_generation=1;
@@ -267,6 +283,35 @@ code += r'''
  assert(ReconcileBbscSharedBossRewards({3400,3401,3402,3403},{}));assert(calls==0);
  // Ordinary consumables stay excluded even for a new shared victory.
  reset();bbsc_progress_host_flags={9452};assert(MergeBbscSharedProgress("consumable").first==1&&calls==0);
+ // Lost shop unlock with an already owned cup: host/guest, bag/storage/journal.
+ // Native PARAM ties Ritual Blood1 at2500/unlimited to the cup's get flag5000.
+ for(bool visitor:{false,true})for(int proof=0;proof<3;++proof){
+  reset();guest=visitor;bbsc_progress_host_flags={9453};
+  bbsc_dream_own.held=1;bbsc_dream_own.own[0][1]=0x20;
+  bbsc_own_world[5][1]=0x20;
+  if(proof==0)bag[0x40000000u|6109u]=1;
+  if(proof==1)storage[0x40000000u|6109u]=1;
+  if(proof==2)NoteBbscLedgerLot(80000000,0);
+  ProcessBbscRewardCheck();assert(calls==0&&flags.contains(5000));
+  assert((bbsc_dream_own.own[0][0]&0x80)&&bbsc_dream_own.own[0][1]==0x20);
+  assert((bbsc_own_world[5][0]&0x80)&&bbsc_own_world[5][1]==0x20);
+  assert(!flags.contains(5005)&&!flags.contains(6660));
+  std::array<u8,125> host{};host[0]=0x04; // unrelated host-only unlock
+  KeepBbscOwnDreamShopFlags(0,host.data());
+  assert((host[0]&0x80)&&!(host[0]&0x04));
+  RequestBbscRewardCheck();ProcessBbscRewardCheck();assert(calls==0);
+ }
+ // Ownership alone without a victory never opens stock; failed grant never opens it.
+ reset();bag[0x40000000u|6109u]=1;assert(ReconcileBbscSharedBossRewards({},{}));
+ assert(!flags.contains(5000)&&calls==0);
+ reset();fail=true;assert(!ReconcileBbscSharedBossRewards({9453},{}));assert(!flags.contains(5000));
+ // The same repair applies to earned native chalice shop gates (e.g. Blood2/5005).
+ for(const auto& cup:BbscUniqueChaliceRewards){
+  reset();NoteBbscLedgerLot(cup.lot,0);
+  assert(ReconcileBbscSharedBossRewards({cup.flag},{}));assert(calls==0);
+  if(std::ranges::find(BbscDreamShopUnlockFlags,cup.flag)!=BbscDreamShopUnlockFlags.end())
+   assert(flags.contains(cup.flag));
+ }
  // Upgrade recovery: already merged Blood-starved Beast, stale native receipt, no chalice.
  reset();flags.insert(9453);flags.insert(5000);RecoverBbscOwnBossRewards();
  assert(calls==1&&bag[0x40000000u|6109u]==1&&flags.contains(5000));

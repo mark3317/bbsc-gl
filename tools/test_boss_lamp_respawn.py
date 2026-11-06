@@ -58,6 +58,10 @@ bool IsUsablePackedMap(u32 p){return p!=0;}
 u32 BbscMapArea(u32 p){return p>>24;}
 bool BbscChaliceArrivalReady(u32){return true;}
 bool BbscChaliceNeedsLoad(u32){return false;}
+bool independent=false;
+bool BbscIndependentActive(){return independent;}
+bool shared_checkpoint=false,shared_here=true;
+bool ReadBbscSharedLampCheckpoint(s32&,bool&){return shared_checkpoint;}
 std::atomic<u32> bbsc_load_generation{7};
 s32 bbsc_encounter_lamp=-1;
 u32 bbsc_encounter_map=0,bbsc_encounter_load_generation=0;
@@ -69,7 +73,8 @@ bool resolve=true;
 std::optional<BbscTransform> ResolveLampPoint(s32 p){
  if(!resolve || p==-1)return {}; BbscTransform t;t.position[0]=static_cast<float>(p);return t;
 }
-std::optional<BbscTransform> ResolveLastLampTransform(){return ResolveLampPoint(2412950);}
+s32 own_lamp=2412950;
+std::optional<BbscTransform> ResolveLastLampTransform(){return shared_here?ResolveLampPoint(own_lamp):std::nullopt;}
 std::optional<BbscTransform> ResolveNearestLoadedLamp(const std::array<float,4>&,s32*){return {};}
 u64 FindLivingPartnerCharacter(){return 0;}
 std::optional<BbscTransform> ReadCharacterTransform(u64){return {};}
@@ -85,6 +90,10 @@ for sig in ['u32 BbscLampPointMap(s32 point)', 'bool BbscLampBlockLoaded(s32 poi
 # native revive boundary. Native revive/death accounting itself is unchanged.
 selection = function('bool BbscRespawnInPlace(std::string_view why)')
 selection = selection[:selection.index('    // Blood echoes are NOT dropped here:')]
+negative = os.environ.get('BBSC_TEST_BOSS_SHARED_OLD') == '1'
+if negative:
+    selection = selection.replace('target = ResolveBbscDefeatedBossLamp(why);',
+        'target = shared_checkpoint ? ResolveLastLampTransform() : ResolveBbscDefeatedBossLamp(why);')
 code += '\n' + selection + 'selected=target->position[0]; selected_where=where; return true;\n}\n'
 code += r'''
 void bars(s32 name){
@@ -112,6 +121,36 @@ int main(){
   assert(selected==2412950); // ordinary deaths still use the previous lamp
  }
  assert(!ResolveBbscDefeatedBossLamp("wipe"));
+ // Independent guests never borrow a different host lamp or partner position.
+ // Each participant retains its selected lamp even with the host elsewhere.
+ independent=true;own_lamp=2412951;
+ for(bool guest:{false,true})for(u32 host_map:{0x18010000u,0x15000000u}){
+  mem[global+0x1592]=guest?0:1;bbsc_follow_latest.packed_map=host_map;
+  bbsc_follow_latest.lamp_point=2412950;
+  assert(BbscRespawnInPlace("no boss fight")&&selected==own_lamp);
+  assert(BbscRespawnInPlace("boss killed")&&selected==2412952);
+  own_lamp=-1;assert(!BbscRespawnInPlace("no boss fight"));own_lamp=2412951;
+ }
+ // Victory always uses the encounter's boss lamp for both roles, including
+ // when the shared checkpoint is in a different (possibly resident) map.
+ shared_checkpoint=true;
+ for(bool guest:{false,true}){
+  mem[global+0x1592]=guest?0:1;
+  for(bool here:{false,true}){
+   shared_here=here;
+   assert(BbscRespawnInPlace("boss killed")&&selected==2412952&&selected_where=="defeated boss lamp");
+   if(here)assert(BbscRespawnInPlace("no boss fight")&&selected==own_lamp&&selected_where=="last lamp");
+   else assert(!BbscRespawnInPlace("no boss fight"));
+   // Stale kill/encounter never authorizes a boss-lamp teleport.
+   bbsc_boss_killed_ms=0;
+   if(here)assert(BbscRespawnInPlace("boss killed")&&selected==own_lamp);
+   else assert(!BbscRespawnInPlace("boss killed"));
+   bbsc_boss_killed_ms=200;
+  }
+ }
+ shared_here=true;
+ shared_checkpoint=false;
+ independent=false;own_lamp=2412950;
  bbsc_boss_killed_ms=0;assert(!ResolveBbscDefeatedBossLamp("boss killed"));
  bbsc_boss_killed_ms=99;assert(!ResolveBbscDefeatedBossLamp("boss killed"));
  bbsc_boss_killed_ms=200;
@@ -133,6 +172,15 @@ with tempfile.TemporaryDirectory() as directory:
     (path / 'test.cpp').write_text(code, encoding='utf-8')
     subprocess.run([os.environ.get('CXX', 'C:/msys64/clang64/bin/clang++.exe'),
                     '-std=c++20', str(path / 'test.cpp'), '-o', str(path / 'test.exe')], check=True)
-    subprocess.run([str(path / 'test.exe')], check=True)
+    env = dict(os.environ)
+    env['PATH'] = str(Path(os.environ.get('CXX', 'C:/msys64/clang64/bin/clang++.exe')).parent)+os.pathsep+env.get('PATH','')
+    result = subprocess.run([str(path / 'test.exe')], env=env)
+    if negative:
+        assert result.returncode != 0, 'Shared-first regression passed boss-lamp priority checks'
+    else:
+        result.check_returncode()
+if negative:
+    print('PASS negative control: shared-first regression FAILS boss-lamp priority')
+    raise SystemExit(0)
 print('Boss lamp: 19 original destinations/all phases, dead HUD, host/guest priority, '
       'ordinary death, stale kill/load/map, unavailable point and unknown/chalice guards PASS')

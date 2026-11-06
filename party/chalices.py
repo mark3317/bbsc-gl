@@ -11,6 +11,7 @@ import copy
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -41,6 +42,12 @@ _locks_guard = threading.Lock()
 
 
 def integer(value, *, minimum=0, maximum=(1 << 63)-1):
+    # The native JSON DOM also emits integer-valued doubles. Never truncate a
+    # fractional value or accept an imprecise floating-point 64-bit identity.
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer() or abs(value) > (1 << 53):
+            raise ValueError('Invalid channel integer')
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         raise ValueError('Invalid channel integer')
     number = int(value)
@@ -179,7 +186,11 @@ class Channels:
         fields.setdefault('WishMaterialList', [])
         fields.setdefault('UnlockFlagList', [])
         for key in ('ShareLevel', 'Status', 'RitualLevel', 'HolyGrailTypeId', 'FixedOrGeneral', 'SubFeatureFlag', 'TurnoutLevel'):
-            fields[key] = integer(fields[key], maximum=0xffffffff)
+            # Retail upload serializes these three fields as signed int32;
+            # CharaId below is uint64, independently of the channel ID range.
+            signed = key in ('ShareLevel', 'Status', 'RitualLevel')
+            fields[key] = integer(fields[key], minimum=-(1 << 31) if signed else 0,
+                                  maximum=(1 << 31)-1 if signed else 0xffffffff)
         if not all(isinstance(fields[k], list) for k in ('WishMaterialList', 'UnlockFlagList')):
             raise ValueError('Invalid channel list')
         if len(json.dumps(fields)) > 16384:
@@ -222,7 +233,8 @@ class Channels:
         with self.transaction():
             channels = self.load()
             if name == 'upload':
-                entry = self.create(channels, body, user, integer(body.get('CharaId', 0)))
+                entry = self.create(channels, body, user,
+                                    integer(body.get('CharaId', 0), maximum=(1 << 64)-1))
                 self.save(channels)
                 return reply('ChannelUploadResponse', ChannelId=entry['ChannelId'], DiscernmentWord=entry['DiscernmentWord'])
             if name == 'share':

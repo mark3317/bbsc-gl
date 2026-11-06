@@ -62,15 +62,17 @@ inline bool ValidMount(const Mount& mount) {
     }
     return any;
 }
-// The nine conditional travel entries in t210060..t210120 (the Hall is unconditional).
-inline constexpr std::array<std::uint32_t, 9> LampUnlockFlags{
-    12907830, 12907850, 12907870, 12907890, 12907910, 12907930, 12907950, 12907970, 12907990};
+// Ten native lamp discoveries; the Hall is an unconditional menu entry but its
+// activation still belongs to the mounted ritual, never another personal cup.
+inline constexpr std::array<std::uint32_t, 10> LampUnlockFlags{
+    12907810, 12907830, 12907850, 12907870, 12907890, 12907910, 12907930, 12907950, 12907970, 12907990};
 
 constexpr bool TouchesLampUnlock(std::uint32_t first, std::uint32_t width = 1) {
-    if (first > LampUnlockFlags.back() || std::uint64_t{first} + width <= LampUnlockFlags.front())
+    if (first > LampUnlockFlags.back() || std::uint64_t{first} + width <= LampUnlockFlags.front()-10)
         return false;
     for (const auto flag : LampUnlockFlags) {
         if (flag >= first && flag - first < width) return true;
+        if (flag-10 >= first && flag-10-first < width) return true;
     }
     return false;
 }
@@ -82,7 +84,7 @@ inline void CopyHostFlagGroup(std::uint32_t key, std::uint8_t* live,
         return;
     }
     auto merged = host;
-    for (const auto flag : LampUnlockFlags) {
+    for (const auto unlock : LampUnlockFlags) for (const auto flag : {unlock-10,unlock}) {
         const auto byte = (flag % 1000) / 8;
         const auto mask = 0x80u >> (flag % 8);
         merged[byte] = (host[byte] & ~mask) | (live[byte] & mask);
