@@ -31,6 +31,19 @@ def root_form(variant=0):
 
 
 class ChannelTests(unittest.TestCase):
+    def test_native_numeric_upload_contract(self):
+        # Retail serializer 01E9B857/01E9BC03/01E9BE23 sign-extends int32;
+        # CharaId at01E9BB43 is uint64. Exercise the HTTP JSON number forms.
+        body = dict(root_form(9), CharaId=(1 << 64)-1, Status=-1,
+                    ShareLevel=-1, RitualLevel=-1.0, FormDataVersion=0.0)
+        result = self.call('upload', body)
+        stored = self.channels.load()[str(result['ChannelId'])]
+        self.assertEqual(stored['CreateCharaId'], (1 << 64)-1)
+        self.assertEqual(stored['ShareLevel'], -1)
+        for bad in (True, 0.5, float('nan'), float('inf'), float(1 << 64)):
+            with self.assertRaises(ValueError):
+                self.call('upload', dict(body, CharaId=bad))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -161,6 +174,18 @@ class ChannelTests(unittest.TestCase):
 
 
 class ChannelHTTPTests(DynamicHelpers, unittest.TestCase):
+    def test_native_upload_numbers_over_http(self):
+        node = self.node('A')
+        bridge = Compatibility(node).start()
+        self.addCleanup(bridge.close)
+        body = dict(root_form(8), CharaId=(1 << 64)-1, Status=-1,
+                    ShareLevel=-1, RitualLevel=1.0, FormDataVersion=0.0)
+        result = self.request(bridge, 'upload', body)
+        found = self.request(bridge, 'get_details_info',
+                             dict(ChannelIdList=[result['ChannelId']]))['ChannelList'][0]
+        self.assertEqual(found['FormData'], body['FormData'])
+        self.assertEqual(found['CreateCharaId'], body['CharaId'])
+
     def request(self, bridge, path, body):
         request = urllib.request.Request(f'http://127.0.0.1:{bridge.http_port}/channel/{path}',
                                          json.dumps(body).encode(), {'Content-Type': 'application/json'})

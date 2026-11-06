@@ -1,6 +1,6 @@
 """In-client, loopback-only native APIs. No old server implementation is launched/imported."""
 from __future__ import annotations
-import base64,copy,hashlib,http.server,json,os,queue,re,secrets,select,socket,socketserver,struct,threading,time,uuid
+import base64,copy,hashlib,http.server,json,os,queue,re,secrets,select,socket,socketserver,struct,threading,time,uuid,logging
 from pathlib import Path
 from engine import Engine,canonical
 from protobuf import encode,decode
@@ -202,6 +202,11 @@ class Compatibility:
                     self.send_response(200); self.send_header('Content-Type',mime); self.send_header('Content-Length',str(len(content)))
                     self.end_headers(); self.wfile.write(content)
                 except (ValueError,KeyError,TimeoutError) as ex:
+                    if self.path.split('?')[0].startswith('/channel/'):
+                        # Preserve the rejection cause in the normal launcher
+                        # log, without request bodies, account IDs or tokens.
+                        logging.getLogger(__name__).warning('Chalice request rejected: %s: %s',
+                            self.path.split('?')[0], str(ex))
                     outer.log('http_reject',path=self.path,reason=str(ex)); self.send_error(409)
                 except (OSError,EOFError): self.close_connection=True
         self.http=PrivateHTTPServer(('127.0.0.1',0),HTTP)
@@ -394,7 +399,9 @@ class Compatibility:
                 'cur_members':len(room['members']),'details':details}
     def np_command(self,cmd,r):
         s=self.state(); who=self.e.id
-        if cmd==0: return {'user_id':account(who),'friends':[{'npid':self.native_names[p],'online':True} for p in s['roster'] if p!=who]}
+        # An idle durable roster can retain former peers after discovery has
+        # removed their native identities. They must not reject local login.
+        if cmd==0: return {'user_id':account(who),'friends':[{'npid':self.native_names[p],'online':True} for p in s['roster'] if p!=who and p in self.native_names]}
         if cmd==12: return {'matching2_enabled':True}
         if cmd==39: return {'user_id':account(who),'npid':self.native_names[who],'token':self.token}
         if cmd==41:

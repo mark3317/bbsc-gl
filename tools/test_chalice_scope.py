@@ -100,7 +100,11 @@ bool BbscWarpTogetherEnabled() { return true; }
 bool quitting=false; bool BbscQuitInProgress(){return quitting;}
 bool BbscIndependentActive(){return false;}
 bool BbscWorldTravelInFlight(){return false;}
-bool BbscWorldMountFor(u32,Chalice::Mount&){return false;}
+std::optional<Chalice::Mount> selected_host_mount;
+bool BbscWorldMountFor(u32 map,Chalice::Mount& out){
+    if(!selected_host_mount)return false;
+    out=*selected_host_mount;out.map=map;return Chalice::ValidMount(out);
+}
 bool BbscWorldHasSnapshot(u32){return false;}
 bool BbscWorldProtectAltar(u32,u32){return false;}
 void QueueBbscWorldAltarWrite(u32,u32,u32){}
@@ -157,7 +161,7 @@ int main() {
         live.fill(original); host.fill(static_cast<u8>(~original));
         Chalice::CopyHostFlagGroup(12907,live.data(),host);
         for (u32 bit=0;bit<1000;++bit) {
-            const bool lamp=bit>=830 && bit<=990 && (bit-830)%20==0;
+            const bool lamp=bit>=800 && bit<=990 && (bit-800)%10==0;
             const u8 expected=lamp ? original : host[bit/8];
             assert(((live[bit/8]^expected)&(0x80u>>(bit%8)))==0);
         }
@@ -440,7 +444,34 @@ int main() {
         assert(!BbscChaliceJoinNeedsFollow());
         assert((ReadBbscChaliceKey()==root_key && selected==std::array<bool,7>{}));
     }
-    puts("chalice: direct native summon, no cross-world teleport, one transition owner, native capture/injection, seamless Dream entry, altar guards, same-map revisions, cancellation/cleanup, replay/malformed packets, ordinary maps PASS");
+    // Independent native altar preparation happens BEFORE the layer request
+    // calls PrepareBbscChaliceLoad. Ignore a different old armed cup and the
+    // native personal cup already decoded into registers/stack.
+    current=0x15000000;session=6;bbsc_join_teleport_done=true;
+    bbsc_connect_first_map=0;bbsc_connect_first_placement.reset();
+    selected_host_mount=mount;selected_host_mount->key.channel=777;
+    selected_host_mount->revision=77;selected_host_mount->parts[0]=9876;
+    const auto personal_flags=memory;const auto personal_selected=selected;
+    guest.r13=0x1d000000;guest.rcx=123;guest.rdx=0x1d000100;
+    arrays[guest.rbp-0x78].fill(4321);
+    BbscChaliceContextHook(0,&guest);
+    assert(guest.rcx==777&&guest.rdx==mount.layout_map);
+    assert(arrays[guest.rbp-0x78]==selected_host_mount->parts);
+    assert(bbsc_chalice_borrowed.armed.key.channel==777);
+    assert(bbsc_chalice_borrowed.applied_revision==77&&bbsc_chalice_borrowed.pending);
+    assert(selected==personal_selected&&memory[0x50010]==personal_flags.at(0x50010));
+    // The host can arrive after a resident guest. Its native initializer must
+    // commit the selected catalogue ritual too, not the stale decoded input.
+    session=3;guest.rcx=123;guest.rdx=0x1d000100;
+    arrays[guest.rbp-0x78].fill(4321);
+    BbscChaliceContextHook(0,&guest);
+    assert(guest.rcx==777&&guest.rdx==mount.layout_map);
+    assert(arrays[guest.rbp-0x78]==selected_host_mount->parts);
+    assert(bbsc_chalice_native.key.channel==777);
+    assert(bbsc_chalice_native.parts==selected_host_mount->parts);
+    assert(bbsc_chalice_native.revision==77);
+    selected_host_mount.reset();
+    puts("chalice: direct native summon, host altar before layer preparation, no cross-world teleport, one transition owner, native capture/injection, seamless Dream entry, altar guards, same-map revisions, cancellation/cleanup, replay/malformed packets, ordinary maps PASS");
 }
 '''
 

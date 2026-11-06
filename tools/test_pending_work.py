@@ -100,6 +100,7 @@ size_t replays=0;
 void Replay(u64,u32,u32,u64,u32,u32,u64,u64,u64) { ++replays; }
 const std::array<u64,1> BbscCutsceneRequestOffsets{reinterpret_cast<u64>(&Replay)-1};
 bool BbscCutscenesEnabled() { return true; }
+bool QueueBbscRomNativeTransition(s32) { return false; }
 """
 cutscenes += function("void OnBbscCutscenePacket(const void* data, std::size_t size)")
 cutscenes += function("void TickBbscCutsceneReplay()")

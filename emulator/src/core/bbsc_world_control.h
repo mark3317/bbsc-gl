@@ -26,13 +26,26 @@ inline Scope ScopeOf(const Presence& p) {
     // All mounted dungeons use m29_00 flags; key+ritual distinguish their worlds.
     return {p.world,Chalice::IsMap(p.map)?0x1D000000u:p.map,p.dungeon,p.ritual};
 }
+// Destination intent never changes the namespace of CURRENT-map events.
+// Use its ritual only when it names the map being queried, in the same world.
+inline Scope ScopeForMap(const Scope& local,u32 map,const std::optional<Scope>& requested) {
+    const u32 target=Chalice::IsMap(map)?0x1D000000u:map;
+    Scope scope=local;
+    if(requested && requested->world==local.world &&
+       (Chalice::IsMap(requested->map)?0x1D000000u:requested->map)==target)
+        scope=*requested;
+    scope.map=target;
+    if(!Chalice::IsMap(target)){scope.dungeon={};scope.ritual=0;}
+    return scope;
+}
 inline bool Valid(const Scope& s) {
     if (!Valid(s.world) || !ValidMap(s.map)) return false;
     return Chalice::IsMap(s.map) ? Chalice::Valid(s.dungeon) && s.ritual != 0 :
                                  s.dungeon == Chalice::Key{} && s.ritual == 0;
 }
 // Wire value3 (Enemies) is reserved for old builds; no enemy payload is produced or applied.
-enum class ControlKind : u8 { Owner=1, Flags=2, Enemies=3, Request=4, Altar=5, AltarRequest=6, AltarProgress=7 };
+enum class ControlKind : u8 { Owner=1, Flags=2, Enemies=3, Request=4, Altar=5, AltarRequest=6, AltarProgress=7,
+    NativeInitialRequest=8, NativeInitialReady=9, Lamps=10, BlockOffer=11, BlockLease=12, LampCheckpoint=13 };
 #pragma pack(push,1)
 struct Control {
     char magic[4]={'S','H','A','D'};
@@ -51,7 +64,7 @@ static_assert(sizeof(Control)==84);
 inline bool Valid(const Control& c) {
     return !std::memcmp(c.magic,"SHAD",4) && c.type==Protocol::WorldControl &&
         c.version==2 && !c.reserved && !c.padding && Valid(c.scope) &&
-        c.kind>=ControlKind::Owner && c.kind<=ControlKind::AltarProgress &&
+        c.kind>=ControlKind::Owner && c.kind<=ControlKind::LampCheckpoint &&
         c.parts>0 && c.parts<=32 && c.part<c.parts && c.size<=2048 &&
         (c.kind!=ControlKind::Owner || (c.parts==1 && c.part==0 && c.size==0 && c.epoch!=0));
 }

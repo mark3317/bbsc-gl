@@ -9,6 +9,7 @@ def fun(sig):
 prefix=r'''
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cassert>
 #include <cstdint>
@@ -30,6 +31,7 @@ bool HasMemoryAccess(u64 p,size_t,MemoryProt){++queries;return p>0x10000;}
 template<class T>T ReadValue(u64 p,size_t off){T v{};memcpy(&v,(void*)(p+off),sizeof(v));return v;}
 template<class T>bool WriteValue(u64 p,size_t off,T v){memcpy((void*)(p+off),&v,sizeof(v));return true;}
 bool IsBbscPersonalMapEvent(s64 e){return e==7;}
+bool IsBbscChaliceBossRewardEvent(s64){return false;}
 constexpr size_t BbscWorldGroupBytes=125;
 std::mutex bbsc_progress_mutex;
 std::vector<u32> bbsc_progress_host_flags;
@@ -74,7 +76,7 @@ int main(){
  for(int i=0;i<1000;++i)LocalizeBbscQuestEvent(instance);
  assert(queries-before==0); // no full-directory or write validation on a negative hit
  WriteValue(instance,0xB0,instructions+32);WriteValue<s64>(ev,0,9);
- LocalizeBbscQuestEvent(instance);assert(bbsc_quest_indexes.empty());
+ LocalizeBbscQuestEvent(instance);assert(!bbsc_quest_indexes.empty());
  LocalizeBbscQuestEvent(instance);assert(ReadValue<u8>(instance,0x78)==1); // reused event no stale permission
  // Reload / same address, changed table: clear before new map events.
  bbsc_quest_indexes.clear();bbsc_quest_instances.clear();WriteValue<s64>(ev,0,7);
@@ -90,7 +92,7 @@ if npc_only:
  main = 'int main(){\n' + main[main.index(' alignas(16)'):]
 with tempfile.TemporaryDirectory(prefix='bbsc-runtime-perf-') as d:
  p=Path(d);cpp=p/'t.cpp';exe=p/'t.exe'
- cpp.write_text(prefix+fun('u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)')+fun('std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when)')+index+main,encoding='utf-8')
+ cpp.write_text(prefix+(fun('u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)')+fun('std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when)') if not npc_only else '')+index+main,encoding='utf-8')
  subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-O2',str(cpp),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True,timeout=15)
 if not npc_only:

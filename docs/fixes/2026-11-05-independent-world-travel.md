@@ -1,3 +1,223 @@
+## 05.11.2026 — guest altar host glyph/layers, SOURCE ready; gameplay OPEN
+
+User reports the installed22:19 native menu omits Remove Chalice but still
+shows PERSONAL glyph/layers. Collected both profiles under parent
+out/coop-dev/runs/altar-host-content-20261105/pc (2 logs, warnings0).
+P1 guest run222014 at22:21:28.145 /39.551 /50.292: slot1=native_slot1,
+host_channel0x81fce924a8ab2, personal_state5, current=true, removal omitted.
+Thus old branch/Remove hooks worked; menu CONTENT was not switched to host.
+The previous menu SOURCE-ready entry does not establish host glyph/layers.
+
+Original1.09: native79 captures selected PERSONAL helper+108 at01B661CF,
+and its async payload carries that same helper into01B66330/01B66EF0.
+Added a separate native helper per altar with stable process lifetime (7 total),
+constructed by the ORIGINAL altar helper constructor01AA3110 (as at01AB457C).
+Original01AA6860 decodes it from the atomically installed HOST backing flags:
+channel, seed, parts and persisted glyph via native getters. No memcpy of owning
+pointers, custom menu, guest personal helper/channel replacement or asset edits.
+Native73 establishes the scoped selection before79 without changing its command.
+Native79's pointer capture and selected-helper accessor now borrow that helper;
+the original promise, rendering, layer results and Remove-only omission remain.
+Refresh occurs on first read / changed record, load or world, not timer polling.
+Context remains world/load/slot/ritual-bound; stale travel remains rejected.
+Native caches/refs are owned by those seven native helpers, kept until process
+exit because async menu callbacks retain raw pointers across ESD/map lifetimes.
+
+PASS: new production allocated-memory helper ABI/capture/getter fixture, distinct
+host vs personal channel/glyph/layer metadata for all7 slots, native73 ordering,
+record refresh, stale world/load/ritual/catalog and host/wrong-slot exclusions;
+REAL Windows capture and return-epilogue trampolines (including native RET).
+Original1.09 constructor/decoder arguments, helper size and async pointer chain
+PASS. Existing production travel and native branch/Remove trampoline fixtures
+PASS. Full BBSC_MOD syntax exit0. No real save/live process/game file writes.
+Fixture native decoder is a stand-in; original code checks do NOT replace an
+in-game appearance/travel check. DLL NOT built/deployed, both games still running.
+Gameplay OPEN: guest host glyph/layer list/locks, selection into the host cup,
+personal altars on return home; also empty guest personal slot vs occupied host.
+
+## 05.11.2026 — host lamps through general shared progress, SOURCE ready
+
+User clarifies HOST list is incomplete too: guests must receive every host lamp
+and retain them through the ordinary shared story merge. Removed the separate
+ordinary-lamp mask, read/apply code, catalog comparison and transmission. Altar
+wire retains a zero reserved word for layout compatibility; incoming old masks
+are ignored. Chalice layer availability remains in the native host ritual view.
+
+General host kind1 block snapshots now also merge eligible progress into the
+co-op guest live flag table on the game thread (existing shared-progress tick,
+complete host blocks, no writes while loading). The same general exclusions as
+the home merge apply. The existing trip journal/home merge collects these same
+host blocks, including unvisited areas; there is no destination allowlist here.
+Ordinary independent map-state application preserves eligible existing kind1
+progress for BOTH roles, so a resident guest's older snapshot cannot erase
+already-open host lamps/story. Runtime kinds6/7 and scoped m29 copy are unchanged.
+
+PASS: production shared-progress policy/live byte merge for all44 base/DLC
+headstone destinations, older/empty input, encounter/NPC/ritual exclusions;
+production altar fixture: ordinary flags untouched by altar application,
+older peer state cannot relock host progress; native bootstrap fixture and
+full BBSC_MOD syntax exit0 (existing unused-argument warning). Allocated fixture
+memory only, no real save/process/game-asset edits. No DLL build/deploy/restart.
+Gameplay remains OPEN for both roles: complete headstone menus before/after
+independent travel, new lamp activation and persistence through normal play.
+Earlier diagnosis below is historical; it did not establish live overwrite order.
+
+## 05.11.2026 — native guest altar menu restricted, SOURCE ready
+
+User requests correction through the original call rather than a custom menu.
+Kept zero-argument native command79/promise/ESD layer result; occupied guest
+slot0 uses the same normal altar path instead of short-ritual78. Host unchanged.
+Read-only1.09 confirms native79's async builder01B75280 chooses a ritual/search
+or layer screen using PERSONAL SprjHolygrail slot+364, even after host backing
+flags have been installed. Native01B66110 still uses its existing wait/promise.
+
+At01B75353 and its continuation01B74F4B only the CMP operand is redirected to a
+constant state4 observation; original CMP/Jcc and all original stack/async code
+execute. Selected native branches overwrite RAX before any other dereference.
+Personal ritual helper/channel/cache pointers are NOT overwritten or rebuilt.
+Thus existing native01B66330/01B66EF0 renders the ESD's original layer list,
+localized labels, locks, cancel and selection. The continuation cannot reopen
+the host ritual/search UI. No new renderer, custom list, synthetic ESD argument
+or incompatible78/79->41 switch. Raw/native altar flags and scoped travel still
+supply host ritual/destination; empty/missing host altars remain denied.
+
+The layer screen also unconditionally adds Remove Chalice. Native list::Add
+entry01B76150 skips ONLY caller01B67A7F (the removal row); returns original
+builder/RDI and leaves caller cleanup intact. Host and all layer/other-menu rows
+continue natively. Original rusru confirms200/262005 = "Убрать Чашу".
+Permission context is world/load/slot/ritual-specific and separate from unrelated
+ESD commands. Host ritual changes cannot restore mutation actions; stale altar
+or layer selections are rejected on BOTH halves of the travel request.
+
+Added bounded per-menu logs: requested/native slot, host channel, personal native
+state and current-catalog match, layer result and omission of removal row.
+PASS: production travel fixture including all7 altars, empty/missing view, host,
+world/load/ritual expiry and two-phase stale choice; NEW actual Windows trampoline
+fixture executing both CMP paths and exact removal caller against synthetic
+memory, native return ABI and untouched personal memory. Original ELF branch
+bytes/targets/RAX lifetimes/removal-call/return ABI PASS. Full BBSC_MOD syntax
+exit0 (existing warnings). No real save/process memory or game asset edits.
+DLL has NOT been rebuilt/deployed in this follow-up; installed21:54 build remains.
+Native menu appearance, selection and occupied host-cup travel need gameplay
+verification. Previous diagnostic-only entry below is historical for source status.
+
+## 05.11.2026 — native historical enemy admission, SOURCE ONLY
+
+Repeated user report: on entering an occupied map, previously killed enemies
+appear alive and inert. Native player FirstSync/CreateWait is not NPC initial
+state. Read-only original1.09 ELF establishes the missing separate path:
+0178C7EF calls01786360 during summon; native channel11 includes a CHR section
+(tag43485220/version15091700). Serializer0190E750 marks HP<=0 characters;
+loader0191BF6B invokes0190E8B0, which sets the native historical-removal reason
+and calls018C49F0. This differs from ordinary HP5 updates and proxy Kill018BF9A0.
+Retained native session travel never re-enters that initial CHR load path.
+
+Added explicit pre-event admission from the current resident map owner. Owner
+builds the ORIGINAL native11 packet with01786360 for the actual native member;
+visitor reads it from that member's native queue with01789200 and passes only
+its native CHR records to0190E8B0. All native block IDs/counts are preflighted
+before any application. Native game code owns death/removal and exclusions.
+No mod enemy cache, capture, custom NPC payload, HP writes, repeated Kill or
+model hiding. No initial-state claim for NPC positions/AI beyond this native
+historical-death path; existing native replication remains responsible there.
+
+Control8/9 carry request/correlation metadata ONLY, scoped to world/map/ritual,
+owner epoch and local load/request generation. Native packet fingerprint rejects
+old/unrelated queued data; no NPC state is retained. An explicit loading request
+may name the destination instead of its previous committed map; provider must
+actually reside in that destination. Different Playing maps are denied. Native
+send failure retries only while admission is pending; apply is once per load.
+No resident owner (including a departed stale lease) preserves first-map native
+admission. Existing presence simulation/routing permissions are not broadened.
+All participants need this source revision for the new request/reply metadata.
+
+PASS: allocated-memory production admission fixture (malformed/truncated data,
+all-block preflight, old request/epoch/load, loading destination, wrong-map denial,
+native send failure, once-only apply); original ELF serializer/dead-bit/handler
+ABI; production native authority/send fingerprint + original hook spans;
+pre-event bootstrap wait; world presence/routing; full BBSC_MOD syntax exit0.
+No DLL build, deploy/restart, game input, live memory writes or save changes.
+Gameplay remains OPEN: kill ordinary enemies before arrival, enter via lamp in
+both host/guest directions and repeat the trip; no live inert copies should
+remain, living enemies and personal rewards must continue working normally.
+Other active chats changed HEAD during this work (now813bfb1); no reset, pin
+update or mixed-worktree commit was performed.
+
+## 05.11.2026 — guest personal cups regression, SOURCE ready
+
+Fresh P1/P2 21:29 run shows personal Dream restoration during joining/guest
+states because the native loader's own-world byte was used as session identity.
+Fixed that decision; no personal Dream restoration while in the host Dream in
+state4/6. Native readiness now precedes Dream writes; state4 ->6 reinstalls the
+host view within the same load, and joining altar writes are protected.
+
+Native12107100 prepares a cup before the ESD layer request. The native loader
+hook now takes the selected host catalog mount immediately, replacing stale
+armed/personal loader input before committing channel/layout/parts/type/feature.
+Primary summons without an independent selection retain their fresh-claim path.
+
+Production restore/bootstrap/atomic-altars/travel/chalice fixtures PASS, including
+three different descriptors (personal decoded cup, old armed cup, selected host
+cup). Full MOD syntax exit0. No build/deploy/gameplay or live save/memory changes;
+coordinated pending build must include these changes. Gameplay remains OPEN.
+
+## 05.11.2026 — Central Yharnam departure delay, diagnosis / SOURCE logging only
+
+Latest main-install run: Player1/2 run_20261105_212953.log. Roles switched:
+P1 host, P2 guest after21:33. P2 request21:34:05.652 -> native event released
+21:34:05.703 (51ms) -> stage request21:34:09.731 (4.028s after release).
+P1 first request21:34:26.259 -> release21:34:26.261 (2ms) -> stage request
+21:34:30.385 (4.124s). P1 second request21:36:00.113 -> release21:36:00.115
+(2ms) -> stage request21:36:10.057 (9.942s). Thus the extra delay is AFTER
+preflight/release, not a multi-second destination-state wait. Relay samples in
+that interval show queue0/dropped0 and continuing exchange, not queue congestion.
+
+Read-only original m21_00 event12107000: EndIfClient, wait on its parameterized
+flag, native animation2004[14](player10000,101164), WaitSeconds(4.0), native
+warp2003[49]. Previous4s transitions fit that native sequence. Current logs do
+NOT timestamp visible animation start or prove which instruction consumed the
+extra~6s. Do not call the whole10s original animation or claim a proven root cause.
+
+Added bounded active-trip logs for native interpreter animation-command,
+WaitSeconds and warp-command entry with time since release. Idle instances are
+excluded; unchanged instruction does not log every frame. These are script
+progress, NOT proof of visible animation. No travel behavior/animation/wait edits.
+Production native travel fixture verifies observation leaves instructions and
+release timing unchanged PASS; full MOD syntax check PASS (exit0).
+No rebuild/deploy, process termination, game inputs, real-save/game-asset changes
+or live memory writes. Delay remains OPEN pending exact script-phase evidence.
+Prior NO BUILD was superseded by the separately requested21:29 build/install;
+this diagnosis does not replace binaries in running games.
+
+## 05.11.2026 — host Dream/altar admission, SOURCE ONLY
+
+User reports personal chalices visible/selectable in the host world and explicitly
+requires the HOST Dream, with NO one-second corrective polling. User then requests
+removal of the personal-Dream mode altogether. Removed DREAM_OWN default, switch,
+launcher setting/hint/translations and personal-service/event branches. The own
+Dream journal remains ONLY for restoring personal data on leaving the host world.
+
+Host altar records now install atomically (all42 backing groups preflighted)
+before Dream native event initialization, including native joining state4.
+Missing full host Dream/map/catalog holds initialization, rather than letting
+personal cups initialize. Native altar menu refreshes the host view or denies
+opening if unavailable. Complete new catalogs apply on game-thread receipt;
+replayed revisions do not reapply. Removed visitor timer writes. Host catalog
+capture is driven by native flag writes, loaded table/world changes and received
+ritual progress; unchanged writes do not advance revision. Existing timed packet
+retransmission repeats the retained revision for late join/loss, without rescanning
+rituals. Canonical host Dream map and service snapshots are sent even while host
+is elsewhere; arrival applies host map/services first, newest ritual records last.
+Personal reward/receipt protections and home restoration remain in place.
+
+PASS: production altar getters/atomic42-group replacement/event-driven capture
+and unchanged retransmit; actual ESD altar menu/readiness/travel; native pre-event
+Dream barrier (state4, missing canonical state, one-time admission); chalice scope;
+shared finale runtime; full BBSC_MOD syntax check exit0; generated RU text check.
+Fixtures use allocated memory only. No DLL build, deploy/restart, game inputs,
+real save changes, game asset changes or live memory writes. Previous NO BUILD
+instruction persists. Installed25405ed unchanged; gameplay confirmation OPEN.
+
 ## 05.11.2026 — player lamp-reunion recreation, SOURCE ONLY
 
 User reports models missing when a player travels by lamp to other residents.

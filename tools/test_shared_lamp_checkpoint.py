@@ -1,0 +1,218 @@
+"""Production shared checkpoint, load preparation and neighbour fence; allocated memory only."""
+from pathlib import Path
+import os
+import struct
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+source = (ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+
+def function(text, signature):
+    start = text.index(signature+' {')
+    end = text.index('{', start)+1
+    depth = 1
+    while depth:
+        depth += (text[end] == '{')-(text[end] == '}')
+        end += 1
+    return text[start:end]
+
+code = r'''
+#define NOMINMAX
+#include <windows.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <map>
+#include <mutex>
+#include <string_view>
+#include "core/bbsc_world_control.h"
+#include "core/bbsc_world_altars.h"
+#include "core/bbsc_world_lamp_points.h"
+using namespace Core::Bloodborne;
+using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
+#define BBSC_TIMELINE(...)
+#define LOG_INFO(...)
+#define PS4_SYSV_ABI __attribute__((sysv_abi))
+bool active=true,snapshot=true,prepared=true,ready=true,needs_load=false,writable=true;
+s32 role=3;u32 self=11,current=0x20000000;s64 now=1000;
+std::array<u8,0x1800> global{};u64 image_base=0;
+constexpr u32 BbscDreamStateMap=0x15000000;
+std::atomic<u32> bbsc_load_generation{1};
+World::Presence bbsc_world_presence_local;
+std::mutex bbsc_world_presence_mutex;World::PresenceBook bbsc_world_presence_book;
+struct Altar {World::AltarEntry entry{};Chalice::Mount mount{};};std::array<Altar,7> bbsc_world_altars;
+std::optional<World::Scope> bbsc_world_requested_scope;
+std::optional<Chalice::Mount> bbsc_world_requested_mount;
+s32 bbsc_world_altar_visiting=-1,bbsc_world_travel_point=0;
+u32 bbsc_world_travel_flag=0,bbsc_world_travel_load=0;
+World::WorldId bbsc_world_travel_world{};
+bool bbsc_world_travel_inflight=false,bbsc_world_travel_saw_load=false,bbsc_world_travel_native_armed=false;
+s64 bbsc_world_travel_since=0,bbsc_world_travel_request_sent=0;
+u64 bbsc_world_state_sequence=0;
+bool BbscIndependentActive(){return active;}bool BbscIndependentTravelAllowed(){return active;}
+s32 GetSessionState(){return role;}s64 SteadyNowMs(){return now;}
+u32 GetCurrentPackedMap(){return current;}u64 GetGlobalState(){return (u64)global.data();}
+bool ReadablePointer(u64 p,size_t){return p!=0;}
+namespace BbscMod {u32 RegisterOwnId(){return self;}}
+enum class MemoryProt{CpuWrite};bool HasMemoryAccess(u64,size_t,MemoryProt){return writable;}
+template<class T>T ReadValue(u64 p,size_t o){T v;memcpy(&v,(void*)(p+o),sizeof(v));return v;}
+template<class T>void WriteValue(u64 p,size_t o,T v){memcpy((void*)(p+o),&v,sizeof(v));}
+bool BbscChaliceArrivalReady(u32){return ready;}bool BbscChaliceNeedsLoad(u32){return needs_load;}
+bool PrepareBbscChaliceLoad(u32){return prepared;}
+void BbscWorldEnsureSeed(const World::Scope&){}bool BbscWorldHasSnapshot(u32){return snapshot;}
+int notifications=0,clears=0,loads=0,fallbacks=0,lookups=0;s32 loaded_point=0;
+void NotifyBbscHostDeathReload(){++notifications;}void ClearBbscBossContext(std::string_view){++clears;}
+void RequestBbscDeathReload(std::string_view);
+constexpr u64 DeathReloadRequestOffset=0x013CDE30;
+bool point_request=false;std::array<u8,16> point_desc{};u64 cookie=123;
+u64 PS4_SYSV_ABI NativeReload(){if(point_request){++loads;point_request=false;}else ++fallbacks;return 1;}
+void PS4_SYSV_ABI NativeDescriptor(u64 desc,s32 p){
+ point_request=true;loaded_point=p;const u32 map=BbscLampPointMap(p);
+ const uint16_t area=map>>24,block=(map>>16)&255;
+ memcpy(point_desc.data(),&area,2);memcpy(point_desc.data()+2,&block,2);
+ memcpy(point_desc.data()+4,&p,4);const s32 aux=101163;memcpy(point_desc.data()+8,&aux,4);
+ WriteValue<u64>(desc,0x10,(u64)point_desc.data());
+}
+void PS4_SYSV_ABI NativeLoad(s32 p){++loads;loaded_point=p;}
+struct BbscWorldIncoming{u32 sender;World::Control control;std::vector<u8> payload;};
+std::vector<BbscWorldIncoming> sent;
+void BbscWorldSend(const World::Control& c,std::span<const u8> p={}){sent.push_back({self,c,{p.begin(),p.end()}});}
+bool BbscWorldLampScopeKnown(const World::Scope& scope){
+ return !Chalice::IsMap(scope.map)||std::ranges::any_of(bbsc_world_altars,[&](const auto& a){
+  return a.entry.occupied&&a.entry.ritual==scope.ritual&&a.mount.key==scope.dungeon;});
+}
+struct BbscTransform{std::array<float,4> position{},rotation{};};
+// Deliberately succeeds for OTHER resident maps, matching the reported failure.
+std::optional<BbscTransform> ResolveLampPoint(s32){++lookups;return BbscTransform{};}
+'''
+code = code.replace('void PS4_SYSV_ABI NativeDescriptor', 'u32 BbscLampPointMap(s32 point);\nvoid PS4_SYSV_ABI NativeDescriptor')
+code += function(source, 'u32 BbscLampPointMap(s32 point)')
+checkpoint = (ROOT/'emulator/src/core/bbsc_world_checkpoint.inc').read_text(encoding='utf-8')
+if os.environ.get('BBSC_TEST_SHARED_CHECKPOINT_OLD'):
+    checkpoint = checkpoint.replace('lamp.sequence<=bbsc_checkpoint_seen[lamp.actor]', 'false')
+code += checkpoint
+code += function(source, 'void RequestBbscDeathReload(std::string_view why)')
+resolve = function(source, 'std::optional<BbscTransform> ResolveLastLampTransform()')
+if os.environ.get('BBSC_TEST_NEIGHBOUR_OLD'):
+    resolve = resolve.replace('if (!here) return std::nullopt;', 'if (false) return std::nullopt;')
+code += resolve
+code += r'''
+const World::WorldId world{11,99};
+void local(u32 peer,u32 map){
+ self=peer;role=peer==11?3:6;current=map;
+ bbsc_world_presence_local={};bbsc_world_presence_local.world=world;bbsc_world_presence_local.map=map;
+ bbsc_world_presence_book.Bind(world,peer);
+}
+void reset(){BindBbscSharedLamp({11,100});BindBbscSharedLamp(world);sent.clear();global.fill(0);local(11,0x20000000);}
+void member(u32 id){World::Presence p=bbsc_world_presence_local;p.sequence=1;p.visit=1;p.phase=World::Phase::Playing;
+ assert(bbsc_world_presence_book.Hear(id,world,p,now));}
+BbscWorldIncoming proposal(u32 peer,s32 point,u64 seq){
+ World::Control c;c.kind=World::ControlKind::LampCheckpoint;c.scope={world,BbscLampPointMap(point),{},0};
+ c.owner=peer;c.sequence=seq;BbscWorldIncoming m{peer,c,std::vector<u8>(4)};
+ memcpy(m.payload.data(),&point,4);return m;
+}
+int main(){
+ image_base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);assert(image_base);
+ auto* jump=(u8*)(image_base+0x013CDF30);jump[0]=0x48;jump[1]=0xb8;
+ void* target=(void*)&NativeLoad;memcpy(jump+2,&target,8);jump[10]=0xff;jump[11]=0xe0;
+ jump=(u8*)(image_base+DeathReloadRequestOffset);jump[0]=0x48;jump[1]=0xb8;
+ target=(void*)&NativeReload;memcpy(jump+2,&target,8);jump[10]=0xff;jump[11]=0xe0;
+ // ORIGINAL_POINT_LOAD
+ reset();member(22);member(33);
+ auto a=proposal(22,3202950,1);BbscWorldReceiveLampCheckpoint(a);
+ assert(bbsc_checkpoint.point==3202950&&bbsc_checkpoint.revision==1);
+ const auto first=sent.back();
+ auto b=proposal(33,2702951,1);BbscWorldReceiveLampCheckpoint(b);
+ assert(bbsc_checkpoint.point==2702951&&bbsc_checkpoint.revision==2);
+ const auto second=sent.back();
+ BbscWorldReceiveLampCheckpoint(a); // lost ack / delayed resend cannot move latest backwards
+ assert(bbsc_checkpoint.point==2702951&&bbsc_checkpoint.revision==2);
+ const auto ack=sent.back();assert(ack.control.owner==22&&ack.control.epoch==1);
+ auto bad=a;bad.sender=77;bad.control.sequence=9;BbscWorldReceiveLampCheckpoint(bad);
+ bad=a;bad.control.scope.world.room++;BbscWorldReceiveLampCheckpoint(bad);
+ bad=a;bad.payload.clear();BbscWorldReceiveLampCheckpoint(bad);
+ assert(bbsc_checkpoint.revision==2);
+ auto bytes=World::Encode(second.control,second.payload);assert(World::DecodeControl(bytes)->kind==World::ControlKind::LampCheckpoint);
+ // Two guests, late arrival, stale canonical packets and retry acknowledgement.
+ for(u32 peer:{22u,33u}){
+  reset();local(peer,0x20000000);bbsc_checkpoint_offer={a.control.scope,3202950,22,1,0};
+  BbscWorldReceiveLampCheckpoint(second);assert(bbsc_checkpoint.point==2702951);
+  BbscWorldReceiveLampCheckpoint(first);assert(bbsc_checkpoint.point==2702951);
+  if(peer==22)assert(!bbsc_checkpoint_offer.point); // ack must not restore old checkpoint
+  s32 p=0;bool here=true;assert(ReadBbscSharedLampCheckpoint(p,here)&&p==2702951&&!here);
+  lookups=0;assert(!ResolveLastLampTransform()&&lookups==0); // resident neighbour rejected before lookup
+  WriteValue<s32>(GetGlobalState(),0x1528,3202950); // personal/native travel cannot override shared lamp
+  const int reload_before=fallbacks;RequestBbscDeathReload("no living partner at the death step");
+  assert(bbsc_checkpoint_reload.point==2702951&&fallbacks==reload_before);
+  const int before=loads;snapshot=false;now+=1000;TickBbscSharedLampCheckpoint();assert(loads==before);
+  snapshot=true;TickBbscSharedLampCheckpoint();assert(loads==before+1&&loaded_point==2702951);
+  // NATIVE_DESTINATION_CHECK
+  TickBbscSharedLampCheckpoint();assert(loads==before+1); // single stage request
+  assert(bbsc_world_requested_scope->map==0x1b000000&&bbsc_world_travel_inflight);
+  current=0x1b000000;bbsc_world_presence_local.map=current;assert(ResolveLastLampTransform());
+ }
+ // Local host and either guest can select a newly lit lamp, including relighting
+ // a lamp whose native personal checkpoint already has that point.
+ for(u32 peer:{11u,22u,33u}){
+  reset();local(peer,0x20000000);QueueBbscSharedLampCheckpoint(3202950);
+  assert(sent.back().control.owner==peer&&sent.back().payload.size()==4);
+  if(peer==11)assert(bbsc_checkpoint.point==3202950);
+  else {assert(bbsc_checkpoint_offer.point==3202950);now+=1000;TickBbscSharedLampCheckpoint();assert(sent.size()==2);}
+ }
+ // A different dungeon generation cannot use a resident m29 lamp point.
+ reset();auto& altar=bbsc_world_altars[2];altar.entry.occupied=true;altar.entry.ritual=7;
+ altar.mount.key={55,66,88,0};altar.mount.revision=7;
+ local(11,0x1d000000);bbsc_world_presence_local.dungeon=altar.mount.key;bbsc_world_presence_local.ritual=7;
+ QueueBbscSharedLampCheckpoint(2902952);assert(bbsc_checkpoint.point==2902952);
+ assert(ResolveLastLampTransform());bbsc_world_presence_local.ritual=8;
+ assert(!ResolveLastLampTransform());
+ assert(RequestBbscSharedLampReload());prepared=false;const int n=loads;TickBbscSharedLampCheckpoint();assert(loads==n);
+ prepared=true;TickBbscSharedLampCheckpoint();assert(loads==n+1&&bbsc_world_altar_visiting==2);
+ assert(bbsc_world_requested_mount->key==altar.mount.key&&bbsc_world_requested_scope->ritual==7);
+ // Removing the selected ritual invalidates it rather than resolving another cup.
+ altar.entry.ritual=9;s32 p=0;bool here=false;assert(!ReadBbscSharedLampCheckpoint(p,here));
+ // Scripted abduction keeps its prison destination even with a shared lamp.
+ reset();QueueBbscSharedLampCheckpoint(3202950);const int old_fallback=fallbacks;
+ RequestBbscDeathReload("native Snatcher abduction");assert(fallbacks==old_fallback+1&&!bbsc_checkpoint_reload.point);
+ // No infinite hold when a provider disappears; fallback remains one local death reload.
+ reset();QueueBbscSharedLampCheckpoint(3202950);assert(RequestBbscSharedLampReload());
+ snapshot=false;const int old_loads=loads,old_reload=fallbacks;now+=30001;
+ TickBbscSharedLampCheckpoint();assert(fallbacks==old_reload+1&&loads==old_loads&&!bbsc_checkpoint_reload.point);
+ snapshot=true;
+ // Personal fallback is also fenced against adjacent maps even before any shared record.
+ reset();local(22,0x20000000);WriteValue<s32>(GetGlobalState(),0x1528,2702951);
+ lookups=0;assert(!ResolveLastLampTransform()&&lookups==0);
+ WriteValue<s32>(GetGlobalState(),0x1528,3202950);assert(ResolveLastLampTransform());
+ // A session change clears canonical state, retries and pending death loads.
+ BindBbscSharedLamp({11,100});assert(!bbsc_checkpoint.point&&!bbsc_checkpoint_offer.point&&!bbsc_checkpoint_reload.point);
+}
+'''
+if os.environ.get('BBSC_TEST_EBOOT'):
+    with open(os.environ['BBSC_TEST_EBOOT'], 'rb') as f:
+        f.seek(0x13cdf30+0x4000)
+        native = f.read(0xeb)
+    assert native[:6] == bytes.fromhex('554889e54157') and native[-1] == 0xc3
+    def rip(off):
+        return 0x13cdf30+off+7+struct.unpack_from('<i',native,off+3)[0]
+    assert rip(0x74) == rip(0xc4) == 0x5556678
+    original = 'const u8 original[]={' + ','.join(map(str,native)) + '};\n'
+    original += 'memcpy((void*)(image_base+0x13cdf30),original,sizeof(original));\n'
+    original += f'WriteValue<u64>(image_base,{rip(0xf)},(u64)&cookie);WriteValue<u64>(image_base,{rip(0x74)},GetGlobalState());\n'
+    original += 'jump=(u8*)(image_base+0x1f26b40);jump[0]=0x48;jump[1]=0xb8;target=(void*)&NativeDescriptor;memcpy(jump+2,&target,8);jump[10]=0xff;jump[11]=0xe0;\n'
+    code = code.replace('// ORIGINAL_POINT_LOAD', original)
+    code = code.replace('// NATIVE_DESTINATION_CHECK', 'assert(ReadValue<u32>(GetGlobalState(),0xC)==0x1b000000 && ReadValue<s32>(GetGlobalState(),0x153c)==2702951);')
+compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
+with tempfile.TemporaryDirectory(prefix='bbsc-shared-lamp-') as tmp:
+    cpp, exe = Path(tmp)/'checkpoint.cpp', Path(tmp)/'checkpoint.exe'
+    cpp.write_text(code, encoding='utf-8')
+    subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
+    env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
+    result = subprocess.run([str(exe)],env=env)
+    if os.environ.get('BBSC_TEST_SHARED_CHECKPOINT_OLD') or os.environ.get('BBSC_TEST_NEIGHBOUR_OLD'):
+        assert result.returncode != 0,'Missing replay fence passed regression'
+        print('PASS negative control: missing checkpoint/neighbor fence FAILS regression')
+    else:
+        result.check_returncode()
+        print('PASS production shared checkpoint: host/two guests, ordering/replay/ack/late join, neighbours, ritual generation, prepared native point load, one request, personal/world fences')

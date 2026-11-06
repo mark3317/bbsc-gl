@@ -22,6 +22,9 @@ code=r'''
 #include <string_view>
 #include <unordered_map>
 #include "core/bbsc_dream_finale.h"
+#include "core/bbsc_lamp_travel_data.h"
+namespace LampTravel=Core::Bloodborne::LampTravel;
+bool BbscIndependentTravelAllowed(){return true;}
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define PS4_SYSV_ABI
 #define BBSC_TIMELINE(...)
@@ -60,6 +63,7 @@ std::unordered_map<s32,u32>bbsc_cutscene_seen;std::atomic<u32>bbsc_load_generati
 enum class BbscWork{Cutscene};int queued=0;void QueueBbscWork(BbscWork){++queued;}
 bool bbsc_cutscene_replaying=false;void ArmBbscCainhurstReveal(int){}
 bool BbscCutscenesEnabled(){return true;}
+bool QueueBbscRomNativeTransition(s32 scene){return scene==32000000&&map==0x20000000;}
 Bbsc::DreamFinale::Playback bbsc_dream_finale;
 std::atomic<u32>bbsc_remo_started_sequence{0};u32 bbsc_dream_finale_start_sequence=0;
 s32 bbsc_dream_ng_pending=0;u8 bbsc_dream_ng_target=0;
@@ -71,7 +75,8 @@ std::optional<bool> playing=false;std::optional<bool>BbscRemoPlaying(){return pl
 bool BbscQuitInProgress(){return quit;}bool BbscReturningToTitle(){return false;}
 void RecoverBbscFinale(){}void ApplyBbscHostDreamPhase(){}void ApplyBbscDreamBattleFlags(){}
 void TickBbscDreamFirstAudience(){}
-bool BbscDreamOwnEnabled(){return true;}
+bool BbscIndependentActive(){return false;}
+bool BbscWorldPeerHere(u32){return true;}u32 GetBbscRelayHost(){return 11;}
 void FlushBbscSessionJournals(){}void SendBbscSessionLeave(){}
 void SuspendBbscPersistenceOnce(std::string_view){}void CleanupBbscDepartingRemotes(){}
 void SetOwnWorldRestoreType(int,void*){}std::map<int,int>bbsc_own_world;
@@ -81,10 +86,17 @@ void RestoreBbscOwnWorld(std::string_view){bbsc_own_world.clear();}
 int main(){
  mem[image_base+PlayerSlotManagerPointerOffset]=slots;mem[slots+8]=local;
  mem[image_base+MatchingStatePointerOffset]=manager;mem[image_base+0x0553B130]=game_data;
+ for(int scene:{24000000,28000040,28001040,22000040}){
+ BbscCutscenePacket trip{};trip.cutscene=scene;trip.sequence=scene;
+ OnBbscCutscenePacket(&trip,sizeof trip);assert(bbsc_cutscene_queue.empty());
+ }
  BbscCutscenePacket intro{};intro.map=map;intro.cutscene=21000040;intro.sequence=1;
  OnBbscCutscenePacket(&intro,sizeof intro);OnBbscCutscenePacket(&intro,sizeof intro);
  assert(bbsc_cutscene_queue.size()==1);TickBbscCutsceneReplay();assert(requests==1);
  intro.sequence=2;OnBbscCutscenePacket(&intro,sizeof intro);TickBbscCutsceneReplay();assert(requests==1);
+ map=0x20000000;intro.map=map;intro.cutscene=32000000;intro.sequence=3;
+ int before_rom=requests;OnBbscCutscenePacket(&intro,sizeof intro);TickBbscCutsceneReplay();
+ assert(bbsc_cutscene_queue.empty()&&requests==before_rom);map=0x15000000;
  // Dead host is not revived before the group's real victory. Native ending event
  // stays paused if actor/curtain recovery fails, then resumes before its movie.
  state=3;flag=false;assert(!GuardBbscSharedFinaleEvent(1));assert(revives==0);
@@ -115,10 +127,15 @@ int main(){
  assert(stops==3);
 }
 '''
+if os.environ.get('BBSC_TEST_SCENES_ONLY'):
+    code=code.replace(' // Dead host is not revived before', ' return 0; // scene-dispatch-only regression\n // Dead host is not revived before')
 with tempfile.TemporaryDirectory() as tmp:
     cpp,exe=Path(tmp)/'test.cpp',Path(tmp)/'test.exe';cpp.write_text(code)
     cxx='C:/msys64/clang64/bin/clang++.exe'
     subprocess.run([cxx,'-std=c++20','-I',str(root/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
     env=dict(os.environ);env['PATH']=str(Path(cxx).parent)+os.pathsep+env.get('PATH','')
     subprocess.run([str(exe)],check=True,env=env)
-print('PASS: fallen host/guest; three endings; actor/curtain retry; actual playback completion; native disconnect; own-world drain; absolute NG and single save acknowledgement')
+if os.environ.get('BBSC_TEST_SCENES_ONLY'):
+    print('PASS: shared intro replay/dedup; personal travel movies ignored; Rom delegated without standalone replay')
+else:
+    print('PASS: fallen host/guest; three endings; actor/curtain retry; actual playback completion; native disconnect; own-world drain; absolute NG and single save acknowledgement')

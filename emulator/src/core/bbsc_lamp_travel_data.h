@@ -9,12 +9,13 @@ inline constexpr std::array<std::uint32_t, 10> DungeonTalks{
     290110, 290111, 290112, 290113, 290114,
     290115, 290116, 290117, 290118, 290119,
 };
-inline constexpr std::array<std::uint32_t, 50> Talks{
+inline constexpr std::array<std::uint32_t, 51> Talks{
     210000,
     210001,
     210002,
     210003,
     210721,
+    211000,
     220000,
     220001,
     230000,
@@ -108,4 +109,66 @@ inline constexpr std::array<Return, 44> Returns{{
     {72103601, 3602951},
     {72103602, 3602952},
 }};
+// Native ground-lamp return is70000100 + map-number*10000 + lamp-index.
+// Dream devices are headstones, not ground lamps. Dungeon ESD indices110..119
+// pass lamp arguments0..9 and share the same return command template.
+constexpr std::uint32_t DreamReturnFlag(std::uint32_t talk) {
+    for (const auto lamp : Talks)
+        if (lamp == talk && talk / 1000 != 210)
+            return 70000100 + (talk / 1000) * 10000 + talk % 1000;
+    for (std::uint32_t i = 0; i < DungeonTalks.size(); ++i)
+        if (DungeonTalks[i] == talk) return 72900100 + i;
+    return 0;
+}
+constexpr bool IsDreamReturn(std::uint32_t flag) {
+    for (const auto talk : Talks)
+        if (talk / 1000 != 210 && 70000100 + (talk / 1000) * 10000 + talk % 1000 == flag) return true;
+    return flag >= 72900100 && flag < 72900110;
+}
+// Original non-lamp journeys. Preserve their native item/story/action checks.
+constexpr bool IsNativeTransitionEvent(std::int64_t event) {
+    return event==12200131 || event==12405263 || event==12800430 || event==12800431 ||
+           event==13200310 || event==13200311 ||
+           event==12407040 || event==12507020 || event==12607020;
+}
+constexpr bool IsLocalTravelCutscene(std::int32_t scene) {
+    return scene==28000010 || scene==24000000 || scene==28000040 ||
+           scene==28001040 || scene==22000040;
+}
+// Lighting is a local interaction; the discovered destination stays shared.
+constexpr bool IsLampActivationEvent(std::int64_t event) {
+    return event == 7100 || event == 12907010;
+}
+constexpr bool IsNativeTravelEvent(std::int64_t event) {
+    if (IsNativeTransitionEvent(event)) return true;
+    return event==7200 || event==12107000 || event==12107100 || event==12107200 || event==12907020;
+}
+constexpr bool IsTravelCommand(std::uint32_t flag) {
+    if ((flag >= 70000200 && flag < 70000210) || IsDreamReturn(flag) ||
+        (flag >= 72100420 && flag < 72100427) || (flag >= 72100300 && flag < 72100310)) return true;
+    for (const auto& destination : Returns) if (destination.flag == flag) return true;
+    return false;
+}
+// A map owner supplies world state, never another player's one-shot journey.
+// Preserve BOTH0 and1: foreign commands cannot start a trip or clear our request.
+inline void KeepTravelCommands(std::uint32_t key, const std::uint8_t* before, std::uint8_t* live) {
+    const auto keep = [&](std::uint32_t flag) {
+        if (!flag || flag / 1000 != key) return;
+        const auto bit = flag % 1000;
+        const auto mask = static_cast<std::uint8_t>(0x80u >> (bit % 8));
+        live[bit / 8] = (live[bit / 8] & ~mask) | (before[bit / 8] & mask);
+    };
+    keep(13200123); keep(13200124); // local Lecture Building exit ObjActs
+    for (const auto talk : Talks) {
+        const auto flag = DreamReturnFlag(talk);
+        keep(flag); if (flag) keep(flag + 100); // native lighting request
+    }
+    for (const auto talk : DungeonTalks) {
+        const auto flag = DreamReturnFlag(talk);
+        keep(flag); if (flag) keep(flag + 100);
+    }
+    for (std::uint32_t i = 0; i < 10; ++i) { keep(70000200 + i); keep(72100300 + i); }
+    for (std::uint32_t i = 0; i < 7; ++i) keep(72100420 + i);
+    for (const auto& destination : Returns) keep(destination.flag);
+}
 } // namespace Core::Bloodborne::LampTravel

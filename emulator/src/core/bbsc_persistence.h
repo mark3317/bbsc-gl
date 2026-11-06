@@ -23,7 +23,6 @@ inline constexpr std::array<std::string_view, 33> DefaultOnSwitches{
     "SHADPS4_BBSC_SOLID_NPCS",           // a guest sees NPCs solid, not as grey wandering ghosts
     "SHADPS4_BBSC_FLOOR_GUARD",          // no crash when a character's floor was unloaded
     "SHADPS4_BBSC_DREAM",                // a guest uses the Doll, workshop and messengers in the host's Dream
-    "SHADPS4_BBSC_DREAM_OWN",            // ...and sees its OWN Dream there (no host's Dream flags)
     "SHADPS4_BBSC_DEATH_PENALTY",        // a kept death still drops a bloodstain and the echoes
     "SHADPS4_BBSC_LAMP",                 // the lamp prompt works in co-op (clears the +0x4B gate)
     "SHADPS4_BBSC_NO_HP_PENALTY",        // clears the summoned guest's 30% max HP cut (effect 9006)

@@ -1,10 +1,94 @@
 # 05.11.2026 — Gilbert ghost / personal NPC native event authority
 
-Status: SOURCE corrected, gameplay OPEN. User explicitly clarifies Gilbert must
+Status: installed4989896 FAILED the reported gameplay check. Further native
+continuation isolation corrected in SOURCE; exact live scene/gameplay OPEN.
+User explicitly clarifies Gilbert must
 be absent for BOTH players at this stage; quests remain personal. No new
 Gilbert/stage/visibility predicates, actor writes, or shared quest flags added.
 
-## Correction and validation
+## Further diagnosis/correction: native remote continuation bypass
+
+User clarifies spatial dependency: first resident was far from the lamp;
+entrant saw Gilbert and a closed door. When the resident approached, Gilbert
+disappeared and door opened without animation. Do not infer a legitimate
+personal stage difference or add stage predicates from this observation.
+
+Both current230550 profiles recollected under parent
+out/coop-dev/runs/gilbert-native-stage-20261105/pc (2 files, warnings0,
+ChangedDuringCopy=true). Read-only process samples in that parent run resolve
+2410781 through original native entity-table layout: personal1240=true,
+1246=false, native backread-off Chr+28=1, activation current/requested0/0 in BOTH
+processes. Original MSB confirms c1091_0000 at Gilbert's window. These samples
+are later than the reported frame; resource/draw allocation alone does not prove
+visible rasterization. No live process memory or save writes were made.
+
+Concrete uncovered original1.09 control flow:
+
+-012EE540 sends kind1 channel31 condition progress and checks event+78.
+-012EE660 sends kind2 timed continuation unconditionally, ignoring+78. Native
+ bank1000 timed wait dispatch calls it at017C7C2B. Native restarts can also
+ restore+78 after the mod's pre-update localization.
+-012EE420 virtual receiver (event vtable05366880+28, resolved read-only) accepts
+ kind2 even for a local event, writing source+60, pending step+4C and the condition
+ bitmap at[event+20]. It has no+78 test.
+-012ECE95 compares current step+48 to received step+4C and sets native mode2
+ (execute command) even if the local condition result was FALSE (mode0).
+
+This is a reproduced cause of personal conditional execution bypass; flags can
+remain personal/correct while remote event execution authorizes the command.
+The prior test exercised ONLY012EE540 with a stable+78=0 and missed this path.
+The captured old live logs do not identify which packet/instruction caused the
+specific Gilbert or door frame. Do not claim complete live causality from the
+fixture alone; the new diagnostics are needed for that association.
+
+Correction in emulator/src/core/bbsc_personal_events.inc:
+
+- Both native emitter entries suppress only the EXISTING personal-event
+ catalogue while personal quests are active (host/join/guest). Native local
+ branches, waits, actor commands and quest flags are untouched.
+- Original channel31 native Receive callsite012F1744 wraps the SAME01789200
+ receive, consuming personal kind1/2 records before event application. Native
+ reliable transport/ACK/sequence assignment is unchanged. Up to8 queued personal
+ records can drain per call, then the next normal native frame continues.
+- Shared door/boss events, malformed/unknown messages, feature-off and offline
+ behavior remain native. No new NPC identity or stage allowlist is introduced.
+- Existing timeline switch controls bounded per-load transport/event/native
+ command observations. Character5/29 results log native backread/activation;
+ object2005 commands and changed snapshot flags record world-state application.
+ Log operands are observations only, never decisions about appearance.
+
+Validation: tools/test_personal_event_transport.py executes COMPLETE original
+012EE660 and012EE420, original012ECE95 decision instructions and REAL production
+Windows send/receive trampolines on allocated memory. BEFORE isolation, event
+net=0 still sends, receiver changes pending step/bitmap, FALSE condition becomes
+execute mode2. AFTER isolation, personal input cannot reach native application
+and the false local condition remains false. Both message kinds/all69 events,
+host/join/guest, reset+78=1, feature-off/offline/shared door, malformed data and
+bounded drain PASS. Existing personal NPC dispatcher, scripted pickup and native
+bootstrap fixtures PASS. Full BBSC_MOD/relay syntax PASS. No product DLL build,
+deployment, restart or gameplay assertion: both game processes remain running.
+
+## 23:09 host-only Yharnam return: symptom persists after installation
+
+User reports Gilbert appeared for the host after load. Both fresh230550 logs
+collected in parent out/coop-dev/runs/gilbert-host-followup-20261105/pc, 2 files,
+warnings0, ChangedDuringCopy=true. P1 guest / P2 host; both35/35 hooks at start.
+
+Host requests2412951 at23:09:01.852; native world-ready m24_01 load3 at
+23:09:02.713; AREA23:09:06.749 / arrival23:09:06.750. Guest remains Dream
+after23:07:25.130 through collection23:09:52. There is no native CHR-initial
+application log for host load3, whereas earlier host Dream load2 logs it normally.
+This is not the previous guest-first/resident-provider arrival sequence.
+
+No current1240..1259 snapshot, original12410760 instruction trace or2410781
+enable/backread/AI trace exists in this capture. Appearance is user-observed;
+exact actor identity and state transition are not independently logged.
+The event-localization correction below does NOT establish a fix of the reported
+symptom; gameplay failed. Need investigate local quest-state restoration and
+native controller/actor lifecycle, without added stage gates or forced hiding.
+No new behavior changes, build/deploy/restart, save or game-asset writes.
+
+## Earlier correction and fixture validation (gameplay insufficient)
 
 The existing local-event catalogue included Gilbert's personal flag workers
 12410761/62/63 but omitted original state dispatcher12410760. The same gap
@@ -39,6 +123,14 @@ Do not claim the streaming wait fix alone covers this case.
 
 Build/deploy/start status is recorded separately in HANDOFF and parent run notes.
 No save edits, game-asset writes, running-game termination or push.
+
+Deployment: own source4989896 / parent pind77cae9 plus completed shared dirty
+source (provenance source_dirty=true). DLL/delta/deploy exit0. Parent run:
+out/coop-dev/runs/personal-npc-2p-20261105. Backup:
+D:/Games/Bloodborne/coop-dev/backups/personal-npc-2p-20261105-20261105-230526.
+Player1/2 wrappers launched23:05:26; both fresh230550 logs report35/35 hooks,
+independent enemies/travel=true23:05:51. Two native game processes started;
+this establishes startup, not the reported scene's gameplay outcome.
 
 ## Earlier live diagnosis (historical source-only status)
 

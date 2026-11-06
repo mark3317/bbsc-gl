@@ -91,6 +91,31 @@ inline bool SamePlace(const Presence& a, const Presence& b) {
            Chalice::Valid(a.dungeon) && a.dungeon == b.dungeon;
 }
 
+// Player presentation spans a directly connected native map border. Keep
+// SamePlace strict for events, ownership, lamps and non-player packet routing.
+// Pairs come from original 1.09 MSB ConnectCollision target area/block bytes;
+// this is deliberately NOT a transitive world/region grouping. Dream m21_00
+// and separate chalice rituals must never acquire actors from another place.
+inline constexpr std::array<std::array<u32,2>,14> PlayerMapBorders{{
+    {0x15010000,0x18000000}, {0x16000000,0x18000000},
+    {0x17000000,0x18000000}, {0x17000000,0x1C000000},
+    {0x18000000,0x18010000}, {0x18000000,0x18020000},
+    {0x18000000,0x1B000000}, {0x18000000,0x1C000000},
+    {0x18010000,0x1B000000}, {0x19000000,0x1C000000},
+    {0x19000000,0x1E000000}, {0x1B000000,0x20000000},
+    {0x22000000,0x23000000}, {0x23000000,0x24000000}
+}};
+inline bool PlayerMapBorder(u32 a,u32 b) {
+    const std::array<u32,2> pair{std::min(a,b),std::max(a,b)};
+    return std::ranges::find(PlayerMapBorders,pair)!=PlayerMapBorders.end();
+}
+inline bool SamePlayerSpace(const Presence& a,const Presence& b) {
+    if(SamePlace(a,b))return true;
+    if(!Valid(a) || !Valid(b) || a.phase!=Phase::Playing || b.phase!=Phase::Playing ||
+       a.world!=b.world || Chalice::IsMap(a.map) || Chalice::IsMap(b.map))return false;
+    return PlayerMapBorder(a.map,b.map);
+}
+
 // Raw map reads flicker at borders. Actual loading invalidates presence at once;
 // only an ordinary border walk gets hysteresis. Zero reads never erase the last
 // committed place. Once a load starts, wait for a real positioned actor to return.

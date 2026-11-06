@@ -31,6 +31,7 @@ code = r'''
 namespace QuestRules=Core::Bloodborne::QuestRules;
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -96,9 +97,11 @@ for signature in [
     'bool IsBbscLocalQuestEvent(s64 event)',
     'bool IsBbscNpcQuestFlag(u32 flag)',
     'bool IsBbscScriptedPickupFlag(u32 flag)',
-    'bool IsBbscNativeItemStateFlag(u32 flag)',
+    'bool IsBbscKidnapFlag(u32 flag)',
+                  'bool IsBbscNativeItemStateFlag(u32 flag)',
     'void NoteBbscNpcOwnFlag(u32 flag, u8 value)',
     'void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live)',
+    'bool IsBbscKidnapEvent(s64 event)',
     'bool IsBbscPersonalMapEvent(s64 event)',
     'void EnableBbscScriptedPickupEvent(u64 instance)',
     'void PS4_SYSV_ABI BbscDreamTypeCheckHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)',
@@ -180,7 +183,7 @@ int main(){
  }
  // Standalone Orphanage Key, Balcony Key and Cainhurst covenant gift:
  // the production host-role gate permits each guest's own original event.
- for(s64 reward:{12420700,13501920,9040}){
+ for(s64 reward:{12420700,13501920,9040,12400780,12700500}){
   event_id=reward;guest=true;WriteValue<s8>((u64)condition,0x2c,0);
   bbsc_dream_type_skip=0;condition[0x10]=0;BbscDreamTypeCheckHook(0,&regs);
   assert(bbsc_dream_type_skip==1&&(condition[0x10]&1));
@@ -196,6 +199,14 @@ int main(){
   }
  }
  for(s64 worker:{12410761,12410803,12410804})assert(IsBbscLocalQuestEvent(worker));
+ for(s64 worker:{9421,9422,12400780,12700500}){
+  bbsc_quest_indexes.clear();bbsc_quest_instances.clear();
+  event_id=worker;WriteValue<s64>((u64)file,0xa0,worker);
+  for(u64 offset:{0x100ull,0x120ull,0x140ull}){
+   WriteValue<u64>(inst,0xb0,(u64)file+offset);instance[0x78]=1;
+   LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
+  }
+ }
  // Eye Pendant receipt and Cainhurst placement checkpoint must be personal too.
  assert(IsBbscNpcQuestFlag(9470)&&IsBbscNpcQuestFlag(12410511));
  // Unknown/complex world event and a reused instance never inherit pickup permission.
