@@ -73,6 +73,7 @@ void BbscWorldSend(const World::Control&){++sent;send_animation=animations;}
 void ApplyBbscIndependentAtLoad(u32){++applies;}
 bool chalice_ready=true;int prepares=0;bool PrepareBbscChaliceLoad(u32){++prepares;return chalice_ready;}
 void ArmBbscReinsertV8(){++arms;}
+int selections=0;void NoteBbscNativeLampSelection(){++selections;}
 void PS4_SYSV_ABI NativeFlag(u64 man,u32 flag,u8 value){assert(man==GetGlobalState()&&value==1);++sets;released=flag;}
 void PS4_SYSV_ABI NativeAnimation(s32 entity,s32 animation,u32 loop,u32 skip){assert(entity==10000&&(animation==101160||animation==101164)&&!loop&&!skip);++animations;last_animation=animation;}
 void Link(u64 off,void* target){auto* p=reinterpret_cast<u8*>(image_base+off);p[0]=0x48;p[1]=0xb8;u64 a=reinterpret_cast<u64>(target);std::memcpy(p+2,&a,8);p[10]=0xff;p[11]=0xe0;
@@ -226,7 +227,7 @@ int main(){
  snapshot_ready=true;BbscWorldTravelDispatch(0,&r);assert(!bbsc_world_travel_dispatch_skip);
  TickBbscWorldTravel();assert(sets==1&&released==destination.flag&&arms==0&&global==unchanged);
  for(int i=0;i<4;++i){now+=1000;TickBbscWorldTravel();}assert(sets==1&&arms==0);
- r.rdi=destination.point;r.rsi=12345;BbscWorldNativeWarpBegin(&r);BbscWorldNativeWarpBegin(&r);assert(arms==1);
+ r.rdi=destination.point;r.rsi=12345;BbscWorldNativeWarpBegin(&r);BbscWorldNativeWarpBegin(&r);assert(arms==1&&selections==1);
  ++bbsc_load_generation;current_map=bbsc_world_requested_scope->map;TickBbscWorldTravel();assert(!bbsc_world_travel_inflight&&applies==1);
  r.rdi=2102950;BbscWorldNativeWarpBegin(&r);assert(arms==2); // original unqueued return also prepares native admission
  std::array<u8,0xc0> instance{};std::array<u8,0x20> instruction{},reference{};std::array<u8,0x200> file{};

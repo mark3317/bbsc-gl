@@ -24,6 +24,7 @@ code = r'''
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <string_view>
@@ -36,7 +37,8 @@ using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s
 #define LOG_INFO(...)
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 bool active=true,snapshot=true,prepared=true,ready=true,needs_load=false,writable=true;
-s32 role=3;u32 self=11,current=0x20000000;s64 now=1000;
+s32 role=3;u32 self=11,current=0x20000000;s64 now=1000,wall=10000;
+s32 hp=594;u64 GetLocalPlayerCharacter(){return 1;}s32 GetCharacterHp(u64){return hp;}
 std::array<u8,0x1800> global{};u64 image_base=0;
 constexpr u32 BbscDreamStateMap=0x15000000;
 std::atomic<u32> bbsc_load_generation{1};
@@ -85,13 +87,17 @@ bool BbscWorldLampScopeKnown(const World::Scope& scope){
 }
 struct BbscTransform{std::array<float,4> position{},rotation{};};
 // Deliberately succeeds for OTHER resident maps, matching the reported failure.
-std::optional<BbscTransform> ResolveLampPoint(s32){++lookups;return BbscTransform{};}
+std::optional<BbscTransform> ResolveLampPoint(s32 p){++lookups;BbscTransform t;t.position[0]=p;return t;}
 '''
 code = code.replace('void PS4_SYSV_ABI NativeDescriptor', 'u32 BbscLampPointMap(s32 point);\nvoid PS4_SYSV_ABI NativeDescriptor')
 code += function(source, 'u32 BbscLampPointMap(s32 point)')
 checkpoint = (ROOT/'emulator/src/core/bbsc_world_checkpoint.inc').read_text(encoding='utf-8')
 if os.environ.get('BBSC_TEST_SHARED_CHECKPOINT_OLD'):
     checkpoint = checkpoint.replace('lamp.sequence<=bbsc_checkpoint_seen[lamp.actor]', 'false')
+checkpoint = checkpoint.replace(function(checkpoint, 's64 BbscLampSelectionTimeMs()'),
+                                's64 BbscLampSelectionTimeMs() { return wall; }')
+if os.environ.get('BBSC_TEST_LAMP_PRIORITY_OLD'):
+    checkpoint = checkpoint.replace('if(bbsc_native_lamp_selected_ms && bbsc_checkpoint.lit_ms<=bbsc_native_lamp_selected_ms)return false;', '')
 code += checkpoint
 code += function(source, 'void RequestBbscDeathReload(std::string_view why)')
 resolve = function(source, 'std::optional<BbscTransform> ResolveLastLampTransform()')
@@ -105,13 +111,13 @@ void local(u32 peer,u32 map){
  bbsc_world_presence_local={};bbsc_world_presence_local.world=world;bbsc_world_presence_local.map=map;
  bbsc_world_presence_book.Bind(world,peer);
 }
-void reset(){BindBbscSharedLamp({11,100});BindBbscSharedLamp(world);sent.clear();global.fill(0);local(11,0x20000000);}
+void reset(){BindBbscSharedLamp({11,100});BindBbscSharedLamp(world);sent.clear();global.fill(0);bbsc_world_presence_book.Bind({11,100},11);local(11,0x20000000);}
 void member(u32 id){World::Presence p=bbsc_world_presence_local;p.sequence=1;p.visit=1;p.phase=World::Phase::Playing;
  assert(bbsc_world_presence_book.Hear(id,world,p,now));}
 BbscWorldIncoming proposal(u32 peer,s32 point,u64 seq){
  World::Control c;c.kind=World::ControlKind::LampCheckpoint;c.scope={world,BbscLampPointMap(point),{},0};
- c.owner=peer;c.sequence=seq;BbscWorldIncoming m{peer,c,std::vector<u8>(4)};
- memcpy(m.payload.data(),&point,4);return m;
+ c.owner=peer;c.sequence=seq;BbscWorldIncoming m{peer,c,std::vector<u8>(12)};
+ memcpy(m.payload.data(),&point,4);const s64 stamp=wall++;memcpy(m.payload.data()+4,&stamp,8);return m;
 }
 int main(){
  image_base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);assert(image_base);
@@ -157,10 +163,44 @@ int main(){
  // a lamp whose native personal checkpoint already has that point.
  for(u32 peer:{11u,22u,33u}){
   reset();local(peer,0x20000000);QueueBbscSharedLampCheckpoint(3202950);
-  assert(sent.back().control.owner==peer&&sent.back().payload.size()==4);
+  assert(sent.back().control.owner==peer&&sent.back().payload.size()==12);
   if(peer==11)assert(bbsc_checkpoint.point==3202950);
   else {assert(bbsc_checkpoint_offer.point==3202950);now+=1000;TickBbscSharedLampCheckpoint();assert(sent.size()==2);}
  }
+ // A guest's own new ignition is authoritative before its host ack arrives.
+ reset();local(22,0x18010000);wall=19000;
+ auto shared=proposal(33,2412951,9);shared.sender=11;shared.control.epoch=1;
+ BbscWorldReceiveLampCheckpoint(shared);wall=19500;
+ QueueBbscSharedLampCheckpoint(2412953);WriteValue<s32>(GetGlobalState(),0x1528,2412953);
+ s32 pending=0;bool pending_here=false;assert(!ReadBbscSharedLampCheckpoint(pending,pending_here));
+ assert(ResolveLastLampTransform()->position[0]==2412953);
+ // Shared Central Yharnam followed by personal Oedon Tomb (same m24_01).
+ for(u32 peer:{11u,22u,33u}){
+  reset();local(peer,0x18010000);wall=20000;hp=594;
+  auto ignition=proposal(22,2412951,10);ignition.sender=11;ignition.control.epoch=1;
+  if(peer==11){ignition.sender=22;ignition.control.epoch=0;member(22);}
+  BbscWorldReceiveLampCheckpoint(ignition);
+  WriteValue<s32>(GetGlobalState(),0x1528,2412953);
+  wall=21000;NoteBbscNativeLampSelection();
+  s32 p=0;bool here=false;assert(!ReadBbscSharedLampCheckpoint(p,here));
+  assert(ResolveLastLampTransform()->position[0]==2412953);
+  const int reloaded=fallbacks;RequestBbscDeathReload("wipe");
+  assert(fallbacks==reloaded+1&&!bbsc_checkpoint_reload.point);
+  BbscWorldReceiveLampCheckpoint(ignition);assert(!ReadBbscSharedLampCheckpoint(p,here));
+  wall=22000;auto newer=proposal(33,2412951,11);newer.sender=11;newer.control.epoch=2;
+  if(peer==11){newer.sender=33;newer.control.epoch=0;member(33);}
+  BbscWorldReceiveLampCheckpoint(newer);assert(ReadBbscSharedLampCheckpoint(p,here)&&p==2412951&&here);
+  hp=0;wall=23000;NoteBbscNativeLampSelection();
+  assert(ReadBbscSharedLampCheckpoint(p,here));hp=594;
+  // First delivery after a newer journey must also retain the original date.
+  reset();local(peer,0x18010000);wall=25000;NoteBbscNativeLampSelection();
+  if(peer==11)member(22);
+  BbscWorldReceiveLampCheckpoint(ignition);assert(!ReadBbscSharedLampCheckpoint(p,here));
+ }
+ reset();member(22);member(33);wall=30000;auto older=proposal(22,3202950,21);
+ wall=31000;auto newer=proposal(33,2702951,22);
+ BbscWorldReceiveLampCheckpoint(newer);BbscWorldReceiveLampCheckpoint(older);
+ assert(bbsc_checkpoint.point==2702951&&bbsc_checkpoint.revision==1);
  // A different dungeon generation cannot use a resident m29 lamp point.
  reset();auto& altar=bbsc_world_altars[2];altar.entry.occupied=true;altar.entry.ritual=7;
  altar.mount.key={55,66,88,0};altar.mount.revision=7;
@@ -210,7 +250,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-shared-lamp-') as tmp:
     subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
     env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     result = subprocess.run([str(exe)],env=env)
-    if os.environ.get('BBSC_TEST_SHARED_CHECKPOINT_OLD') or os.environ.get('BBSC_TEST_NEIGHBOUR_OLD'):
+    if any(os.environ.get(k) for k in ('BBSC_TEST_SHARED_CHECKPOINT_OLD','BBSC_TEST_NEIGHBOUR_OLD','BBSC_TEST_LAMP_PRIORITY_OLD')):
         assert result.returncode != 0,'Missing replay fence passed regression'
         print('PASS negative control: missing checkpoint/neighbor fence FAILS regression')
     else:

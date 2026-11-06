@@ -92,6 +92,7 @@ bool BbscIndependentActive();
 bool BbscIndependentTravelAllowed();
 bool BbscWorldTravelInFlight();
 void QueueBbscSharedLampCheckpoint(s32 point);
+void NoteBbscNativeLampSelection();
 bool ReadBbscSharedLampCheckpoint(s32& point,bool& here);
 bool RequestBbscSharedLampReload();
 bool BbscWorldTalkAllowed(u32 talk);
@@ -8843,7 +8844,7 @@ bool BbscRespawnInPlace(std::string_view why) {
     const u64 global = GetGlobalState();
     const bool guest = ReadablePointer(global, 0x1593) && ReadValue<u8>(global, 0x1592) == 0;
     // Victory releases dead participants at THIS encounter's lamp, even before
-    // it is lit. Ordinary deaths use the shared last-lit checkpoint below.
+    // it is lit. Ordinary deaths use the newer native or shared ignition checkpoint below.
     std::optional<BbscTransform> target = ResolveBbscDefeatedBossLamp(why);
     std::string_view where = target.has_value() ? "defeated boss lamp" : "last lamp";
     // Testers 2026-10-07: "when the host is in a different area when the guest respawns, the area

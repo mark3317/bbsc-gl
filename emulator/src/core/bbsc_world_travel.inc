@@ -489,6 +489,7 @@ void BbscWorldNativeWarpBegin(const GuestRegisterSnapshot* regs) {
     if(bbsc_world_requested_scope && !Chalice::IsMap(bbsc_world_requested_scope->map))
         bbsc_world_altar_visiting=-1;
     bbsc_world_travel_native_armed=true;
+    if(bbsc_world_travel_inflight)NoteBbscNativeLampSelection();
     ArmBbscReinsertV8(); // native FirstSync begins with the stage request, never during its animation
     BBSC_TIMELINE("TRAVEL","native stage request point={} selected={} queued={} map={:#x}",static_cast<s32>(regs->rdi),
         bbsc_world_travel_point,queued,bbsc_world_requested_scope?bbsc_world_requested_scope->map:0);
