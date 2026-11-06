@@ -777,6 +777,7 @@ void InstallBbscIndependentWorld() {
 }
 #else
 void QueueBbscSharedLampCheckpoint(s32){}
+void NoteBbscNativeLampSelection(){}
 bool ReadBbscSharedLampCheckpoint(s32&,bool&){return false;}
 bool RequestBbscSharedLampReload(){return false;}
 bool BbscIndependentActive(){return false;}

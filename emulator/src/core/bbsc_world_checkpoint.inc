@@ -44,6 +44,7 @@ struct BbscSharedLamp {
     s32 point=0;
     u32 actor=0;
     u64 sequence=0,revision=0;
+    s64 lit_ms=0; // UTC activation time, preserved through retries and host ordering
 };
 World::WorldId bbsc_checkpoint_world{};
 BbscSharedLamp bbsc_checkpoint{},bbsc_checkpoint_offer{},bbsc_checkpoint_reload{};
@@ -53,9 +54,25 @@ u64 bbsc_checkpoint_sequence=0;
 s64 bbsc_checkpoint_sent=0,bbsc_checkpoint_reload_since=0;
 u32 bbsc_checkpoint_reload_load=0;
 bool bbsc_checkpoint_fallback=false;
+s64 bbsc_native_lamp_selected_ms=0;
+s64 BbscLampSelectionTimeMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+void BindBbscSharedLamp(const World::WorldId& world);
+void NoteBbscNativeLampSelection() {
+    // Existing native point-load boundary, alive journeys only. Death reloads
+    // must not make their own destination newer than the shared ignition.
+    if (GetCharacterHp(GetLocalPlayerCharacter())<=0) return;
+    World::WorldId world;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};world=bbsc_world_presence_local.world;}
+    BindBbscSharedLamp(world);
+    bbsc_native_lamp_selected_ms=BbscLampSelectionTimeMs();
+}
 
 void BindBbscSharedLamp(const World::WorldId& world) {
     if(bbsc_checkpoint_world==world)return;
+    bbsc_native_lamp_selected_ms=0;
     bbsc_checkpoint_world=world;bbsc_checkpoint={};bbsc_checkpoint_offer={};bbsc_checkpoint_reload={};
     bbsc_checkpoint_seen.clear();bbsc_checkpoint_accepted.clear();bbsc_checkpoint_sent=0;
     // Preserve proposal ordering when this process reconnects to the same room.
@@ -72,10 +89,18 @@ bool ValidBbscSharedLamp(const BbscSharedLamp& lamp) {
 void SendBbscSharedLamp(const BbscSharedLamp& lamp) {
     World::Control c;c.kind=World::ControlKind::LampCheckpoint;c.scope=lamp.scope;
     c.owner=lamp.actor;c.sequence=lamp.sequence;c.epoch=lamp.revision;
-    BbscWorldSend(c,{reinterpret_cast<const u8*>(&lamp.point),sizeof(lamp.point)});
+    std::array<u8,sizeof(s32)+sizeof(s64)> payload{};
+    std::memcpy(payload.data(),&lamp.point,sizeof(lamp.point));
+    std::memcpy(payload.data()+sizeof(s32),&lamp.lit_ms,sizeof(lamp.lit_ms));
+    BbscWorldSend(c,payload);
 }
 void AcceptBbscSharedLamp(BbscSharedLamp lamp) {
     bbsc_checkpoint_seen[lamp.actor]=lamp.sequence;
+    // Arrival order is not ignition order. A delayed older act cannot win.
+    if(bbsc_checkpoint.revision && lamp.lit_ms<bbsc_checkpoint.lit_ms){
+        bbsc_checkpoint_accepted[lamp.actor]=bbsc_checkpoint;
+        SendBbscSharedLamp(bbsc_checkpoint);return;
+    }
     lamp.revision=bbsc_checkpoint.revision+1;bbsc_checkpoint=lamp;
     bbsc_checkpoint_accepted[lamp.actor]=lamp;
     SendBbscSharedLamp(lamp);
@@ -87,13 +112,14 @@ void QueueBbscSharedLampCheckpoint(s32 point) {
     World::Presence local;{std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;}
     BindBbscSharedLamp(local.world);
     BbscSharedLamp lamp{World::ScopeOf(local),point,BbscMod::RegisterOwnId(),++bbsc_checkpoint_sequence,0};
+    lamp.lit_ms=BbscLampSelectionTimeMs();
     const u32 map=GetCurrentPackedMap();
     if(!lamp.actor || lamp.scope.map!=(Chalice::IsMap(map)?0x1D000000u:map) || !ValidBbscSharedLamp(lamp))return;
     if(lamp.actor==local.world.host)AcceptBbscSharedLamp(lamp);
     else {bbsc_checkpoint_offer=lamp;SendBbscSharedLamp(lamp);}
 }
 void BbscWorldReceiveLampCheckpoint(const BbscWorldIncoming& message) {
-    if(!BbscIndependentActive() || message.payload.size()!=sizeof(s32) ||
+    if(!BbscIndependentActive() || message.payload.size()!=sizeof(s32)+sizeof(s64) ||
        message.control.parts!=1 || message.control.part)return;
     World::Presence local;bool member=false;
     {std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;
@@ -102,7 +128,8 @@ void BbscWorldReceiveLampCheckpoint(const BbscWorldIncoming& message) {
     const auto& c=message.control;
     BbscSharedLamp lamp{c.scope,0,c.owner,c.sequence,c.epoch};
     std::memcpy(&lamp.point,message.payload.data(),sizeof(lamp.point));
-    if(!lamp.actor || !lamp.sequence || !ValidBbscSharedLamp(lamp))return;
+    std::memcpy(&lamp.lit_ms,message.payload.data()+sizeof(s32),sizeof(lamp.lit_ms));
+    if(lamp.lit_ms<0 || !lamp.actor || !lamp.sequence || !ValidBbscSharedLamp(lamp))return;
     const u32 self=BbscMod::RegisterOwnId();
     if(self==local.world.host){
         // Only direct member proposals, never a peer's purported canonical echo.
@@ -117,11 +144,13 @@ void BbscWorldReceiveLampCheckpoint(const BbscWorldIncoming& message) {
         if(message.sender!=local.world.host || !lamp.revision)return;
         // An older canonical record may acknowledge our retried offer even
         // after a different player's later activation became current.
-        if(lamp.actor==self && lamp.sequence>=bbsc_checkpoint_offer.sequence)bbsc_checkpoint_offer={};
+        if((lamp.actor==self && lamp.sequence>=bbsc_checkpoint_offer.sequence) ||
+           (bbsc_checkpoint_offer.point && lamp.lit_ms>=bbsc_checkpoint_offer.lit_ms))bbsc_checkpoint_offer={};
         if(lamp.revision<bbsc_checkpoint.revision)return;
         if(lamp.revision==bbsc_checkpoint.revision &&
            (lamp.scope!=bbsc_checkpoint.scope || lamp.point!=bbsc_checkpoint.point ||
-            lamp.actor!=bbsc_checkpoint.actor || lamp.sequence!=bbsc_checkpoint.sequence))return;
+            lamp.actor!=bbsc_checkpoint.actor || lamp.sequence!=bbsc_checkpoint.sequence ||
+            lamp.lit_ms!=bbsc_checkpoint.lit_ms))return;
         bbsc_checkpoint=lamp;
     }
 }
@@ -130,6 +159,12 @@ bool ReadBbscSharedLampCheckpoint(s32& point,bool& here) {
     World::Presence local;{std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;}
     BindBbscSharedLamp(local.world);
     if(!bbsc_checkpoint.revision || !ValidBbscSharedLamp(bbsc_checkpoint))return false;
+    // Arrival at a different lamp remains authoritative until a later actual
+    // ignition. Replayed/delayed canonical packets keep their activation date.
+    if(bbsc_native_lamp_selected_ms && bbsc_checkpoint.lit_ms<=bbsc_native_lamp_selected_ms)return false;
+    // A visitor has already lit and written its own native checkpoint before
+    // the host acknowledgement arrives. Do not revive at the older canonical one.
+    if(bbsc_checkpoint_offer.point && bbsc_checkpoint_offer.lit_ms>bbsc_checkpoint.lit_ms)return false;
     point=bbsc_checkpoint.point;
     // Residency is insufficient, including adjacent ordinary maps. Dungeon
     // point IDs additionally require the exact mounted ritual, not just m29.
