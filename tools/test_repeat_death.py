@@ -12,6 +12,8 @@ def function(signature):
 
 state = source[source.index('struct BbscNativeDeathRearm {'):source.index('// Recreate only the native death detectors')]
 functions = 'void RearmBbscNativeDeathEvents(bool allow_dead = false);\n'+function('u64 BbscLuaEventObject()')+'\n'+function('void RearmBbscNativeDeathEvents(bool allow_dead)')+'\n'+function('void TickBbscDeathLifecycle()')
+if os.environ.get('BBSC_TEST_NO_DEATH_HANDOFF')=='1':
+    functions=functions.replace('BeginBbscCoopDeath("watchdog", state);','/* historical native-only diagnostic */')
 functions = functions.replace('reinterpret_cast<DeleteEvent>(image_base + 0x0132F030)', '&delete_event')
 functions = functions.replace('reinterpret_cast<RegisterDeath>(image_base + 0x01329B70)', '&register_death')
 functions = functions.replace('reinterpret_cast<RegisterHp>(image_base + 0x01329D30)', '&register_hp')
@@ -24,6 +26,7 @@ prefix = r"""
 #include <map>
 #include <string_view>
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
+#define BBSC_TIMELINE(...)
 #define LOG_INFO(...)
 #define LOG_WARNING(...)
 #define LOG_ERROR(...)
@@ -39,6 +42,9 @@ int hp=100,state=6,deletes=0,deaths=0,hps=0;
 bool enabled=true,quit=false,title=false,writable=true,death_ok=true,hp_ok=true;
 bool bbsc_spectate_active=false,bbsc_spectate_releasing=false;
 bool bbsc_boss_at_own_death=false,curtain=false;
+int handoffs=0,echoes=123,bbsc_echoes_at_death=-1;bool boss=false;
+int GetBloodEchoes(){return echoes;}
+void BeginBbscCoopDeath(std::string_view why,s32 role){assert(why=="watchdog"&&role==state);++handoffs;bbsc_spectate_active=true;}
 bool BbscSpectateEnabled(){return enabled;}s64 SteadyNowMs(){return now;}
 s32 GetSessionState(){return state;}u64 GetGlobalState(){return global;}
 u64 GetLocalPlayerCharacter(){return player;}
@@ -47,7 +53,7 @@ bool HasMemoryAccess(u64,size_t,int){return writable;}
 template<class T>T ReadValue(u64 p,size_t o){return static_cast<T>(memory[p+o]);}
 template<class T>void WriteValue(u64 p,size_t o,T v){memory[p+o]=v;}
 int GetCharacterHp(u64){return hp;}bool BbscCurtainActive(){return curtain;}
-bool BbscBossFightAtDeath(){return false;}
+bool BbscBossFightAtDeath(){return boss;}
 bool BbscQuitInProgress(){return quit;}bool BbscReturningToTitle(){return title;}
 void delete_event(u64 e,s32 id){assert(e==event&&id==99999);++deletes;}
 bool register_death(u64 e,s32 id,s32 chr,const char* name,u8 once){
@@ -66,7 +72,7 @@ void reset(){memory.clear();player=0x10000;global=0x20000;event=0x40000;
  bbsc_native_death_api_ready=true;bbsc_native_death_rearm={};
  hp=100;state=6;deletes=deaths=hps=0;quit=title=false;writable=true;death_ok=hp_ok=true;
  bbsc_spectate_active=bbsc_spectate_releasing=curtain=false;
- bbsc_dead_since_ms=bbsc_death_script_ms=0;now+=1000;
+ bbsc_dead_since_ms=bbsc_death_script_ms=0;handoffs=0;echoes=123;boss=false;bbsc_echoes_at_death=-1;now+=1000;
 }
 void retained_death(){bbsc_native_death_rearm={player,global,0,bbsc_load_generation.load()};}
 int main(){
@@ -111,10 +117,25 @@ int main(){
   if(mode==7)bbsc_native_death_api_ready=false;
   TickBbscDeathLifecycle();assert(deletes==0&&deaths==0&&hps==0);
  }
- // A long native delay never invokes a synthetic text/revive/penalty handler.
- // No stubs for such calls exist: adding one to the tick fails compilation.
- reset();hp=0;TickBbscDeathLifecycle();now+=20000;TickBbscDeathLifecycle();
- assert(deletes==0&&deaths==0&&hps==0);
+ // Regression: the old common handoff must still handle a stalled native
+ // script. Capture echoes at death, wait the original15s and enter the SAME
+ // controller exactly once; no direct revive/text/status handlers exist here.
+ for(int role:{3,6})for(bool in_boss:{false,true}){
+  reset();state=role;boss=in_boss;hp=0;TickBbscDeathLifecycle();
+  assert(bbsc_echoes_at_death==123&&bbsc_boss_at_own_death==boss);
+  now+=14999;echoes=0;TickBbscDeathLifecycle();assert(handoffs==0);
+  ++now;TickBbscDeathLifecycle();assert(handoffs==1&&bbsc_spectate_active);
+  assert(bbsc_echoes_at_death==123);now+=20000;TickBbscDeathLifecycle();assert(handoffs==1);
+ }
+ // Loading, quitting, unknown HP, title, solo, active native-final handling
+ // and a living character cannot trigger recovery of a stale death.
+ for(int mode=0;mode<8;++mode){reset();hp=0;TickBbscDeathLifecycle();now+=20000;
+  if(mode==0)memory[global+8]=1;if(mode==1)quit=true;if(mode==2)title=true;
+  if(mode==3)hp=-1;if(mode==4)state=0;if(mode==5)hp=100;
+  if(mode==6)bbsc_spectate_active=true;if(mode==7)curtain=true;
+  TickBbscDeathLifecycle();assert(handoffs==0);
+ }
+
 }
 """
 # Confirm the handoff sites and the removal of the old mod-only death pipeline.
@@ -129,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-native-death-') as tmp:
  subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
  env=dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
  subprocess.run([str(exe)],env=env,check=True,timeout=5)
-print('PASS: native-only death rearm, three host/guest lives, partial failures, context/load/teardown fences; no synthetic death fallback')
+print('PASS: native death rearm, three host/guest lives, partial failures, context/load/teardown fences; restored bounded common handoff')
 
 # Read-only byte checks of the original native registration and guest text path.
 elf = ROOT.parents[1]/'out/register-study.elf'
