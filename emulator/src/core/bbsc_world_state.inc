@@ -446,7 +446,12 @@ bool GuardBbscWorldBootstrap(u64 instance) {
 void BbscWorldPublishFlags(const World::Scope& scope,const BbscWorldState& state,u32 owner,u64 epoch,u64 seq) {
     for(u8 part=0;part<4;++part){
         BbscWorldFlagPart p;p.first=part*8;p.count=std::min<u8>(8,30-p.first);p.present=state.present;
-        for(size_t j=0;j<p.count;++j) p.groups[j]=state.groups[p.first+j];
+        for(size_t j=0;j<p.count;++j) {
+            const size_t index=p.first+j;
+            if(!(p.present&(u64{1}<<index))) continue;
+            p.groups[j]=state.groups[index];
+            MaskBbscSharedFlagGroup(BbscWorldGroupKey(scope.map,index),p.groups[j].data());
+        }
         World::Control c;c.kind=World::ControlKind::Flags;c.scope=scope;c.owner=owner;c.epoch=epoch;c.sequence=seq;c.parts=4;c.part=part;
         BbscWorldSend(c,{reinterpret_cast<const u8*>(&p),sizeof(p)});
     }
@@ -545,13 +550,21 @@ void TickBbscWorldSnapshots() {
         if(c.kind==World::ControlKind::Flags && (c.epoch<state.epoch || (c.epoch==state.epoch && c.sequence<state.sequence)))continue;
         if(c.kind==World::ControlKind::Flags && message.payload.size()==sizeof(BbscWorldFlagPart)){
             BbscWorldFlagPart p;std::memcpy(&p,message.payload.data(),sizeof(p));
-            if(c.parts!=4 || p.first!=c.part*8 || p.count!=std::min<unsigned>(8,30-p.first) || p.reserved || p.present>>30)continue;
+            if(c.parts!=4 || c.part>=4 || p.first!=c.part*8 || p.count!=std::min<unsigned>(8,30-p.first) || p.reserved || p.present>>30)continue;
             if(c.epoch!=state.epoch || c.sequence!=state.sequence){state.parts=0;state.flags_ready=false;}
             state.epoch=c.epoch;state.sequence=c.sequence;state.present=p.present;
-            for(size_t j=0;j<p.count;++j)state.groups[p.first+j]=p.groups[j];
+            for(size_t j=0;j<p.groups.size();++j){
+                const size_t index=p.first+j;
+                if(j>=p.count || !(p.present&(u64{1}<<index))){
+                    p.groups[j].fill(0);
+                    continue;
+                }
+                MaskBbscSharedFlagGroup(BbscWorldGroupKey(c.scope.map,index),p.groups[j].data());
+                state.groups[index]=p.groups[j];
+            }
             state.parts|=1u<<c.part;state.flags_ready=state.parts==15;
+            if(host && !from_host) BbscWorldSend(c,{reinterpret_cast<const u8*>(&p),sizeof(p)});
         }else continue;
-        if(host && !from_host){World::Control forwarded=c;BbscWorldSend(forwarded,message.payload);}
         if(c.kind==World::ControlKind::Flags && state.flags_ready){
             BbscWorldRememberProgress(c.scope,state);BbscWorldRememberLampSnapshot(c.scope,state);
         }

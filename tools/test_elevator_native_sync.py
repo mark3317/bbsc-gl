@@ -61,8 +61,9 @@ PREFIX=r'''
 #include "core/bbsc_quest_event_rules.h"
 #include "core/bbsc_lamp_travel_data.h"
 using namespace Core::Bloodborne;
-using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
+using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 namespace QuestRules=Core::Bloodborne::QuestRules;
+namespace Bbsc=Core::Bbsc;
 constexpr size_t BbscWorldGroupBytes=125,BbscWorldGroupCount=40;
 constexpr std::array<u32,4> BbscWorldFlagKinds{1,6,7,5};
 constexpr u32 BbscDreamStateMap=0x15000000;
@@ -73,6 +74,8 @@ int GetSessionState(){return session;}
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 std::map<u32,std::array<u8,125>> groups,own;
 u64 BbscFlagGroupStorage(u32 k){return reinterpret_cast<u64>(groups[k].data());}
+s32 BbscWorldHostAltarSlot(const World::Scope&){return -1;}
+u64 BbscWorldNativeAltarGroup(s32,u32,u32){return 0;}
 void KeepBbscOwnWorldGroup(u32 k,const u8* p){if(!own.contains(k))std::memcpy(own[k].data(),p,125);}
 void KeepBbscGuestTalkBits(u32,const u8*,u8*){}
 void KeepBbscNpcOwnBits(u32,const u8*,u8*){}
@@ -80,19 +83,40 @@ void KeepBbscNpcOwnBits(u32,const u8*,u8*){}
 
 def production():
     arrays='\n'.join(re.search(r'constexpr std::array<[^;]+ '+name+r'\{.*?\};',SOURCE,re.S).group()
-                     for name in ('BbscNpcQuestFlags','BbscEncounterProgressFlags','BbscGuestKnockEvents','BbscScriptedPickups'))
+                     for name in ('BbscNpcQuestFlags','BbscDreamShopUnlockFlags','BbscEncounterProgressFlags',
+                                  'BbscGuestKnockEvents','BbscScriptedPickups'))
     code=PREFIX+'struct BbscScriptedPickup { u32 map; s64 event; bool client_gate; };\n'+arrays+'\n'
     for sig in ('bool IsBbscNpcQuestFlag(u32 flag)','bool IsBbscLocalQuestEvent(s64 event)',
                 'bool IsBbscKidnapEvent(s64 event)','bool IsBbscPersonalMapEvent(s64 event)',
                 'bool BbscSharedMapProgressAllowed(u32 flag)','u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)',
                 'void BbscMergeSharedProgressGroup(u32 key, u8* live, const u8* incoming)',
-                'u32 BbscWorldGroupKey(u32 packed_map, size_t index)'):
+                'u32 BbscWorldGroupKey(u32 packed_map, size_t index)',
+                'void MaskBbscSharedFlagGroup(u32 key, u8* outgoing)'):
         code+=function(sig)
     code+=function('bool BbscIsolatedNativeEvent(s64 event)',(ROOT/'emulator/src/core/bbsc_personal_events.inc').read_text())
     code+=re.search(r'struct BbscWorldState \{.*?\n\};',STATE,re.S).group()+'\n'
+    code+=re.search(r'struct BbscWorldFlagPart \{.*?\n\};',STATE,re.S).group()+'\n'
+    code+=r'''
+BbscWorldFlagPart first_part{};
+void BbscWorldSend(const World::Control& c,std::span<const u8> body){
+ if(c.part==0) std::memcpy(&first_part,body.data(),sizeof(first_part));
+}
+'''
     code+=function('BbscWorldState BbscWorldCaptureFlags(const World::Scope& scope)',STATE)
+    code+=function('void BbscWorldPublishFlags(const World::Scope& scope,const BbscWorldState& state,u32 owner,u64 epoch,u64 seq)',STATE)
     code+=function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)',STATE)
-    code+='int main(){\n'
+    code+=r'''int main(){
+ const auto scope=World::Scope{.map=0x18010000};
+ auto& live=groups[12410];
+ const auto set=[&](u32 flag){live[flag%1000/8]|=0x80u>>(flag%8);};
+ set(12410330);set(12410809);set(12410511);
+ const auto before=live;
+ const auto captured=BbscWorldCaptureFlags(scope);
+ assert(captured.present&1);
+ BbscWorldPublishFlags(scope,captured,33,1,1);
+ const auto sent=[&](u32 flag){return first_part.groups[0][flag%1000/8]&(0x80u>>(flag%8));};
+ assert(sent(12410330)&&!sent(12410809)&&!sent(12410511)&&live==before);
+ '''
     for packed,flag,event in UNLOCKS:
         code+=f'''{{
  const u32 flag={flag};const s64 event={event};

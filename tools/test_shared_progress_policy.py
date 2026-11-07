@@ -14,6 +14,7 @@ code="""#include <algorithm>
 #include <cstdint>
 #include "core/bbsc_chalice.h"
 #include "core/bbsc_lamp_travel_data.h"
+#include "core/bbsc_quest_event_rules.h"
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u32=uint32_t;
 constexpr size_t BbscWorldGroupBytes=125;

@@ -36,8 +36,9 @@ struct GuestRegisterSnapshot{u64 rdi=0;};
 #define BBSC_PERF_SCOPE(...)
 bool bbsc_npc_pass_due=false,bbsc_npc_own_active=false,blocked=false;
 u8 bbsc_transition_event_skip=0;std::array<int,8> calls{};
+u64 recovered_pc=0;
 bool GuardBbscWorldBootstrap(u64){return blocked;}
-void EnableBbscNativeTravelEvent(u64){++calls[0];}
+void EnableBbscNativeTravelEvent(u64 instance){++calls[0];if(recovered_pc)WriteValue(instance,0xb0,recovered_pc);}
 void EnableBbscRomNativeTransition(u64){++calls[1];}
 void EnableBbscKidnapEvent(u64){++calls[2];}
 void EnableBbscRomJumpEvent(u64){++calls[3];}
@@ -77,11 +78,11 @@ int main(){
  queries=0;for(int i=0;i<2000;++i)assert(BbscEventIdOf(inst)==7);const int fast=queries;
  queries=0;for(int i=0;i<2000;++i)assert(LegacyEventId(inst)==7);const int slow=queries;assert(fast*2<slow);
  // Native restarts can restore network sync: still localize before the next step.
- instance[0x78]=1;LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
- instance[0x78]=1;LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
+ instance[0x78]=1;LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==0);
+ instance[0x78]=1;LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==0);
  // In-place identity change with unchanged addresses must not inherit event7.
  WriteValue<s64>(events+350*0x30,0,9);assert(BbscEventIdOf(inst)==9);
- instance[0x78]=1;LocalizeBbscQuestEvent(inst);assert(instance[0x78]==1);
+ instance[0x78]=1;LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==1);
  // Independent thread caches are invalidated by the same native load epoch.
  WriteValue<s64>(events+350*0x30,0,7);++bbsc_quest_index_epoch;
  std::atomic<int> phase{0};
@@ -102,21 +103,31 @@ int main(){
  GuestRegisterSnapshot regs{inst};
  const std::array<s64,10> cases{13500000,12107000,13201803,9421,13204820,13204821,13200310,12100000,7,12101024};
  const std::array<u32,10> expected{0,1,2,4,8,8,17,32,64,128}; // door is also native travel
+ int personal_queries=0;
  for(size_t c=0;c<cases.size();++c){const s64 e=cases[c];
   WriteValue<s64>(events+350*0x30,0,e);calls.fill(0);
   const u32 mask=expected[c];
   bbsc_npc_own_active=e==7;
+  int one_lookup=0;
+  if(e==7){assert(BbscEventIdOf(inst)==7);queries=0;assert(BbscEventIdOf(inst)==7);one_lookup=queries;}
+  queries=0;
   for(int repeat=0;repeat<2000;++repeat){instance[0x78]=1;BbscNpcPassHook(0,&regs);
    assert(!bbsc_transition_event_skip);if(e==7)assert(!instance[0x78]);}
+  if(e==7){personal_queries=queries;assert(one_lookup>0&&personal_queries==2000*one_lookup);}
   for(int bit=0;bit<8;++bit)assert(calls[bit]==(bit==6?0:((mask&(1u<<bit))?2000:0)));
   blocked=true;calls.fill(0);BbscNpcPassHook(0,&regs);
   assert(bbsc_transition_event_skip);for(int n:calls)assert(n==0);blocked=false;
  }
  readable=false;calls.fill(0);BbscNpcPassHook(0,&regs);readable=true;
  for(int bit=0;bit<8;++bit)assert(calls[bit]==(bit==6?0:1)); // no obsolete pickup role rewriter
+ // The conservative fallback must revalidate after a handler updates the PC.
+ bbsc_npc_own_active=true;WriteValue<s64>(events+350*0x30,0,7);
+ recovered_pc=instructions+350*64;WriteValue(inst,0xb0,instructions-32);
+ instance[0x78]=1;BbscNpcPassHook(0,&regs);assert(!instance[0x78]);recovered_pc=0;
  bbsc_npc_own_active=true;bbsc_npc_pass_due=true;BbscNpcPassHook(0,nullptr);
  assert(!bbsc_transition_event_skip&&!bbsc_npc_pass_due);
  printf("PASS production pre-event dispatch: 2000 steps/category, no unrelated handlers, bootstrap hold, in-place reclassification and null tick\n");
+ printf("PASS personal dispatch: %d pointer checks over 2000 steps, one native identity lookup per step\n",personal_queries);
  printf("PASS event identity: linear equivalence512 events, warm queries %d->%d; row reuse, overlap PC movement, native relocalization and cross-thread reload epoch\n",slow,fast);
 }
 '''

@@ -29,6 +29,7 @@ def declaration(pattern):
 code = r'''
 #include "core/bbsc_quest_event_rules.h"
 #include "core/bbsc_guest_access.h"
+#include "core/bbsc_native_sync_test.h"
 namespace GuestAccess=Core::Bloodborne::GuestAccess;
 namespace QuestRules=Core::Bloodborne::QuestRules;
 #include <algorithm>
@@ -71,6 +72,7 @@ s64 BbscEventIdOf(u64){return event_id;}
 void NoteBbscBossRewardEvent(s64){}
 std::mutex bbsc_npc_own_mutex;
 std::unordered_map<u32,u8> bbsc_npc_own;
+std::unordered_map<u32,std::array<u8,125>> bbsc_npc_checked_groups;
 bool bbsc_npc_own_active=true;
 u8 bbsc_dream_type_skip=0;
 std::array<u64,64> bbsc_dream_type_conditions{};
@@ -113,9 +115,9 @@ for signature in [
     code += function(signature)
 start = SOURCE.index('struct BbscQuestRange {')
 code = '#include "'+(ROOT/'emulator/src/core/bbsc_event_steps.h').as_posix()+'"\n'+code
-end = SOURCE.index('void LocalizeBbscQuestEvent(u64 instance) {', start)
+end = SOURCE.index('void LocalizeBbscQuestEvent(u64 instance, const BbscQuestRange* range) {', start)
 code += SOURCE[start:end]
-code += function('void LocalizeBbscQuestEvent(u64 instance)')
+code += function('void LocalizeBbscQuestEvent(u64 instance, const BbscQuestRange* range)')
 code += r'''
 int main(){
  assert(std::ranges::is_sorted(BbscScriptedPickups,{},&BbscScriptedPickup::event));
@@ -158,7 +160,7 @@ int main(){
   WriteValue<s64>((u64)file,0xa0,event_id);
   for(u64 offset:{0x100ull,0x120ull,0x140ull}){
    WriteValue<u64>(inst,0xb0,(u64)file+offset);instance[0x78]=1;
-   LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
+   LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==0);
   }
   // Host/client gates are exercised by test_guest_access through the native predicate.
  }
@@ -169,14 +171,14 @@ int main(){
   bbsc_dream_type_skip=0;condition[0x10]=0;BbscDreamTypeCheckHook(0,&regs);
   assert(bbsc_dream_type_skip==1&&(condition[0x10]&1));
  }
- // Personal NPC workers must also run locally before the FIRST condition.
- // Otherwise host-synchronized actions bypass the guest's death predicate.
+ // Use the configured local NPC catalogue. Other workers stay synchronized by the game.
  for(s64 worker:QuestRules::LocalEvents){
   bbsc_quest_indexes.clear();bbsc_quest_instances.clear();
   event_id=worker;WriteValue<s64>((u64)file,0xa0,worker);
+  const bool local=IsBbscPersonalMapEvent(worker);
   for(u64 offset:{0x100ull,0x120ull,0x140ull}){
    WriteValue<u64>(inst,0xb0,(u64)file+offset);instance[0x78]=1;
-   LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
+   LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==!local);
   }
  }
  for(s64 worker:{12410761,12410803,12410804})assert(IsBbscLocalQuestEvent(worker));
@@ -185,7 +187,7 @@ int main(){
   event_id=worker;WriteValue<s64>((u64)file,0xa0,worker);
   for(u64 offset:{0x100ull,0x120ull,0x140ull}){
    WriteValue<u64>(inst,0xb0,(u64)file+offset);instance[0x78]=1;
-   LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
+   LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==0);
   }
  }
  // Eye Pendant receipt and Cainhurst placement checkpoint must be personal too.
@@ -193,7 +195,7 @@ int main(){
  // Unknown/complex world event and a reused instance never inherit pickup permission.
  event_id=12500810;assert(!IsBbscPersonalMapEvent(event_id));
  WriteValue<s64>((u64)file,0xa0,event_id);instance[0x78]=1;
- LocalizeBbscQuestEvent(inst);assert(instance[0x78]==1);
+ LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==1);
  bbsc_dream_type_conditions.fill(0);bbsc_dream_type_skip=0;condition[0x10]=0;
  BbscDreamTypeCheckHook(0,&regs);assert(bbsc_dream_type_skip&&condition[0x10]==1);
  // Eye Pendant direct native receipt follows only a positive, matching item delivery.
@@ -215,5 +217,6 @@ with tempfile.TemporaryDirectory(prefix='bbsc-scripted-pickups-') as temporary:
     subprocess.run([compiler, '-std=c++20', '-I', str(ROOT / 'emulator/src'), str(cpp), '-o', str(exe)], check=True)
     env = dict(os.environ)
     env['PATH'] = str(Path(compiler).parent) + os.pathsep + env.get('PATH', '')
-    subprocess.run([str(exe)], check=True, env=env, timeout=10)
+    for native_npc in ('1', '0'):
+        subprocess.run([str(exe)], check=True, env=dict(env, BBSC_NATIVE_NPC_SYNC_TEST=native_npc), timeout=10)
 print('PASS: 12 production pickup/reward gates, three personal completion views, rejoin, native localization and negative paths')

@@ -34,7 +34,7 @@ main = setup + r'''
  TickBbscWorldPlayers();assert(inserts==1);
  peer.map=0x15000000;++peer.visit;Hear();++bbsc_world_player_revision;
  task_present=false;TickBbscWorldPlayers();assert(inserts==1);
- task_present=true;TickBbscWorldPlayers();assert(inserts==2&&removals==2);
+ task_present=true;UpdateNativePlayers();TickBbscWorldPlayers();assert(inserts==2&&removals==2);
  remote=reinterpret_cast<u64>(actor1.data());Actor(remote);idle();
  // Walking over an adjacent map border is not another load/admission.
  bbsc_world_presence_local.map=peer.map=0x18000000;
@@ -56,9 +56,7 @@ main = setup + r'''
 
 with tempfile.TemporaryDirectory(prefix='bbsc-player-load-once-') as td:
     cpp=Path(td)/'once.cpp';exe=Path(td)/'once.exe'
-    cpp.write_text(prefix+life.admission_source()+
-        life.function('u64 BbscWorldPlayerMesh(u64 world,u64 chr,bool& detached)')+
-        life.function('void TickBbscWorldPlayers()')+main,encoding='utf-8')
+    cpp.write_text(prefix+life.admission_source()+life.player_functions()+main,encoding='utf-8')
     compiler=os.environ.get('CXX',r'C:/msys64/clang64/bin/clang++.exe')
     env=dict(os.environ,PATH=str(Path(compiler).parent)+os.pathsep+os.environ.get('PATH',''))
     subprocess.run([compiler,'-std=c++20','-O2','-I',str(life.ROOT/'emulator/src'),str(cpp),'-o',str(exe)],env=env,check=True)

@@ -296,6 +296,7 @@ void RetireBbscNativeFinaleCycle() {
     {
         std::scoped_lock lock{bbsc_npc_own_mutex};
         bbsc_npc_own.clear();
+        bbsc_npc_checked_groups.clear();
         bbsc_action_owner.clear();
     }
     FinishBbscPendingProgress();

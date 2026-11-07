@@ -3935,26 +3935,31 @@ bool IsValidMemberId(u64 id) {
     return ReadablePointer(vtable, 0x30);
 }
 
-bool RemotePlayerExists(u64 task) {
-    const u64 world_chr = ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0);
-    if (!ReadablePointer(world_chr, 0x40)) {
-        return false;
+u64 FindBbscRemotePlayer(u64 world_chr, u64 task) {
+    if (!ReadablePointer(world_chr, 0x68) || !IsValidMemberId(task + 0xC8)) {
+        return 0;
     }
     const s32 count = ReadValue<s32>(world_chr, 0x30);
     const u64 entries = ReadValue<u64>(world_chr, 0x38);
     if (count <= 0 || count > 64 || !ReadablePointer(entries, static_cast<size_t>(count) * 0x38)) {
-        return false;
+        return 0;
     }
     using MemberIdEquals = bool PS4_SYSV_ABI (*)(u64 a, u64 b);
     const auto equals = reinterpret_cast<MemberIdEquals>(image_base + MemberIdEqualsOffset);
+    const u64 local = ReadValue<u64>(world_chr, 0x60);
     for (s32 i = 0; i < count; ++i) {
         const u64 player = ReadValue<u64>(entries, static_cast<size_t>(i) * 0x38);
-        if (ReadablePointer(player, 0x400) && IsValidMemberId(player + 0x3D8) &&
-            IsValidMemberId(task + 0xC8) && equals(player + 0x3D8, task + 0xC8)) {
-            return true;
+        if (player != local && ReadablePointer(player, 0x410) &&
+            IsValidMemberId(player + 0x3D8) && equals(player + 0x3D8, task + 0xC8)) {
+            return player;
         }
     }
-    return false;
+    return 0;
+}
+
+bool RemotePlayerExists(u64 task) {
+    return FindBbscRemotePlayer(
+               ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0), task) != 0;
 }
 
 // StageFlow normally binds the newly created local PlayerIns in 0x0178DAA0.
@@ -6296,7 +6301,7 @@ u64 BbscFlagGroupStorage(u32 key) {
 // the Hunter's Dream (area 21, BBSC's Dream handling), item pickups (kind 5).
 // Also keep the sister's drop gate 72410410, written by EMEVD 12410713 rather than ESD.
 // SHADPS4_BBSC_OWN_NPC_QUESTS=0 turns it off.
-constexpr std::array<u32, 826> BbscNpcQuestFlags{
+constexpr std::array<u32, 831> BbscNpcQuestFlags{
     706, 751, 760, 762, 764, 1102, 1103, 1104, 1105, 1106,
     1108, 1109, 1121, 1122, 1123, 1124, 1140, 1141, 1142, 1143,
     1144, 1145, 1146, 1147, 1148, 1149, 1160, 1161, 1163, 1164,
@@ -6310,13 +6315,13 @@ constexpr std::array<u32, 826> BbscNpcQuestFlags{
     1309, 1310, 1311, 1312, 1313, 1314, 1315, 1317, 1320, 1321, 1322, 1323, 1324, 1325,
     1340, 1341, 1342, 1343, 1344, 1345, 1346, 1347, 1348, 1349, 1350,
     1351, 1360, 1361, 1362, 1363, 1364, 1365, 1366, 1367, 1368,
-    1369, 1370, 1371, 1372, 1373, 1374, 1375, 1381, 1382, 1400, 1401, 1402, 1420,
+    1369, 1370, 1371, 1372, 1373, 1374, 1375, 1376, 1381, 1382, 1400, 1401, 1402, 1420,
     1421, 1422, 1423, 1430, 1431, 1439, 1441, 1442, 1650, 1660,
     1670, 1671, 1672, 1710, 1711, 1712, 1713, 1720, 1721, 1722,
     1723, 1725, 1726, 1727, 1730, 1735, 1750, 1751, 1752, 1760,
     1761, 1762, 1770, 1780, 1790, 1791, 1800, 1801, 1805, 1930, 1933,
     1936, 1939, 1942, 1945, 1948, 1951, 1954, 1957, 1960, 1963,
-    1966, 1969, 1975, 1978, 6000, 6300, 6302, 6303, 6305, 6308,
+    1966, 1969, 1975, 1978, 5912, 5913, 5914, 6000, 6300, 6302, 6303, 6305, 6308,
     6309, 6311, 6603, 6671, 6676, 6678, 6700, 6701, 6702, 6703, 6704,
     6705, 6706, 6707, 6708, 6709, 6710, 6711, 6712, 6713, 6714,
     6715, 6716, 6717, 6718, 6719, 6722, 6723, 6744, 6745, 6746,
@@ -6376,7 +6381,7 @@ constexpr std::array<u32, 826> BbscNpcQuestFlags{
     73500621, 73500630, 73500900, 73500905, 73500910, 73500911, 73500915, 73500920, 73500925, 73500930,
     73500935, 73500936, 73500945, 73500946, 73500950, 73500955, 73500960, 73500965, 73500970, 73500971,
     73500974, 73500975, 73500976, 73500979, 73500980, 73500981, 73600300, 73600301, 73600310, 73600311,
-    73600312, 73600313, 73600314, 73600315, 73600318, 73600500, 73600501, 73600503, 73600520, 73600521,
+    73600312, 73600313, 73600314, 73600315, 73600318, 73600500, 73600501, 73600502, 73600503, 73600520, 73600521,
     73600530, 79900100, 79900104, 79900106, 79900107, 79900108, 79900109, 79900111
 };
 
@@ -6472,6 +6477,7 @@ void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event);
 
 std::mutex bbsc_npc_own_mutex;
 std::unordered_map<u32, u8> bbsc_npc_own; // flag -> our own value in this session
+std::unordered_map<u32, std::array<u8, BbscWorldGroupBytes>> bbsc_npc_checked_groups;
 bool bbsc_npc_own_active = false;
 std::unordered_map<u32, bool> bbsc_action_owner; // local action / received change
 
@@ -6497,21 +6503,25 @@ void NoteBbscNpcOwnFlag(u32 flag, u8 value) {
         return;
     }
     std::scoped_lock lock{bbsc_npc_own_mutex};
-    bbsc_npc_own[flag] = value != 0 ? 1 : 0;
+    const u8 bit = value != 0 ? 1 : 0;
+    const auto [own, inserted] = bbsc_npc_own.try_emplace(flag, bit);
+    if (inserted || own->second != bit) {
+        own->second = bit;
+        bbsc_npc_checked_groups.erase(flag / 1000);
+    }
 }
 
 // The world sync wrote the host's group `key` over `before` (ours): our NPC quest bits back.
 void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live) {
-    if (!bbsc_npc_own_active) {
-        return;
-    }
+    QuestRules::KeepLocalNpcCompletion(key, before, live);
     const auto first = std::lower_bound(BbscNpcQuestFlags.begin(), BbscNpcQuestFlags.end(),
                                         key * 1000);
+    if (first == BbscNpcQuestFlags.end() || *first / 1000 != key) return;
     std::scoped_lock lock{bbsc_npc_own_mutex};
     for (auto it = first; it != BbscNpcQuestFlags.end() && *it / 1000 == key; ++it) {
         const u32 bit = *it % 1000;
         const u8 mask = static_cast<u8>(0x80u >> (bit % 8));
-        if (IsBbscNativeItemStateFlag(*it)) {
+        if (!bbsc_npc_own_active || IsBbscNativeItemStateFlag(*it)) {
             // This boundary is incoming host data. Preserve the CURRENT native
             // local bit, not an older cached NPC value. No local write is undone.
             live[bit / 8] = static_cast<u8>((live[bit / 8] & ~mask) | (before[bit / 8] & mask));
@@ -6533,22 +6543,40 @@ void RevertBbscNpcOwnFlags() {
 #endif
     u32 last_key = 0;
     u64 storage = 0;
-    size_t reverted = 0;
+    u8* checked = nullptr;
     std::vector<std::pair<u32, u8>> native_changes;
     {
     std::scoped_lock lock{bbsc_npc_own_mutex};
-    for (const u32 flag : BbscNpcQuestFlags) {
+    for (auto flag_it = BbscNpcQuestFlags.begin(); flag_it != BbscNpcQuestFlags.end();) {
+        const u32 flag = *flag_it;
         const u32 key = flag / 1000;
         if (key != last_key) {
             last_key = key;
             storage = BbscFlagGroupStorage(key);
-            if (storage && !ReadablePointer(storage, BbscWorldGroupBytes)) storage = 0;
+            if (!storage || !ReadablePointer(storage, BbscWorldGroupBytes)) {
+                storage = 0;
+                bbsc_npc_checked_groups.erase(key);
+            } else {
+                const auto [group, inserted] = bbsc_npc_checked_groups.try_emplace(key);
+                checked = group->second.data();
+                const auto* live = reinterpret_cast<const u8*>(storage);
+                if (!inserted && std::memcmp(checked, live, BbscWorldGroupBytes) == 0) {
+                    storage = 0;
+                } else {
+                    std::memcpy(checked, live, BbscWorldGroupBytes);
+                }
+            }
         }
         if (storage == 0) {
+            flag_it = std::lower_bound(flag_it, BbscNpcQuestFlags.end(), (key + 1) * 1000);
             continue;
         }
+        ++flag_it;
         const u32 bit = flag % 1000;
         const bool now = (*reinterpret_cast<const u8*>(storage+bit/8) & (0x80u>>(bit%8))) != 0;
+        // Record only the value this pass checked. A later native write must
+        // still be visible on the next boundary, including between tick and EMEVD.
+        SetBbscNpcFlagBit(reinterpret_cast<u64>(checked), flag, now);
         if (IsBbscNativeItemStateFlag(flag)) {
             const auto [own, first] = bbsc_npc_own.try_emplace(flag, now ? 1 : 0);
             if ((!first && own->second != (now ? 1 : 0)) || (first && now)) {
@@ -6576,7 +6604,7 @@ void RevertBbscNpcOwnFlags() {
             }
             bbsc_action_owner[flag] = false;
             SetBbscNpcFlagBit(storage, flag, own->second != 0);
-            ++reverted;
+            SetBbscNpcFlagBit(reinterpret_cast<u64>(checked), flag, own->second != 0);
             static std::vector<u32> logged;
             if (logged.size() < 256 && std::ranges::find(logged, flag) == logged.end()) {
                 logged.push_back(flag);
@@ -6592,7 +6620,6 @@ void RevertBbscNpcOwnFlags() {
     // Only persist the game's result across our own-world snapshot swap.
     // No flag is set in the live game, no event is rerun and no item is granted.
     for (const auto& [flag, value] : native_changes) RecordBbscNativeItemFlag(flag, value);
-    (void)reverted;
 }
 
 // Test 2026-10-27 (Eileen, guest): the host's 9074 came in and our 9040 copy saw it in the same
@@ -6601,7 +6628,9 @@ void RevertBbscNpcOwnFlags() {
 // the first one after our tick) and at a talk step: the other player's values are gone before our
 // events and talks look.
 bool IsBbscChaliceBossRewardEvent(s64 event);
-void LocalizeBbscQuestEvent(u64 instance);
+struct BbscQuestRange;
+const BbscQuestRange* LookupBbscQuestRange(u64 instance);
+void LocalizeBbscQuestEvent(u64 instance, const BbscQuestRange* range);
 #ifdef BBSC_MOD
 void FlushBbscPersonalActorObservation();
 void ObserveBbscNativeWorldCommand(u64 instance,s32 bank);
@@ -6613,7 +6642,7 @@ bool GuardBbscLocalTransitionTrigger(u64 instance);
 bool GuardBbscSharedFinaleEvent(u64 instance);
 u8 bbsc_transition_event_skip = 0;
 bool bbsc_npc_pass_due = false;
-u32 BbscEventStepHandlers(u64 instance);
+u32 BbscEventStepHandlers(const BbscQuestRange* range);
 void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscNpcPassHook");
     bbsc_transition_event_skip = 0;
@@ -6624,7 +6653,8 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
         bbsc_transition_event_skip=1;
         return;
     }
-    const u32 steps=registers ? BbscEventStepHandlers(registers->rdi) : 0;
+    const auto* range = registers ? LookupBbscQuestRange(registers->rdi) : nullptr;
+    const u32 steps = registers ? BbscEventStepHandlers(range) : 0;
     if(steps & EventSteps::Travel)EnableBbscNativeTravelEvent(registers->rdi);
     if(steps & EventSteps::RomTransition)EnableBbscRomNativeTransition(registers->rdi);
     if(steps & EventSteps::Kidnap)EnableBbscKidnapEvent(registers->rdi);
@@ -6641,7 +6671,11 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
     }
     if (steps & EventSteps::Kit) HideBbscNativeKitGift(registers->rdi);
     if ((steps & EventSteps::Personal) && (bbsc_npc_own_active || (BbscGuestInHostWorld() &&
-        Chalice::IsMap(GetCurrentPackedMap())))) LocalizeBbscQuestEvent(registers->rdi);
+        Chalice::IsMap(GetCurrentPackedMap())))) {
+        // Other handlers can change the native instruction before localization.
+        LocalizeBbscQuestEvent(registers->rdi,
+                              steps == EventSteps::Personal ? range : LookupBbscQuestRange(registers->rdi));
+    }
     if (!bbsc_npc_pass_due || !bbsc_npc_own_active) {
         return;
     }
@@ -6660,6 +6694,7 @@ void TickBbscNpcOwnQuests() {
             LOG_INFO(Debug, "BBSC own NPC quests: session over - {} flags were kept as ours",
                      bbsc_npc_own.size());
             bbsc_npc_own.clear();
+            bbsc_npc_checked_groups.clear();
             bbsc_action_owner.clear();
             bbsc_npc_own_active = false;
         }
@@ -6723,6 +6758,8 @@ bool BbscCompactWorldSnapshots() {
 
 // Host side: one snapshot of `count` groups (group n = key_of(map, n)) in chunks of 8. Returns the
 // peers reached; `present` gets a bit per group that exists here.
+void MaskBbscSharedFlagGroup(u32 key, u8* outgoing);
+constexpr u32 BbscDreamSoldGroup = 70009;
 u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,
                          u32 (*key_of)(u32 map, size_t index), u64& present) {
     const auto mount = Chalice::IsMap(map) ? BbscHostChaliceMount() : Chalice::Mount{};
@@ -6747,12 +6784,15 @@ u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,
         const size_t here = std::min(BbscWorldChunkGroups, count - first);
         packet.group_count = static_cast<u8>(here);
         for (size_t i = 0; i < here; ++i) {
-            const u64 storage = BbscFlagGroupStorage(key_of(map, first + i));
+            const u32 key = key_of(map, first + i);
+            // Personal pickup receipts and shop stock do not enter world snapshots.
+            if (key / 10000 == 5 || key == BbscDreamSoldGroup) continue;
+            const u64 storage = BbscFlagGroupStorage(key);
             if (storage == 0) {
                 continue;
             }
-            std::memcpy(packet.groups[i], reinterpret_cast<const void*>(storage),
-                        BbscWorldGroupBytes);
+            std::memcpy(packet.groups[i], reinterpret_cast<const void*>(storage), BbscWorldGroupBytes);
+            MaskBbscSharedFlagGroup(key, packet.groups[i]);
             packet.present = static_cast<u8>(packet.present | (1u << i));
             present |= u64{1} << (first + i);
         }
@@ -6890,7 +6930,7 @@ void TickBbscWorldFlagsBroadcast() {
         logged_map = map;
         LOG_INFO(Debug,
                  "BBSC world state: sending our flags for map {:#x} to {} peer(s) ({} of {} groups "
-                 "exist; item pickups only for comparison){}",
+                 "exist){}",
                  map, sent, std::popcount(present), BbscWorldGroupCount,
                  dream ? fmt::format(", and our Hunter's Dream state ({} of {} groups)",
                                      std::popcount(dream_present), BbscDreamGroupCount)
@@ -7166,7 +7206,6 @@ BbscDreamOwnState bbsc_dream_own; // game thread only
 // shop flags keep the guest's own values: group 70009 is nothing but sold counts (all of it), and
 // these are the unlock flags in groups 5 and 6 (tools/gamedata, ShopLineupParam qwcId/eventFlag
 // of those rows). The rest of the Dream still looks like the host's.
-constexpr u32 BbscDreamSoldGroup = 70009;
 // Plus the Dream NPCs' "already met" flags (2026-10-08, Eryk's guest: "bath messengers keep
 // resetting and laughing"): the talk scripts play the first meeting while their flag is off and set
 // it after (t210691 6710, t210692 6702-6704/6719, t210693 6701, t210694 6713, t210695 6714, t210698
@@ -7182,6 +7221,22 @@ constexpr std::array<u16, 130> BbscDreamShopUnlockFlags{
     6657, 6660, 6661, 6662, 6663, 6664, 6665, 6666, 6667, 6671, 6675, 6680, 6681, 6682, 6683,
     6684, 6685, 6686, 6687, 6688, 6689, 6690, 6691, 6692, 6693, 6694, 6695, 6696, 6697,
 };
+
+void MaskBbscSharedFlagGroup(u32 key, u8* outgoing) {
+    static constexpr std::array<u8, BbscWorldGroupBytes> empty{};
+    QuestRules::KeepLocalNpcCompletion(key, empty.data(), outgoing);
+    const auto clear = [outgoing](u32 flag) {
+        const u32 bit = flag % 1000;
+        outgoing[bit / 8] &= static_cast<u8>(~(0x80u >> (bit % 8)));
+    };
+    const auto first = std::lower_bound(BbscNpcQuestFlags.begin(), BbscNpcQuestFlags.end(), key * 1000);
+    for (auto it = first; it != BbscNpcQuestFlags.end() && *it / 1000 == key; ++it) clear(*it);
+    if (key == 5 || key == 6) {
+        for (const u16 flag : BbscDreamShopUnlockFlags) {
+            if (flag / 1000 == key) clear(flag);
+        }
+    }
+}
 
 // Puts the guest's own shop flags of Dream group `index` back into `live`; returns bits changed.
 size_t KeepBbscOwnDreamShopFlags(size_t index, u8* live) {
@@ -7294,6 +7349,7 @@ void ApplyBbscHostDreamState(std::string_view why) {
         std::array<u8,BbscWorldGroupBytes> before_commands;
         std::memcpy(before_commands.data(),live,BbscWorldGroupBytes);
         Chalice::CopyHostFlagGroup(BbscDreamStateKeys[i], live, host.groups[i]);
+        KeepBbscNpcOwnBits(BbscDreamStateKeys[i], before_commands.data(), live);
         if (independent) KeepBbscNativeDreamPhase(BbscDreamStateKeys[i], before_commands.data(), live);
         if(BbscIndependentTravelAllowed())
             LampTravel::KeepTravelCommands(BbscDreamStateKeys[i],before_commands.data(),live);
@@ -14957,10 +15013,10 @@ void PS4_SYSV_ABI BbscGuestPopupHook(u64 /*tag*/, const GuestRegisterSnapshot* r
 // the guest's own Dream state back. Nothing is kept on disk: quitting the game while still a guest
 // skips the merge (it runs on the next trip home with the same host's data only in the same run).
 // Switch SHADPS4_BBSC_SHARED_PROGRESS (Mods tab, on).
-constexpr std::array<u32, 49> BbscProgressFlags{
+constexpr std::array<u32, 46> BbscProgressFlags{
     2200, 2300, 2301, 2400, 2401, 2402, 2411, 2412, 2420, 2421, 2500, 2600, 2601,
     2700, 2701, 2800, 3200, 3300, 3400, 3401, 3402, 3403, 3510, 3511, 3512, 3517,
-    3600, 5910, 5911, 5912, 5913, 5914, 9180, 9450, 9451, 9452, 9453, 9454, 9455,
+    3600, 5910, 5911, 9180, 9450, 9451, 9452, 9453, 9454, 9455,
     9456, 9457, 9458, 9459, 9460, 9461, 9462, 9463, 9464, 9465,
 };
 // The time of night (2026-10-19, user: "connect to someone ahead of you: you get the progress but
@@ -15013,6 +15069,7 @@ constexpr std::array<u32, 63> BbscEncounterProgressFlags{
 bool BbscSharedMapProgressAllowed(u32 flag) {
     return !Chalice::IsLocalVisualFlag(flag) && !Chalice::TouchesLampUnlock(flag) &&
            !IsBbscNpcQuestFlag(flag) && !IsBbscPersonalMapEvent(flag) &&
+           !std::binary_search(QuestRules::LocalEvents.begin(), QuestRules::LocalEvents.end(), flag) &&
            !std::binary_search(BbscEncounterProgressFlags.begin(),
                                BbscEncounterProgressFlags.end(), flag);
 }
@@ -15309,7 +15366,7 @@ std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when) {
     // Preflight only additions: an already-applied journal must not copy the save again.
     // Keep the backup synchronous and before the first mutation when changes exist.
     bool changes = std::ranges::any_of(flags, [](u32 flag) {
-        return !IsBbscUniqueChaliceRewardFlag(flag) && !BbscEventFlag(flag);
+        return !IsBbscNpcQuestFlag(flag) && !IsBbscUniqueChaliceRewardFlag(flag) && !BbscEventFlag(flag);
     });
     if (!changes) {
         for (const auto& [key, bytes] : groups) {
@@ -15335,6 +15392,7 @@ std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when) {
     const auto set = reinterpret_cast<SetEventFlag>(image_base + 0x0132E5A0);
     s64 bosses = 0;
     for (const u32 flag : flags) {
+        if (IsBbscNpcQuestFlag(flag)) continue; // older pending progress can contain private unlocks
         if (IsBbscUniqueChaliceRewardFlag(flag)) continue; // entitlement, never a copied receipt
         if (!BbscEventFlag(flag)) {
             set(0, flag, 1);
@@ -17342,16 +17400,13 @@ s64 LookupBbscQuestEventId(u64 instance) {
     return range ? range->event : -1;
 }
 
-u32 BbscEventStepHandlers(u64 instance) {
-    const auto* range=LookupBbscQuestRange(instance);
+u32 BbscEventStepHandlers(const BbscQuestRange* range) {
     // Unresolved descriptors retain the previous guarded path. Never infer
     // permission or persist a negative classification across native rebuilds.
     return range ? range->handlers : ~u32{Core::Bloodborne::EventSteps::DreamPhase};
 }
 
-void LocalizeBbscQuestEvent(u64 instance) {
-    BBSC_PERF_NESTED("NPC event lookup");
-    const auto* range = LookupBbscQuestRange(instance);
+void LocalizeBbscQuestEvent(u64 instance, const BbscQuestRange* range) {
     if (!range || !range->local) return;
     // The resolver just validated this live instance. Already-local steps do not
     // need another permission query and redundant SetNetworkSyncState(false).

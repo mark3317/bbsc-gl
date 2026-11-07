@@ -86,7 +86,7 @@ void QueueBbscWork(BbscWork) {}
 std::atomic<u32> bbsc_load_generation{7};
 std::mutex bbsc_world_presence_mutex, bbsc_progress_mutex, bbsc_npc_own_mutex;
 World::Presence bbsc_world_presence_local;
-std::vector<int> bbsc_progress_host_flags, bbsc_progress_groups, bbsc_npc_own, bbsc_action_owner;
+std::vector<int> bbsc_progress_host_flags, bbsc_progress_groups, bbsc_npc_own, bbsc_npc_checked_groups, bbsc_action_owner;
 std::vector<int> bbsc_independent_states;
 struct Scope {
     u32 map;
