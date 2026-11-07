@@ -112,6 +112,7 @@ bool BbscWorldTaskHere(u64 task);
 u32 BbscWorldLivingHere();
 u32 BbscWorldParticipantsHere();
 bool BbscWorldPeerHere(u32 peer);
+bool BbscLectureExitRecipient(u64 member);
 bool BbscWorldActorHere(u64 chr);
 void DiscardBbscWorldScenes();
 u32 BbscIndependentCapabilities();
@@ -6663,7 +6664,6 @@ void ObserveBbscNativeWorldCommand(u64 instance,s32 bank);
 void HideBbscNativeKitGift(u64 instance);
 void EnableBbscKidnapEvent(u64 instance);
 void EnableBbscRomJumpEvent(u64 instance);
-bool GuardBbscLocalTransitionTrigger(u64 instance);
 bool GuardBbscSharedFinaleEvent(u64 instance);
 u8 bbsc_transition_event_skip = 0;
 bool bbsc_npc_pass_due = false;
@@ -6689,8 +6689,7 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
         // The host still owns the audience, encounter and ending triggers.
         if (ReadValue<u8>(registers->rdi, 0x78) != 0) WriteValue<u8>(registers->rdi, 0x78, 0);
     }
-    if (((steps & EventSteps::Door) && GuardBbscLocalTransitionTrigger(registers->rdi)) ||
-        ((steps & EventSteps::Finale) && GuardBbscSharedFinaleEvent(registers->rdi))) {
+    if ((steps & EventSteps::Finale) && GuardBbscSharedFinaleEvent(registers->rdi)) {
         bbsc_transition_event_skip = 1;
         return;
     }
@@ -10390,18 +10389,19 @@ void TickBbscSpectate() {
 //                                    StageTransition (loads the guest's own world); host: only
 //                                    clears event flags 4047 / 4000.
 // Run 2026-09-16 without this: the guest left the room but stayed in the host's world without a
-// character (camera only), the host saw the guest vanish. So for a live session the guest skips
-// _3Leave and _3; the rewards in BlockClear2/_2 still run. BlockClear2_1 (host and guest) arms the
-// death-lock clearing so the "leaving" slot marks set by BlockClear2 are removed again.
+// character (camera only), the host saw the guest vanish. The retained guest skips the home
+// transition and the locks that prepare for it. The original reward and completion steps run.
+// BlockClear2_1 still arms the existing recovery of the native leaving slot marks.
 constexpr u64 BlockClear2FirstOffset = 0x01385470; // BlockClear2_1
 constexpr u64 BlockClear2LeaveOffset = 0x013858A0; // BlockClear2_3Leave
 constexpr u64 BlockClear2HomeOffset = 0x01385930;  // BlockClear2_3
 u8 bbsc_boss_leave_skip = 0;
 u8 bbsc_boss_home_skip = 0;
-// After a guest skipped BlockClear2_3: clear its locks for this long, see TickBbscBossUnlock.
-constexpr s64 BbscBossUnlockMs = 20'000;
-s64 bbsc_boss_unlock_until_ms = 0;
+u8 bbsc_boss_departure_gate_skip = 0;
+bool bbsc_boss_departure_gates_ready = false;
 s64 bbsc_gate_watch_since_ms = 0; // the guest's last boss clear, see TickBbscGateWatch
+
+void ReleaseBbscLeaveLocks(std::string_view why);
 
 bool BbscSessionAlive() {
     const s32 state = GetSessionState();
@@ -10411,6 +10411,13 @@ bool BbscSessionAlive() {
 s32 LocalPlayerType() {
     const u64 player = GetLocalPlayerCharacter();
     return ReadablePointer(player, 0x80) ? ReadValue<s32>(player, 0x78) : -1;
+}
+
+void PS4_SYSV_ABI BbscBossDepartureGateHook(u64, const GuestRegisterSnapshot*) {
+    if (bbsc_boss_departure_gates_ready && BbscSessionAlive() && LocalPlayerType() == 1 &&
+        !BbscQuitInProgress()) {
+        bbsc_boss_departure_gate_skip = 1;
+    }
 }
 
 // The host's boss clear decides on the game's co-op count (2026-10-20, CONFIRMED in test5, host
@@ -10499,76 +10506,16 @@ void PS4_SYSV_ABI BbscBossClearHook(u64 tag, const GuestRegisterSnapshot* regist
         LOG_INFO(Debug, "BBSC boss clear: BlockClear2_3Leave skipped (guest stays in the session)");
     } else if (tag == 2 && LocalPlayerType() == 1) {
         bbsc_boss_home_skip = 1;
-        bbsc_boss_unlock_until_ms = SteadyNowMs() + BbscBossUnlockMs;
         LOG_INFO(Debug, "BBSC boss clear: BlockClear2_3 skipped (guest stays in the host world)");
-    }
-}
-
-// The boss-clear locks a skipped BlockClear2_3 leaves on the guest (CONFIRMED statically,
-// 2026-09-27; report: after the boss the guest could not use a ladder or interact at all).
-// BlockClear2 (0x013849A0) sets event flags 4047, 4000 and 4092 on every living member
-// (0x01384E5E..0x01384E86) and MenuMan [0x05562878]+0x2F0 = 1. What undoes them is the end of the
-// chain: BlockClear2_3 (0x01385930: +0x2F0 = 0, flags 4047/4000 = 0 - the host runs it) or the
-// game's leave variant 0x013859F0 (+0x2F0 = 0 and, when 4092 is set, 4047/4000/4092 = 0, then it
-// leaves the session). The guest skips both, so here are their unlocking parts without the leaving.
-void TickBbscBossUnlock() {
-    if (BbscQuitInProgress()) return;
-    if (bbsc_boss_unlock_until_ms == 0) {
-        return;
-    }
-    const s64 now = SteadyNowMs();
-    if (now > bbsc_boss_unlock_until_ms) {
-        bbsc_boss_unlock_until_ms = 0;
-        return;
-    }
-    static s64 last_ms = 0;
-    if (now - last_ms < 1'000) {
-        return; // again every second for the window: a late Lua step may set them once more
-    }
-    last_ms = now;
-    const u64 global = GetGlobalState();
-    const u64 player = GetLocalPlayerCharacter();
-    if (!BbscSessionAlive() || !ReadablePointer(global, 0x10) || ReadValue<u8>(global, 0x08) != 0 ||
-        player == 0 || GetCharacterHp(player) <= 0) {
-        return;
-    }
-    bool menu = false;
-    if (const u64 menu_man = ReadValue<u64>(image_base + 0x05562878, 0);
-        ReadablePointer(menu_man, 0x2F8) && HasMemoryAccess(menu_man + 0x2F0, 4, MemoryProt::CpuWrite) &&
-        ReadValue<s32>(menu_man, 0x2F0) != 0) {
-        WriteValue<s32>(menu_man, 0x2F0, 0);
-        menu = true;
-    }
-    // SetEventFlag panics when SprjEventState [0x0553B0D8] or SprjEventFlagMan [0x0553B100] is null.
-    if (ReadValue<u64>(image_base + 0x0553B0D8, 0) == 0 ||
-        ReadValue<u64>(image_base + 0x0553B100, 0) == 0) {
-        return;
-    }
-    using SetEventFlag = u64 PS4_SYSV_ABI (*)(u64 unused, u32 flag, u8 value);
-    const auto set = reinterpret_cast<SetEventFlag>(image_base + 0x0132E5A0);
-    set(0, 0xFCF, 0); // 4047
-    set(0, 0xFA0, 0); // 4000
-    set(0, 0xFFC, 0); // 4092
-    // 2026-10-20 (tester: "nothing works when you kill a boss" as a guest): the Lua load wait
-    // (Lua event object +0x8D, SetLoadWait) stops the player acting until a load (host Blank,
-    // TickBbscHostBlank); the guest skips the boss clear's load home, so it is lifted here too.
-    // HYPOTHESIS that the boss clear sets it - TickBbscGateWatch logs it either way.
-    bool load_wait = false;
-    if (const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
-        ReadablePointer(lua_man, 0x10)) {
-        const u64 lua = ReadValue<u64>(lua_man, 8);
-        if (ReadablePointer(lua, 0x90) && ReadValue<u8>(lua, 0x8D) != 0) {
-            WriteValue<u8>(lua, 0x8D, 0);
-            load_wait = true;
+        if (!bbsc_boss_departure_gates_ready) {
+            const u64 global = GetGlobalState();
+            const u64 player = GetLocalPlayerCharacter();
+            if (ReadablePointer(global, 0x10) && ReadValue<u8>(global, 8) == 0 && player != 0 &&
+                GetCharacterHp(player) > 0) {
+                ReleaseBbscLeaveLocks("boss clear compatibility");
+                ReleaseBbscDeathLocks("boss clear compatibility");
+            }
         }
-    }
-    static s64 logged_window = 0;
-    if (logged_window != bbsc_boss_unlock_until_ms || menu || load_wait) {
-        logged_window = bbsc_boss_unlock_until_ms;
-        LOG_INFO(Debug,
-                 "BBSC boss clear: guest unlocked (event flags 4047/4000/4092 cleared, mission-clear "
-                 "menu state {}, Lua load wait {})",
-                 menu ? "cleared" : "was already clear", load_wait ? "lifted" : "was off");
     }
 }
 
@@ -10587,6 +10534,22 @@ void InstallBbscBossClearHooks() {
     if (!ok) {
         LOG_ERROR(Debug, "BBSC boss clear: failed to hook the BlockClear2 chain");
         return;
+    }
+    // Skip only the writes that prepare for leaving. The guest HP check and native
+    // reward/cleanup code between and after these sites remain on their original paths.
+    static constexpr std::array<u8, 8> LoadWait{0x41, 0xC6, 0x86, 0x8D, 0, 0, 0, 1};
+    static constexpr std::array<u8, 10> FirstLeaveFlag{0xBE, 0xCF, 0x0F, 0, 0, 0xBA, 1, 0, 0, 0};
+    static constexpr std::array<u8, 10> MenuLock{0xC7, 0x80, 0xF0, 0x02, 0, 0, 1, 0, 0, 0};
+    bbsc_boss_departure_gates_ready =
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01384D03), LoadWait, 0,
+                             BbscBossDepartureGateHook, &bbsc_boss_departure_gate_skip, true) &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01384D48), FirstLeaveFlag, 0,
+                             BbscBossDepartureGateHook, &bbsc_boss_departure_gate_skip, false,
+                             reinterpret_cast<void*>(image_base + 0x01384D75)) &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x013853E7), MenuLock, 0,
+                             BbscBossDepartureGateHook, &bbsc_boss_departure_gate_skip, true);
+    if (!bbsc_boss_departure_gates_ready) {
+        LOG_ERROR(Debug, "BBSC boss clear: native departure gates unavailable; cleanup on BlockClear2_3");
     }
     LOG_INFO(Debug, "BBSC boss clear keeps the co-op (BlockClear2_1 {:#x}, _3Leave {:#x}, _3 {:#x})",
              BlockClear2FirstOffset, BlockClear2LeaveOffset, BlockClear2HomeOffset);
@@ -12490,42 +12453,10 @@ void InstallBbscWallHooks() {
              "(base game, DLC, Chalice); boss walls untouched");
 }
 
-// ObjAct activation is replicated separately from event channel31. Observe the
-// ORIGINAL accepted local action, without changing its result or arguments.
-std::array<u64,2> bbsc_local_exit_action_load{};
-void PS4_SYSV_ABI BbscLocalTransitionActionHook(u64, const GuestRegisterSnapshot* registers) {
-    if (!registers || !(registers->rax & 0xFF) || !BbscIndependentTravelAllowed() ||
-        GetCurrentPackedMap()!=0x20000000 || (GetSessionState()!=3 && GetSessionState()!=6)) return;
-    const u32 action=static_cast<u32>(registers->r12);
-    if (action==3200000 || action==3200001)
-        bbsc_local_exit_action_load[action-3200000]=u64{bbsc_load_generation.load()}+1;
-}
-s64 BbscEventIdOf(u64 instance);
-bool GuardBbscLocalTransitionTrigger(u64 instance) {
-    if (!BbscIndependentTravelAllowed() || GetCurrentPackedMap()!=0x20000000 ||
-        (GetSessionState()!=3 && GetSessionState()!=6) || !ReadablePointer(instance,0xC0)) return false;
-    const s64 event=BbscEventIdOf(instance);
-    if (event!=13200310 && event!=13200311) return false;
-    const u64 instruction=ReadValue<u64>(instance,0xB0);
-    if (!ReadablePointer(instruction,0x20) || ReadValue<s32>(instruction,0)!=5 ||
-        ReadValue<s32>(instruction,4)!=2) return false;
-    // 3200000 -> ObjAct13200123 ->13200311; 3200001 ->13200124 ->13200310.
-    return bbsc_local_exit_action_load[event==13200311?0:1]!=u64{bbsc_load_generation.load()}+1;
-}
-
 // The shared pre-event pass also enables local native travel for visitors.
-// No action-button rejection: the original Lecture Building doors are usable.
 void InstallBbscEventPassHook() {
     if (image_base == 0) return;
     static constexpr std::array<u8, 6> Prologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
-    // After the native stack-cookie check, AL and R12 still contain the result
-    // and action ID. Copy only ADD RSP,58 / POP RBX; the earlier MOV at97D6
-    // is RIP-relative and cannot be copied into the DLL trampoline unchanged.
-    static constexpr std::array<u8,5> ActionResult{0x48,0x83,0xC4,0x58,0x5B};
-    if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base+0x01CD97E6),
-                              std::span<const u8>{ActionResult},0,BbscLocalTransitionActionHook)) {
-        LOG_ERROR(Debug,"BBSC local travel: failed to observe original exit action result");
-    }
     // Install independently of Dream/personal-quest options. This is also the
     // existing NPC event pass; one trampoline owns the native event-update entry.
     if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x012ECDC0),
@@ -23172,7 +23103,6 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscDeathCurtain"); TickBbscDeathCurtain(); }
         { BBSC_PERF_NESTED("tick TickBbscStageWatch"); TickBbscStageWatch(); }
         { BBSC_PERF_NESTED("tick TickBbscHostDeathNotice"); TickBbscHostDeathNotice(); }
-        { BBSC_PERF_NESTED("tick TickBbscBossUnlock"); TickBbscBossUnlock(); }
         { BBSC_PERF_NESTED("tick CaptureBbscGuestLoot"); CaptureBbscGuestLoot(); }
         { BBSC_PERF_NESTED("tick TickBbscGuestLootReset"); TickBbscGuestLootReset(); }
         { BBSC_PERF_NESTED("tick TickBbscDreamStateRestore"); TickBbscDreamStateRestore(); }

@@ -21,6 +21,8 @@ int main(){
   state=role;current_map=0x1D000000;bbsc_world_travel_point=0;bbsc_world_travel_inflight=false;
   bbsc_world_requested_mount=Chalice::Mount{};bbsc_world_altar_visiting=2;
   command(290110+lamp,0x40000);const u32 flag=72900100+lamp;
+  const u32 availability=LampTravel::AvailabilityFlag(290110+lamp);
+  if(availability)native_flags.insert(availability); // the original lamp is available
   r.r15=flag;r.rax=123;BbscWorldLampCommandRange(0,&r);
   if(role==6)assert(r.rax==reinterpret_cast<u64>(bbsc_world_lamp_command.data()));
   for(u32 request:{flag,flag+100}){
@@ -31,6 +33,7 @@ int main(){
    // ORIGINAL_RANGE_CHECK
    assert(!QueueBbscWorldTravel(request,1)); // native SetFlag runs immediately
   }
+  if(availability)native_flags.erase(availability);
   assert(!bbsc_world_travel_point&&!bbsc_world_travel_inflight);
   assert(bbsc_world_requested_mount&&bbsc_world_altar_visiting==2);
   snapshot_ready=false;const int count=sets,before=sent;TickBbscWorldTravel();

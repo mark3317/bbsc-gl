@@ -42,7 +42,6 @@ void EnableBbscNativeTravelEvent(u64 instance){++calls[0];if(recovered_pc)WriteV
 void EnableBbscRomNativeTransition(u64){++calls[1];}
 void EnableBbscKidnapEvent(u64){++calls[2];}
 void EnableBbscRomJumpEvent(u64){++calls[3];}
-bool GuardBbscLocalTransitionTrigger(u64){++calls[4];return false;}
 bool GuardBbscSharedFinaleEvent(u64){++calls[5];return false;}
 void EnableBbscScriptedPickupEvent(u64){++calls[6];}
 void HideBbscNativeKitGift(u64){++calls[7];}
@@ -102,7 +101,7 @@ int main(){
  WriteValue(inst,0xb0,instructions+350*64);
  GuestRegisterSnapshot regs{inst};
  const std::array<s64,10> cases{13500000,12107000,13201803,9421,13204820,13204821,13200310,12100000,7,12101024};
- const std::array<u32,10> expected{0,1,2,4,8,8,17,32,64,128}; // door is also native travel
+ const std::array<u32,10> expected{0,1,2,4,8,8,1,32,64,128};
  int personal_queries=0;
  for(size_t c=0;c<cases.size();++c){const s64 e=cases[c];
   WriteValue<s64>(events+350*0x30,0,e);calls.fill(0);
@@ -119,7 +118,7 @@ int main(){
   assert(bbsc_transition_event_skip);for(int n:calls)assert(n==0);blocked=false;
  }
  readable=false;calls.fill(0);BbscNpcPassHook(0,&regs);readable=true;
- for(int bit=0;bit<8;++bit)assert(calls[bit]==(bit==6?0:1)); // no obsolete pickup role rewriter
+ for(int bit=0;bit<8;++bit)assert(calls[bit]==(bit==4||bit==6?0:1));
  // The conservative fallback must revalidate after a handler updates the PC.
  bbsc_npc_own_active=true;WriteValue<s64>(events+350*0x30,0,7);
  recovered_pc=instructions+350*64;WriteValue(inst,0xb0,instructions-32);

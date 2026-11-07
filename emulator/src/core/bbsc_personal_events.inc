@@ -23,15 +23,29 @@ bool BbscIsolatedNativeEvent(s64 event) {
     return BbscOwnNpcQuestsEnabled() &&
            (std::ranges::binary_search(QuestRules::LocalEvents, event) || IsBbscPersonalMapEvent(event));
 }
-bool BbscPersonalEventMessage(std::span<const u8> bytes,u32& event,u16& kind) {
+bool BbscLectureExitCondition(u16 kind, u32 step) {
+    // 5[2] advances the native cursor to the SFX at index 1 and then waits
+    // for ObjAct. A condition message for this index releases only that wait.
+    return kind == 1 && step == 1 && GetCurrentPackedMap() == 0x20000000;
+}
+bool BbscPersonalEventMessage(std::span<const u8> bytes,u64 member,u32& event,u16& kind) {
     if(bytes.size()<0x18)return false;
     u16 root;u32 size;
     std::memcpy(&root,bytes.data(),2);std::memcpy(&kind,bytes.data()+2,2);
     std::memcpy(&size,bytes.data()+4,4);std::memcpy(&event,bytes.data()+8,4);
     // Native012EE540: condition progress (1,8); Native012EE660: timed
     // continuation (2,12). The latter does NOT check event+78 at all.
-    return root==0 && ((kind==1 && size==8 && bytes.size()==0x18) ||
-        (kind==2 && size==12 && bytes.size()==0x1C)) && BbscIsolatedNativeEvent(event);
+    if(root!=0 || !((kind==1 && size==8 && bytes.size()==0x18) ||
+        (kind==2 && size==12 && bytes.size()==0x1C)) || !BbscIsolatedNativeEvent(event)) return false;
+    if(LampTravel::IsLectureExitEvent(event)) {
+        u32 step;
+        std::memcpy(&step,bytes.data()+0x10,sizeof(step));
+        if(BbscLectureExitCondition(kind,step) && BbscLectureExitRecipient(member)) {
+            BBSC_TIMELINE("TRAVEL","Lecture exit condition admitted event={} step={}",event,step);
+            return false;
+        }
+    }
+    return true;
 }
 void NoteBbscPersonalEventTransport(std::string_view direction,u32 event,u16 kind) {
     if(!BbscTimelineEnabled())return;
@@ -48,6 +62,8 @@ void PS4_SYSV_ABI BbscPersonalEventSendHook(u64 kind,const GuestRegisterSnapshot
     if(!r || !BbscPersonalEventIsolation() || !ReadablePointer(r->rdi,0x30))return;
     const u32 event=ReadValue<u32>(r->rdi,0x28);
     if(!BbscIsolatedNativeEvent(event))return;
+    if(LampTravel::IsLectureExitEvent(event) && ReadablePointer(r->rdi,0x4C) &&
+       BbscLectureExitCondition(static_cast<u16>(kind),ReadValue<u32>(r->rdi,0x48)))return;
     // Native emitters return void. Only the remote copy is suppressed;
     // local timing, instruction advance and all commands run. At this boundary
     // an internal native restart cannot undo event localization mid-update.
@@ -64,7 +80,8 @@ void PS4_SYSV_ABI BbscPersonalEventReceiveHook(u64,const GuestRegisterSnapshot* 
         if(size<=0 || size>static_cast<s32>(r->r8) || !BbscPersonalEventIsolation() ||
            r->rdx!=0x31 || !ReadablePointer(r->rcx,static_cast<size_t>(size)))break;
         u32 event=0;u16 kind=0;
-        if(!BbscPersonalEventMessage({reinterpret_cast<const u8*>(r->rcx),static_cast<size_t>(size)},event,kind))break;
+        if(!BbscPersonalEventMessage({reinterpret_cast<const u8*>(r->rcx),static_cast<size_t>(size)},
+                                     r->rsi,event,kind))break;
         // Already consumed/ACKed by native reliable transport. Do not let
         // another player's PC/conditions enter a personal local event.
         NoteBbscPersonalEventTransport("receive",event,kind);size=0;

@@ -215,6 +215,10 @@ void PS4_SYSV_ABI BbscWorldLampTalker(u64,const GuestRegisterSnapshot* regs) {
     if(BbscWorldTalkAllowed(bbsc_world_esd_talk))
         const_cast<GuestRegisterSnapshot*>(regs)->r15=reinterpret_cast<u64>(bbsc_world_live_talk.data());
 }
+bool BbscGuestLampLocked(u32 talk) {
+    const u32 flag = LampTravel::AvailabilityFlag(talk);
+    return flag && GetSessionState() == 6 && BbscIndependentTravelAllowed() && !BbscEventFlag(flag);
+}
 void PS4_SYSV_ABI BbscWorldEsdFunction(u64,const GuestRegisterSnapshot* regs){
     bbsc_world_workshop_frame=0;
     bbsc_world_esd_function=regs?static_cast<s32>(regs->rax):-1;
@@ -326,6 +330,13 @@ bool BbscWorldTravelInteractionBlocked() {
 u8 bbsc_world_travel_action_skip=0;
 void PS4_SYSV_ABI BbscWorldTravelActionHook(u64,const GuestRegisterSnapshot* regs) {
     bbsc_world_travel_action_skip=0;
+    // ESD f56 can register the talk anchor before 7000 enables the lamp.
+    // Feed the same availability flag into the native action's RCX veto.
+    if (regs && bbsc_world_esd_function == 56 && bbsc_world_esd_actor &&
+        ReadablePointer(regs->rsp, 8) && ReadValue<u64>(regs->rsp, 0) == image_base + 0x0203F111 &&
+        BbscGuestLampLocked(bbsc_world_esd_talk)) {
+        const_cast<GuestRegisterSnapshot*>(regs)->rcx = 1;
+    }
     if(!regs || !BbscWorldTravelInteractionBlocked())return;
     // Native action-button registration ENTRY: reject before it registers an
     // item/talk/door/lever action or mutates its manager. Never veto at the
@@ -338,7 +349,13 @@ bool QueueBbscWorldTravel(u32 flag,u8 value) {
     // Lighting is a native action, never a queued journey or quest journal.
     // m29 return likewise keeps its original flag, animation, waits and native
     // 9020..9026 Dream destination. Adopt that journey at NativeWarpBegin only.
-    if(LampTravel::IsLampActivationCommand(flag) || (flag>=72900100 && flag<72900110))return false;
+    if (LampTravel::IsLampActivationCommand(flag)) {
+        // Recheck at the native ESD flag write in case availability changed
+        // after the button was offered. An allowed write goes straight to 7100.
+        return value && flag == LampTravel::DreamReturnFlag(bbsc_world_command_talk) + 100 &&
+               BbscGuestLampLocked(bbsc_world_command_talk);
+    }
+    if(flag>=72900100 && flag<72900110)return false;
     if(!value || !BbscIndependentTravelAllowed() || !BbscWorldTravelFlag(flag))return false;
     const auto reject=[&](const char* reason){
         BBSC_TIMELINE("TRAVEL","local travel rejected flag={} talk={} reason={}",flag,bbsc_world_command_talk,reason);
@@ -452,8 +469,9 @@ void EnableBbscNativeTravelEvent(u64 instance) {
     if(!BbscIndependentTravelAllowed() || !ReadablePointer(instance,0xC0))return;
     const s64 event=BbscEventIdOf(instance);
     if(!LampTravel::IsNativeTravelEvent(event) && !LampTravel::IsLampActivationEvent(event))return;
-    // Original events remain native, but their local trip must not execute in
-    // another room member's game. This is native SetNetworkSyncState(false).
+    // The original condition emitter needs native network sync for the
+    // Lecture ObjAct. The transport filter still isolates its continuation.
+    if(LampTravel::IsLectureExitEvent(event))return;
     if(ReadValue<u8>(instance,0x78)!=0)WriteValue<u8>(instance,0x78,0);
     const u64 instruction=ReadValue<u64>(instance,0xB0);
     if(bbsc_world_travel_inflight && !bbsc_world_travel_native_armed &&
