@@ -212,7 +212,8 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
     if(!state.flags_ready) return;
     if(scope.map==BbscDreamStateMap)return; // dedicated host Dream phase, never guest map state
     const bool guest=GetSessionState()==6;
-    const bool host_cup=GetSessionState()==3 && Chalice::IsMap(scope.map);
+    const bool dungeon=Chalice::IsMap(scope.map);
+    const bool host_cup=GetSessionState()==3 && dungeon;
     const s32 slot=host_cup?BbscWorldHostAltarSlot(scope):-1;
     if(host_cup && slot<0)return;
     for(size_t i=0;i<30;++i) {
@@ -225,16 +226,27 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
         if(guest) KeepBbscOwnWorldGroup(key,live);
         // Independent m29 state is already keyed by dungeon AND ritual. Its
         // lamps must replace the previous mounted cup's runtime flags too.
-        if(Chalice::IsMap(scope.map))std::memcpy(live,state.groups[i].data(),125);
-        else Chalice::CopyHostFlagGroup(key,live,state.groups[i]);
+        if(dungeon)std::memcpy(live,state.groups[i].data(),125);
+        else if (const auto flags = World::LiftFlags(key); !flags.empty()) {
+            // A running lift is owned by its native event. Replaying a
+            // flag from a snapshot would change its conditions without moving it.
+            auto incoming = state.groups[i];
+            for (const auto& lift : flags) {
+                const u8 mask = lift.position | lift.temporary;
+                auto& value = incoming[lift.offset];
+                value = (value & ~mask) | (before[lift.offset] & mask);
+            }
+            Chalice::CopyHostFlagGroup(key,live,incoming);
+        } else {
+            Chalice::CopyHostFlagGroup(key,live,state.groups[i]);
+        }
         // This is the SAME host cup's backing bank. An older owner snapshot
         // must not revoke an already recorded lamp discovery/menu unlock.
         if(host_cup && key==12907 && before!=state.groups[i])
             for(const u32 unlock:Chalice::LampUnlockFlags)for(const u32 flag:{unlock-10,unlock})
                 live[flag%1000/8]|=before[flag%1000/8]&(0x80u>>(flag%8));
-        // A resident peer supplies runtime state, not a rollback of shared story.
-        // Kind1 progress is additive; retain the host's already-open world too.
-        if(i<10 && !Chalice::IsMap(scope.map))
+        // Keep permanent progress even if a resident peer's snapshot is older.
+        if(i<10 && !dungeon)
             BbscMergeSharedProgressGroup(key,live,before.data());
         if (key == 12401 || key == 13201) {
             // 12401803 / 13201803 mark each player's native movie complete.
@@ -283,6 +295,44 @@ bool BbscWorldFlagsReady(const World::Scope& scope) {
     const auto* owner=bbsc_independent_owners.Find(scope);
     return !owner || it->second.epoch==owner->epoch ||
         (owner->owner==BbscMod::RegisterOwnId() && it->second.epoch<owner->epoch);
+}
+
+// Seed the destination before its EMEVDs start. The native initializer uses
+// the saved position and performs the object/lever setup itself.
+void BbscWorldSeedLiftFlags(u32 map) {
+    const u32 base = BbscWorldGroupKey(map, 0);
+    if (!base) return;
+    const BbscWorldState* snapshot = nullptr;
+    bool snapshot_checked = false;
+    const bool guest = GetSessionState() == 6;
+    for (size_t i = 0; i < 10; ++i) {
+        const u32 key = base + static_cast<u32>(i);
+        const auto flags = World::LiftFlags(key);
+        if (flags.empty()) continue;
+        const auto storage = BbscFlagGroupStorage(key);
+        if (!storage) continue;
+        auto* live = reinterpret_cast<u8*>(storage);
+        if (guest) KeepBbscOwnWorldGroup(key, live);
+        if (!snapshot_checked) {
+            snapshot_checked = true;
+            World::Scope scope;
+            u32 owner = 0;
+            {
+                std::scoped_lock lock{bbsc_world_presence_mutex};
+                scope = World::ScopeForMap(World::ScopeOf(bbsc_world_presence_local),
+                                           map & 0xFFFF0000, bbsc_world_requested_scope);
+                if (const auto* lease = bbsc_independent_owners.Find(scope)) owner = lease->owner;
+            }
+            if (owner && owner != BbscMod::RegisterOwnId() && BbscWorldFlagsReady(scope))
+                snapshot = &bbsc_independent_states.at(scope);
+        }
+        for (const auto& lift : flags) {
+            auto& value = live[lift.offset];
+            value &= ~lift.temporary; // a new load has no local movement in flight
+            if (lift.position && snapshot && (snapshot->present & (u64{1} << i)))
+                value = (value & ~lift.position) | (snapshot->groups[i][lift.offset] & lift.position);
+        }
+    }
 }
 void BbscWorldEnsureSeed(const World::Scope& scope) {
     if(BbscMod::RegisterOwnId()!=scope.world.host || BbscWorldFlagsReady(scope))return;

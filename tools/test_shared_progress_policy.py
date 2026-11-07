@@ -13,6 +13,7 @@ code="""#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include "core/bbsc_chalice.h"
+#include "core/bbsc_lift_flags.h"
 #include "core/bbsc_lamp_travel_data.h"
 #include "core/bbsc_quest_event_rules.h"
 using namespace Core::Bloodborne;
@@ -48,7 +49,8 @@ int main() {
  for(u32 f=12410000;f<12420000;++f) {
   auto mask=static_cast<u8>(0x80u>>(f%8));
   auto incoming=BbscSharedProgressByte(f/1000,(f%1000)/8,mask);
-  assert(incoming==(BbscSharedMapProgressAllowed(f)?mask:0));
+  const bool lift = f==12410350 || f==12410351 || f==12415350;
+  assert(incoming==(BbscSharedMapProgressAllowed(f) && !lift ? mask : 0));
   assert(static_cast<u8>(mask|incoming)==mask); // own bit is never erased
  }
 }

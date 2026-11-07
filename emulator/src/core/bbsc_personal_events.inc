@@ -18,7 +18,10 @@ bool BbscIsolatedNativeEvent(s64 event) {
     if(BbscIndependentTravelAllowed() &&
        (LampTravel::IsNativeTravelEvent(event) || event==13201803 || event==12401803 || LampTravel::IsLampActivationEvent(event) ||
         IsBbscKidnapEvent(event) || Bbsc::DreamFinale::EventEnding(event)))return true;
-    return BbscOwnNpcQuestsEnabled() && IsBbscPersonalMapEvent(event);
+    // Keep native actor synchronization in both modes. A remote EMEVD cursor
+    // must not bypass this player's conditions in any reviewed quest controller.
+    return BbscOwnNpcQuestsEnabled() &&
+           (std::ranges::binary_search(QuestRules::LocalEvents, event) || IsBbscPersonalMapEvent(event));
 }
 bool BbscPersonalEventMessage(std::span<const u8> bytes,u32& event,u16& kind) {
     if(bytes.size()<0x18)return false;

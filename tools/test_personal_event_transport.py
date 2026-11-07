@@ -52,11 +52,13 @@ namespace LampTravel=Core::Bloodborne::LampTravel;
 #include <vector>
 #include "core/cpu_patches.h"
 #include "core/bbsc_quest_event_rules.h"
+#include "core/bbsc_native_sync_test.h"
 #include "core/bbsc_dream_finale.h"
 using Core::GuestRegisterSnapshot;
 namespace Bbsc=Core::Bbsc;
 namespace QuestRules=Core::Bloodborne::QuestRules;
-bool independent=false;bool BbscIndependentTravelAllowed(){return independent;}
+namespace SessionTest=Core::Bloodborne::SessionTest;
+bool independent=false,native_npc=true;bool BbscIndependentTravelAllowed(){return independent;}
 u64 image_base=0;bool own=true,timeline=true;int state=3,logs=0,sends=0;
 std::atomic<u32> bbsc_load_generation{1};
 namespace BbscMod {u64 EbootAddress(){return image_base;}void LogPlain(const char* s){puts(s);}}
@@ -66,7 +68,8 @@ s64 SteadyNowMs(){return 1000;}
 bool BbscOwnNpcQuestsEnabled(){return own;}
 s32 GetSessionState(){return state;}
 u32 GetCurrentPackedMap(){return 0x18010000;}
-bool IsBbscLocalQuestEvent(s64 e){return std::binary_search(QuestRules::LocalEvents.begin(),QuestRules::LocalEvents.end(),e);}
+bool IsBbscLocalQuestEvent(s64 e){return native_npc?SessionTest::LocalQuest(e):
+    std::ranges::binary_search(QuestRules::LocalEvents,e);}
 bool IsBbscKidnapEvent(s64 e){return e==9421||e==9422||e==12400780||e==12700500;}
 bool IsBbscPersonalMapEvent(s64 e){return IsBbscLocalQuestEvent(e);}
 bool BbscEventFlag(u32){return false;}
@@ -156,7 +159,25 @@ for(u16 kind:{1,2}){
  assert(run(11,22,0x31,output.data(),output.size())==(s32)shared.size());
  assert(std::equal(shared.begin(),shared.end(),output.begin()));
 }
-for(s64 e:QuestRules::LocalEvents){queued.push_back(packet((u32)e,2));assert(run(11,22,0x31,output.data(),output.size())==0);}
+unsigned native_transport_only=0;
+for(s64 event:QuestRules::LocalEvents)native_transport_only+=!IsBbscLocalQuestEvent(event);
+assert(native_transport_only==17);
+for(bool native_mode:{true,false}){
+ native_npc=native_mode;
+ for(int role:{3,4,6}){
+  state=role;
+  for(s64 event:QuestRules::LocalEvents){
+   put(instance,0x28,u32(event));instance[0x78]=1;
+   const int before=sends;
+   emit((u64)instance.data());emit_first((u64)instance.data());assert(sends==before);
+   for(u16 kind:{1,2}){
+    queued.push_back(packet((u32)event,kind));
+    assert(run(11,22,0x31,output.data(),output.size())==0);
+   }
+  }
+ }
+}
+state=3;native_npc=true;
 for(bool enabled:{false,true}){own=enabled;state=enabled?0:3;
  queued.push_back(packet(12410760,2));assert(run(11,22,0x31,output.data(),output.size())==0x1c);}
 state=3;own=true;queued.push_back(packet(12410760,2));assert(run(11,22,0x30,output.data(),output.size())==0x1c);

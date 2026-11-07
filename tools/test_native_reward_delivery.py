@@ -42,6 +42,7 @@ cup_lots = set(map(int,re.findall(r'\{\d+, (\d+)\}', re.search(r'BbscUniqueChali
 native_lots = cup_lots | scripted | {lot for _, _, first, repeat in bosses for lot in (first, repeat) if lot}
 bbfiles.GAME = os.environ['BB_GAME']
 _, _, data, rows = param.load('ItemLotParam')
+vermin_lots = {5900, 5920, 5930}
 assert 'GiveBbscBossGoods' not in source and 'BbscBossGoodsLots' not in source
 for legacy in ('NoteBbscBossRewardEvent', 'TickBbscBossRewards', 'bbsc_boss_reward_queue'):
     assert legacy not in source, legacy
@@ -146,11 +147,12 @@ void reset(){
  bbsc_ledger_context.reset();
  bbsc_ledger_own_flags.clear();guest=ours=prerequisite=true;fail=empty=false;
  bbsc_native_boss_award=false;bbsc_award_skip=0;legacy_skip=true;current_event=12300130;chalice_ticket=true;chalice_claimed=false;
+ map=0x18010000;
 }
 int main(){
  image_base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);assert(image_base);
 '''
-for lot in sorted(native_lots):
+for lot in sorted(native_lots | vermin_lots):
     raw = data[rows[lot]:rows[lot] + 0x94]
     code += f'lots[{lot}]={{{",".join(map(str,raw))}}};\n'
 code += r'''
@@ -162,6 +164,7 @@ code += r'''
  assert(InstallGuestCodeHook((void*)(image_base+AwardItemLotOffset),std::span<const u8>{body,6},0,BbscGuestAwardHook,&bbsc_award_skip));
  using Award=void PS4_SYSV_ABI (*)(u64,s32,u32);auto award=(Award)(image_base+AwardItemLotOffset);
  for(auto& [lot,row]:lots){
+  if(lot==5900||lot==5920||lot==5930)continue; // tested through BlockClear2 below
   reset();award(1,lot,1);assert(native_calls==1&&manual==0&&skip_checks==0&&!inventory.empty());
   FinishBbscLedgerContext();assert(manual==0);
   for(bool no_result:{false,true}){
@@ -197,6 +200,30 @@ code += r'''
  assert(skip_checks==1&&native_calls==0&&manual==0);
  reset();legacy_skip=false;award(1,999999,0);
  assert(skip_checks==1&&native_calls==0&&manual==1);
+
+ // Use the original BlockClear2 call site and the native one-item lots.
+ u8 block_clear_call[sizeof(chalice_call)];
+ memcpy(block_clear_call,chalice_call,sizeof(block_clear_call));
+ const s32 displacement=AwardItemLotOffset-0x0138515B;
+ memcpy(block_clear_call+15,&displacement,sizeof(displacement));
+ memcpy((void*)(image_base+0x01385148),block_clear_call,sizeof(block_clear_call));
+ auto block_clear_award=(Award)(image_base+0x01385148);
+ for(s32 lot:{5900,5920,5930}){
+  reset();map=0x1d000000;
+  block_clear_award(1,lot,0);FinishBbscLedgerContext();
+  assert(native_calls==1&&manual==0&&skip_checks==0&&inventory.at(0x400006A4)==1);
+  block_clear_award(1,lot,0);FinishBbscLedgerContext();
+  assert(native_calls==2&&manual==0&&skip_checks==0&&inventory.at(0x400006A4)==2);
+  reset();map=0x1d000000;legacy_skip=false;fail=true;
+  block_clear_award(1,lot,0);FinishBbscLedgerContext();
+  assert(native_calls==1&&manual==0&&skip_checks==0&&inventory.empty());
+ }
+ reset();legacy_skip=false;block_clear_award(1,5900,0);
+ assert(native_calls==0&&manual==1&&skip_checks==1); // outside the Chalice
+ reset();map=0x1d000000;legacy_skip=false;award(1,5900,0);
+ assert(native_calls==0&&manual==1&&skip_checks==1); // different caller
+ reset();map=0x1d000000;legacy_skip=false;guest=false;block_clear_award(1,5900,0);
+ assert(native_calls==1&&manual==0&&skip_checks==1); // host's original routing
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-native-rewards-') as folder:
@@ -210,4 +237,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-native-rewards-') as folder:
     env['PATH'] = str(Path(compiler).parent) + os.pathsep + env.get('PATH', '')
     subprocess.run([str(exe)], env=env, check=True, timeout=15)
 print(f"PASS: {len(native_lots)} original native lots; 12 scripted sources; 19 boss events' first/repeat lots; "
-      'personal guards; no manual add/K3 duplicate gate/reroll fallback; actual award trampoline')
+      'guest Vermin in m29; personal guards; no manual add/K3 duplicate gate/reroll fallback; actual award trampoline')

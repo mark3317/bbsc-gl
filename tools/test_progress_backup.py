@@ -35,6 +35,8 @@ prefix = r'''
 #include <vector>
 #define FMT_HEADER_ONLY
 #include <fmt/format.h>
+#include "core/bbsc_lift_flags.h"
+namespace World=Core::Bloodborne::World;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s64=int64_t;
 namespace fs=std::filesystem;
 #define LOG_INFO(...)
@@ -144,6 +146,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-progress-backup-') as temporary:
     cpp, exe = p/'fixture.cpp', p/'fixture.exe'
     cpp.write_text(prefix + functions + main, encoding='utf-8')
     subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++20',
+                    '-I'+str(ROOT/'emulator/src'),
                     '-I'+str(ROOT/'emulator/externals/fmt/include'),
                     str(cpp), '-o', str(exe)], check=True)
     subprocess.run([str(exe), str(p/'files')], check=True, timeout=15)

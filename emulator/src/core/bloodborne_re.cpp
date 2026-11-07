@@ -6,6 +6,7 @@
 #include "core/bbsc_dream_finale.h"
 #include "core/bbsc_world_presence.h"
 #include "core/bbsc_world_control.h"
+#include "core/bbsc_lift_flags.h"
 #include "core/bbsc_world_native_initial.h"
 #include "core/bbsc_world_blocks.h"
 #include "core/bbsc_world_players.h"
@@ -6251,14 +6252,16 @@ u64 BbscFlagGroupStorage(u32 key) {
     // +0x19 is-nil. Same lower_bound walk as 0x013CFD80.
     u64 node = ReadValue<u64>(head, 0x08);
     u64 found = head;
-    for (int depth = 0; depth < 64 && ReadablePointer(node, 0x38) && ReadValue<u8>(node, 0x19) == 0;
-         ++depth) {
-        if (key <= ReadValue<u32>(node, 0x20)) {
+    for (int depth = 0; depth < 64 && ReadablePointer(node, 0x38); ++depth) {
+        const auto* current = reinterpret_cast<const u8*>(node);
+        if (current[0x19] != 0) break;
+        u32 node_key;
+        std::memcpy(&node_key, current + 0x20, sizeof(node_key));
+        const bool left = key <= node_key;
+        if (left) {
             found = node;
-            node = ReadValue<u64>(node, 0x00);
-        } else {
-            node = ReadValue<u64>(node, 0x10);
         }
+        std::memcpy(&node, current + (left ? 0x00 : 0x10), sizeof(node));
     }
     if (found == head || ReadValue<u32>(found, 0x20) != key) {
         return 0;
@@ -6489,7 +6492,10 @@ void SetBbscNpcFlagBit(u64 storage, u32 flag, bool on) {
 }
 
 bool IsBbscNativeItemStateFlag(u32 flag);
+bool IsBbscEventWrittenItemStateFlag(u32 flag);
 void RecordBbscNativeItemFlag(u32 flag, u8 value);
+bool bbsc_native_item_completion_hook_ready = false;
+std::optional<u32> bbsc_native_item_seed_generation;
 void RestoreBbscNativeLootReceipts(bool force = false);
 bool IsBbscGlobalLootReceipt(u32 flag) {
     return flag >= 50'000'000 && flag < 50'100'000;
@@ -6498,7 +6504,7 @@ s32 BbscLotOfFlag(u32 flag);
 
 // SetFlag hook: our own game set it.
 void NoteBbscNpcOwnFlag(u32 flag, u8 value) {
-    if (IsBbscNativeItemStateFlag(flag)) return; // native writes are observed, never rolled back
+    if (IsBbscNativeItemStateFlag(flag)) return; // native writes are never rolled back
     if (!bbsc_npc_own_active || !IsBbscNpcQuestFlag(flag)) {
         return;
     }
@@ -6536,7 +6542,24 @@ void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live) {
     }
 }
 
-// Puts back every NPC quest flag that is not our own value (game thread).
+struct BbscNpcFlagPassCatalog {
+    std::vector<u32> observed_at_write;
+    std::vector<u32> periodic;
+};
+
+const BbscNpcFlagPassCatalog& BbscNpcFlagPassFlags() {
+    static const auto catalog = [] {
+        BbscNpcFlagPassCatalog result;
+        for (const u32 flag : BbscNpcQuestFlags) {
+            auto& flags = IsBbscEventWrittenItemStateFlag(flag) ? result.observed_at_write : result.periodic;
+            flags.push_back(flag);
+        }
+        return result;
+    }();
+    return catalog;
+}
+
+// Puts back NPC quest flags that are not our own values (game thread).
 void RevertBbscNpcOwnFlags() {
 #ifdef BBSC_PERF_NESTED
     BBSC_PERF_NESTED("measure NPC own flags");
@@ -6545,9 +6568,11 @@ void RevertBbscNpcOwnFlags() {
     u64 storage = 0;
     u8* checked = nullptr;
     std::vector<std::pair<u32, u8>> native_changes;
+    const std::span<const u32> flags = bbsc_native_item_completion_hook_ready
+        ? std::span<const u32>{BbscNpcFlagPassFlags().periodic} : std::span<const u32>{BbscNpcQuestFlags};
     {
     std::scoped_lock lock{bbsc_npc_own_mutex};
-    for (auto flag_it = BbscNpcQuestFlags.begin(); flag_it != BbscNpcQuestFlags.end();) {
+    for (auto flag_it = flags.begin(); flag_it != flags.end();) {
         const u32 flag = *flag_it;
         const u32 key = flag / 1000;
         if (key != last_key) {
@@ -6568,7 +6593,7 @@ void RevertBbscNpcOwnFlags() {
             }
         }
         if (storage == 0) {
-            flag_it = std::lower_bound(flag_it, BbscNpcQuestFlags.end(), (key + 1) * 1000);
+            flag_it = std::lower_bound(flag_it, flags.end(), (key + 1) * 1000);
             continue;
         }
         ++flag_it;
@@ -6696,6 +6721,7 @@ void TickBbscNpcOwnQuests() {
             bbsc_npc_own.clear();
             bbsc_npc_checked_groups.clear();
             bbsc_action_owner.clear();
+            bbsc_native_item_seed_generation.reset();
             bbsc_npc_own_active = false;
         }
         return;
@@ -7237,6 +7263,10 @@ void MaskBbscSharedFlagGroup(u32 key, u8* outgoing) {
         }
     }
 }
+
+#ifdef BBSC_MOD
+#include "core/bbsc_native_join_flags.inc"
+#endif
 
 // Puts the guest's own shop flags of Dream group `index` back into `live`; returns bits changed.
 size_t KeepBbscOwnDreamShopFlags(size_t index, u8* live) {
@@ -8221,9 +8251,12 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
     if (IsBbscNativeItemStateFlag(flag)) {
         NoteBbscTalkFlag(flag, value, 0, true); // existing personal-state save, not a reward retry
         if (const auto own = bbsc_own_world.find(key); own != bbsc_own_world.end()) {
-            own->second[byte] = static_cast<u8>((own->second[byte] & ~mask) | (value ? mask : 0));
-            bbsc_own_world_dirty = true;
-            WriteBbscOwnWorldFile();
+            const u8 updated = static_cast<u8>((own->second[byte] & ~mask) | (value ? mask : 0));
+            if (own->second[byte] != updated) {
+                own->second[byte] = updated;
+                bbsc_own_world_dirty = true;
+                WriteBbscOwnWorldFile();
+            }
         }
         return;
     }
@@ -8240,6 +8273,41 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
     bbsc_loot_dirty = true;
     WriteBbscGuestLootFile();
     WriteBbscOwnWorldFile();
+}
+
+void SeedBbscNativeItemStateAtLoad() {
+    if (!bbsc_native_item_completion_hook_ready || !BbscGuestInHostWorld()) return;
+    const u32 generation = bbsc_load_generation.load();
+    if (bbsc_native_item_seed_generation == generation ||
+        ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0) == 0) return;
+    bbsc_native_item_seed_generation = generation;
+    u32 last_key = 0;
+    const u8* live = nullptr;
+    for (const u32 flag : BbscNpcFlagPassFlags().observed_at_write) {
+        const u32 key = flag / 1000;
+        if (key != last_key) {
+            last_key = key;
+            const u64 storage = BbscFlagGroupStorage(key);
+            live = storage && ReadablePointer(storage, BbscWorldGroupBytes)
+                ? reinterpret_cast<const u8*>(storage) : nullptr;
+        }
+        // An older save may already have the completion set without a write in
+        // this process. A zero in a freshly loaded table is not a reset action.
+        const u32 byte = (flag % 1000) / 8;
+        const u8 mask = static_cast<u8>(0x80u >> (flag % 8));
+        if (!live || !(live[byte] & mask)) continue;
+        const auto own = bbsc_own_world.find(key);
+        if (own == bbsc_own_world.end() || !(own->second[byte] & mask)) {
+            RecordBbscNativeItemFlag(flag, 1);
+        }
+    }
+}
+
+void RecordBbscNativeItemSetFlag(u64 manager, u32 flag, bool value) {
+    if (manager == ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0) &&
+        BbscFlagGroupStorage(flag / 1000)) {
+        RecordBbscNativeItemFlag(flag, value);
+    }
 }
 
 // Flush before switching dungeon/ordinary-world namespace. Unknown identity cannot create
@@ -11902,6 +11970,7 @@ void TickBbscLoadState() {
         if (was_loading || native_finish || world_ready) {
             ++bbsc_load_generation;
             FinishBbscNativeFinaleLoad();
+            SeedBbscNativeItemStateAtLoad();
             LOG_INFO(Debug, "BBSC load: completed generation {} (native finish {})",
                      bbsc_load_generation.load(), native_finish);
         }
@@ -11952,6 +12021,8 @@ void TickBbscPostLoadRecovery() {
     const s32 state = GetSessionState();
     const bool home = ReadValue<u8>(global, 0x1592) != 0;
     if (state != previous_state || home != previous_home) {
+        // A join can become a playable guest session after the map load completed.
+        if (state == 6 && !home) SeedBbscNativeItemStateAtLoad();
         previous_state = state;
         previous_home = home;
         stable_ms = 0;
@@ -12587,6 +12658,12 @@ bool IsBbscNativeItemStateFlag(u32 flag) {
     // Original-data survey: only these native-reward receipts overlap NPC guards.
     // Ordinary kind-5 receipts already have personal loot isolation.
     return flag == 6671 || IsBbscScriptedPickupFlag(flag) || IsBbscKidnapFlag(flag);
+}
+
+bool IsBbscEventWrittenItemStateFlag(u32 flag) {
+    // 6671 and 9470 are ItemLot receipts. The native completion and SetFlag
+    // boundaries cover the scripted completions, placement and abduction bits.
+    return IsBbscKidnapFlag(flag) || (flag != 9470 && IsBbscScriptedPickupFlag(flag));
 }
 
 bool IsBbscPersonalMapEvent(s64 event) {
@@ -14922,7 +14999,12 @@ void PS4_SYSV_ABI BbscGuestAwardHook(u64 /*tag*/, const GuestRegisterSnapshot* r
         LOG_INFO(Debug, "BBSC kit: native lot {} skipped; supplied with Notebook", lot);
         return;
     }
-    if (IsBbscNativeRewardLot(lot)) {
+    // BlockClear2 already checked the guest's eligibility for Vermin. Keep its
+    // AwardItemLot call on the native path instead of routing it as a guest drop.
+    const bool chalice_vermin = reward_return == 0x0138515B &&
+        (lot == 5900 || lot == 5920 || lot == 5930) &&
+        Chalice::IsMap(GetCurrentPackedMap()) && BbscGuestInHostWorld();
+    if (chalice_vermin || IsBbscNativeRewardLot(lot)) {
         // Personal event completion / native receipts own repetition. Do not
         // consult K3's inventory history, mutate the lot, or reroll a native
         // empty/failed result. Begin only observes real gives and own flags.
@@ -15075,6 +15157,10 @@ bool BbscSharedMapProgressAllowed(u32 flag) {
 }
 
 u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming) {
+    if (!incoming) return 0;
+    for (const auto& lift : World::LiftFlags(key)) {
+        if (lift.offset == byte) incoming &= ~(lift.position | lift.temporary);
+    }
     for (u32 bit = 0; bit < 8; ++bit) {
         const u32 flag = key * 1000 + static_cast<u32>(byte) * 8 + bit;
         if ((incoming & (0x80u >> bit)) != 0 && !BbscSharedMapProgressAllowed(flag)) {
@@ -17675,22 +17761,26 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
                             caller_offset >= BbscEventBank2003Begin &&
                             caller_offset < BbscEventBank2003End &&
                             IsBbscTalkDrivenEvent(bbsc_event_run.event);
-    NoteBbscTalkFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx),
-                     caller_offset, talk_event);
-    if (talk_event && static_cast<u8>(registers->rdx) != 0) {
-        std::scoped_lock owner_lock{bbsc_npc_own_mutex};
-        bbsc_action_owner[static_cast<u32>(registers->rsi)] = true;
+    const u32 flag = static_cast<u32>(registers->rsi);
+    const u8 value = static_cast<u8>(registers->rdx);
+    if (bbsc_native_item_completion_hook_ready && IsBbscEventWrittenItemStateFlag(flag) &&
+        BbscGuestInHostWorld()) {
+        RecordBbscNativeItemSetFlag(registers->rdi, flag, static_cast<u32>(registers->rdx) != 0);
+    } else {
+        NoteBbscTalkFlag(flag, value, caller_offset, talk_event);
     }
-    NoteBbscNpcOwnFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
+    if (talk_event && value != 0) {
+        std::scoped_lock owner_lock{bbsc_npc_own_mutex};
+        bbsc_action_owner[flag] = true;
+    }
+    NoteBbscNpcOwnFlag(flag, value);
     if (caller_offset == BbscTalkSetFlagReturnOffset) {
-        NoteBbscLocalTalkFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
+        NoteBbscLocalTalkFlag(flag, value);
     }
     const s32 state = GetSessionState();
     if ((state != 3 && state != 6) || !BbscResearchEnabled()) {
         return;
     }
-    const u32 flag = static_cast<u32>(registers->rsi);
-    const u8 value = static_cast<u8>(registers->rdx);
     static std::mutex mutex;
     static std::vector<std::tuple<u32, u8, u64>> seen;
     {
@@ -17707,6 +17797,15 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
                   state);
 }
 
+void PS4_SYSV_ABI BbscNativeItemCompletionHook(u64, const GuestRegisterSnapshot* registers) {
+    if (!registers || registers->rax >= BbscWorldGroupBytes) return;
+    // The native completion writer has found a live group. r8d is the first
+    // flag in that group, eax the byte index, r14b the MSB-first shift.
+    const u32 flag = static_cast<u32>(registers->r8 + registers->rax * 8 + 7 - (registers->r14 & 7));
+    if (IsBbscEventWrittenItemStateFlag(flag)) RecordBbscNativeItemFlag(flag, 1);
+    // Resume the native load/OR/store. The observer only changes our journal.
+}
+
 void InstallBbscResearchHooks() {
     // SprjEventFlagMan::SetFlag 0x013CFCC0(man, flag, value), a leaf: MOV R8D, EDX / MOV ECX,
     // [RDI + 0x1C]. Every flag the events, the talk scripts and the game set (0x0132E5A0, used by
@@ -17719,6 +17818,18 @@ void InstallBbscResearchHooks() {
         LOG_ERROR(Debug, "BBSC research: SetEventFlag hook failed");
     } else {
         bbsc_chalice_flag_hook_ready = true;
+        if (BbscOwnNpcQuestsEnabled()) {
+            static constexpr std::array<u8, 9> CompletionStore{
+                0x0F, 0xB6, 0x0C, 0x02, 0x09, 0xF1, 0x88, 0x0C, 0x02};
+            bbsc_native_item_completion_hook_ready = InstallGuestCodeHook(
+                reinterpret_cast<void*>(image_base + 0x012ED357), CompletionStore, 0,
+                BbscNativeItemCompletionHook);
+            if (bbsc_native_item_completion_hook_ready) {
+                (void)BbscNpcFlagPassFlags(); // split the catalog at startup, not on the first join
+            } else {
+                LOG_WARNING(Debug, "BBSC personal flags: native completion observer unavailable, keeping periodic receipt checks");
+            }
+        }
     }
     static constexpr std::array<u8, 7> StepBegin{0x48, 0x8B, 0xB5, 0x20, 0xFF, 0xFF, 0xFF};
     static constexpr std::array<u8, 7> StepEnd{0x44, 0x3B, 0xA5, 0x44, 0xFF, 0xFF, 0xFF};
@@ -22958,14 +23069,18 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     if (site.offset == 0x01938F65) { // Warp.RespawnPoint.Resolve: a load picks its spawn point
         // Observe construction even when the ordinary tick misses the whole load.
         // Apply/cleanup stays on the first ready game tick, after native initialization.
-        if (!BbscReturningToTitle()) {
-            if(!bbsc_world_load_pending.exchange(GetGlobalState()))++bbsc_world_native_load;
-        }
+        const bool new_load = !BbscReturningToTitle() &&
+                              !bbsc_world_load_pending.exchange(GetGlobalState());
+        if (new_load) ++bbsc_world_native_load;
         if (BbscNativeFinaleCommitted()) {
             DepartBbscNativeFinaleAtSpawn(registers->r13);
         } else {
             RestoreBbscOwnWorldAtLoad();
             ApplyBbscSharedProgressAtLoad();
+#ifdef BBSC_MOD
+            if (new_load && BbscIndependentActive() && ReadablePointer(registers->r13, 0x5C))
+                BbscWorldSeedLiftFlags(ReadValue<u32>(registers->r13, 0x58));
+#endif
         }
     }
     if (site.offset == 0x01332C1B) { // SummonedPlacement.SelectMap: a load picks its map
@@ -25788,6 +25903,9 @@ void InstallReverseEngineeringTrace() {
     InstallBbscSpectateHooks();
     InstallBbscWallHooks();
     InstallBbscEventPassHook();
+#ifdef BBSC_MOD
+    InstallBbscNativeJoinFlags();
+#endif
     InstallBbscEchoPathHooks();
     InstallBbscDreamHooks();
     static constexpr std::array<u8, 6> RemoStartStore{0x88, 0x83, 0x68, 0x01, 0x00, 0x00};
