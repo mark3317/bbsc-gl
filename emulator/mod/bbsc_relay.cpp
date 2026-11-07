@@ -399,8 +399,9 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
     } else if (frame[4] == HostBossType && frame.size() >= 9) {
         // Legacy boss-name banner packet. No gameplay state depends on it.
     } else if (frame[4] == CutsceneType) {
-        if (from_our_host()) {
-            Core::Bloodborne::OnBbscCutscenePacket(frame.data(), frame.size());
+        const bool host_scene = from_our_host();
+        if (host_scene || (session != 0 && session == SessionKey())) {
+            Core::Bloodborne::OnBbscCutscenePacket(sender, host_scene, frame.data(), frame.size());
         }
     } else if (frame[4] == PlacementType) {
         // A host looking for signs: for players not in a session yet, any host on the server.

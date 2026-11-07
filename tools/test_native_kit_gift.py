@@ -8,7 +8,7 @@ import sys
 root = Path(__file__).resolve().parents[1]
 s = (root/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 a = s.index('void HideBbscNativeKitGift(u64 instance) {')
-b = s.index('// EndIfClient prevents', a)
+b = s.index('// EndIfClient blocks', a)
 code = r'''
 #include <cstdint>
 #include <cstring>
@@ -60,7 +60,7 @@ env = dict(os.environ)
 env['PATH'] = 'C:/msys64/clang64/bin;' + env.get('PATH', '')
 subprocess.run([str(exe)], env=env, check=True)
 start = s.index('void PS4_SYSV_ABI BbscNpcPassHook(')
-assert s.index('HideBbscNativeKitGift(registers->rdi)', start) < s.index('if (registers && bbsc_npc_own_active)', start)
+assert s.index('HideBbscNativeKitGift(registers->rdi)', start) < s.index('if (!bbsc_npc_pass_due', start)
 if os.environ.get('BB_GAME'):
     sys.path.insert(0, str(root/'tools/gamedata'))
     from emevd import Emevd

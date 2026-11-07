@@ -1,0 +1,946 @@
+## 07.11.2026 — завершение общей сессии под загрузкой NG+
+
+После общей концовки каждый начинает свой цикл. В предыдущем прогоне П2 уже
+был в собственном мире, когда `SN-kept-home` завершил комнату и показал
+сообщение о потере связи. Теперь имеющийся spawn callback в штатной загрузке
+типа 8 Центрального Ярнама вызывает тот же Stop, запись причины и очистку
+удалённых персонажей, что и StageHelper. Это происходит до создания игрока.
+Штатное уведомление о выходе пропускает существующий callback на его раннюю
+ветку. Маркер держится до завершения локальной загрузки и выхода из комнаты.
+При этом guard приёма channel 13 остаётся активным, пока грузится новый мир.
+Старый обмен `Arrived` для удержания комнаты убран. Новых хуков, опросов,
+таймеров, повторов и сетевых сообщений нет. Run084429/084428 подтвердил
+штатный Stop на загрузке и собственный мир у обоих. На слоте 3 у П2 цикл
+снова 1, как в предыдущем прогоне. Счётчик гостя остаётся открытым.
+
+## 07.11.2026 — прогресс первого слоя и лампы чаш: USER CONFIRMED / CLOSED
+
+Пользователь подтвердил: «все работает, прогресс первого слоя сохраняется
+и лампы синхронизируются». Закрыты баги сброса прогресса первого слоя при
+повторном входе, неполного списка ламп чаши хоста у клиента и отсутствия
+клиентской лампы в меню хоста. Действия игроков записываются в native backing
+нужного слота хоста, включая работу участников на разных картах.
+
+Игровой результат основан на прямом подтверждении пользователя. Логи П1
+run052149 / П2run051950 дополнительно подтверждают полный seed3fffffff,
+writeback хосту вDream, новую лампу2902953 от клиента и последующий native
+переход хоста к ней. Кодовые проверки,6negative controls, build/delta/deploy
+прошли ранее; новых hooks/опросов/таймеров/сетевых сообщений не добавляли.
+Ранние FAILED/OPEN и ограниченный RETEST PASS ниже — исторические записи.
+Подтверждение не расширяется на непроверенные комбинации всех чаш и ролей.
+
+Разборы: [native progress](fixes/2026-11-07-chalice-native-progress.md),
+[каталог ламп](fixes/2026-11-07-chalice-native-lamp-catalog.md).
+Evidence parent out/coop-dev/runs/chalice-progress-confirmation-20261107/analysis.md.
+При фиксации результата код/DLL/сейвы/settings не менялись, игры не завершались.
+
+## 07.11.2026 — первый слой чаши и запись клиентской лампы хосту: SOURCE FIXED
+
+Host из Dream раньше давал epoch0/present0 seed, допускавший личный progress
+первого guest. Теперь полный seed читается через original013BC710 из native
+backing нужного слота; пустой/неполный не допускается. Existing complete owner
+snapshot записывается host вnative cup дажеoff-map; existing Lamps receive
+также обновляет native lit/unlock икаталог. Только20lamp bits своей чаши
+не отзываются старым snapshot. Новых polls/timers/hooks/пакетов нет.
+Original mapper+production transport/re-entry/seven slots и6negative controls,
+целевые зависимости/MOD syntax PASS. Build/install/gameplay — отдельныестатусы.
+[Разбор](fixes/2026-11-07-chalice-native-progress.md). Parent run:
+out/coop-dev/runs/chalice-progress-native-20261107.
+
+## 07.11.2026 — Central NPC: transport receive gate FOUND / SOURCE FIXED / checks PASS
+
+Пользователь подтвердил отсутствие ИИ. Read-only04:43МСК: P2Central28active
+REMOTE/FFFF, hostужеимеет25requests block5, уP2 channel17queue24/native state4,
+нонетremote PlayerIns. Original ReceiveFromMember01789274 classification
+на16/17требуетPlayerIns ДО queue read; ReceiveFromHost вызываеттотжепуть.
+Native mask расширен ровно bits15/16 в прежней verified инструкции;
+прочиеchannels/session/identity/endpoint gates прежние. Новых loops/hooks/
+опросов/пакетов/callbacks нет. Startup-only marker. Previous fixture stubs
+ReceiveMember/ReceiveHost скрывали gate; теперь исполняются original functions.
+Full receive/intake/list/grant/guest/brain/XYZ +24queued backlog PASS;
+5negative controls, installer7spans/native modes/2000ticks иMODsyntax PASS.
+NOT BUILT/NOT INSTALLED/gameplay OPEN; игрыlive, не завершались.
+Details fixes/2026-11-07-native-npc-transport-admission.md, parent evidence
+out/coop-dev/runs/npc-central-transport-20261107. HEAD/pinсохранены.
+
+## 07.11 — локальная отметка свечения: игровой результат подтверждён
+
+Горящие трупы12805920..23: пользователь подтвердил видимость свечения клиентом
+после общей сборки/установки04:31МСК. USER CONFIRMED/CLOSED; новых обработок
+не добавлено. Логи двух клиентов собраны, Fault/fatal нет; прямой SFX marker
+отсутствует. Причинная оценка FPS отдельно не проводилась. Evidence parent
+out/coop-dev/runs/yahargul-glow-confirmed-20261107/analysis.md.
+
+## 07.11 — System exit: не разрывать native Yes/save/transition
+
+Оригинальный01C0D050 публикует+250/+25C/save latches вместе для всех ролей.
+Guest custom save->Stop при+250=0 открывает native world-return admission до
+позднего title replay. Собственный System exit и уход другого игрока — разные
+события: last guest leave не должен запускать host Stop/bulk cleanup и мешать
+последующему Yes. Все System роли теперь native; peer host-leave fallback только
+для guest/joiner без собственного title exit. Удалены pending-quit tick (2call
+sites),30s timeout,manual save/Stop/CloseMenus/title replay и HTTP title gate.
+Новых обработок/опросов/таймеров/пакетов нет; idle работа уменьшена. Production
+и real native branch/negative controls PASS, gameplay/FPS OPEN.
+См. fixes/2026-11-07-native-menu-both-roles.md.
+## 07.11 — completed-slot может скрыть локальную визуальную инициализацию
+
+Original12805920 (Горящие трупы m28) пропускает CreateObjectSFX928020
+после первого прохода слота, но повторяет воздействие6032. Перенос общего
+completed-slot до первой локальной команды — кандидат отсутствия свечения
+у клиента. SOURCE FIXED: сохранить эти4локальные receipt при snapshot copy
+и исключить из additive progress, оба0/1. Native событие/воздействие не
+локализовать. Дополнительная работа — сравнение key и маска1байта на12805,
+range predicate в существующей progress policy; новых циклов/hooks/опросов/
+таймеров/пакетов нет. Original+production и2negative controls PASS;
+gameplay/FPS OPEN. См. fixes/2026-11-07-yahargul-burning-corpses.md.
+
+## 07.11 — independent guest reload тоже требует native death penalty
+
+PartyGhostDeath_2 не списывает у co-op type1. Ветка без напарника на карте
+обходит respawn-in-place, поэтому существующий BbscApplyDeathPenalty нужен
+после native death body/restore snapshot, перед reload и потерей actor/map.
+Не дублировать DropBloodstain/ручное списание: существующая обёртка сохраняет
+место смерти гостя и защиту от double-drop. Abduction выше исключается,
+host/solo/invader/legacy не менять. Новых hooks/ticks/опросов/пакетов нет;
+дополнительная работа только на запрошенную смерть гостя, в простое ноль.
+Production controller/accounting/abduction и negative control PASS;
+build/install/gameplay OPEN. См. fixes/2026-11-07-guest-alone-death-echoes.md.
+
+## 07.11 — смерть и поздний spectate имеют разные временные границы
+
+При stalled native death победа может опередить handoff в spectate.
+Boss eligibility и выбор boss lamp сравнивать с наблюдённой смертью HP0,
+а safety/settle часы оставлять от входа в spectate. Existing dead_since
+нельзя очищать до Begin. Один8байт snapshot на death entry, без новых
+таймеров/опросов/hooks/пакетов/сканов и дополнительной idle работы.
+Production Begin+Tick/rearm/lamp + old-condition negative PASS; FPS/gameplay OPEN.
+См. fixes/2026-11-07-boss-before-spectate-respawn.md.
+
+## 07.11.2026 — меню ламп чаш: SOURCE FIXED / checks PASS / gameplay OPEN
+
+Убран Hall-only fallback по отсутствующему discovery-cache. Каталог теперь
+читает исторические lit/unlock флаги каждого слота через оригинальный
+013BC710(1,40+slot,0,7), без взаимодействия хоста.20бит идут в прежнем
+reserved u64, wire size906 и число/частота пакетов не изменились. Гость
+использует штатные меню и проверку флага перехода; отдельный mask admission
+удалён. Новых hooks/таймеров/опросов нет. Native mapper+tables из ELF,
+7slots/10lamps/2forms, negative control, travel/menu/helper и MOD syntax PASS.
+DLL build/install/gameplay не выполнены. Подробности:
+[разбор](fixes/2026-11-07-chalice-native-lamp-catalog.md).
+
+# BBSC-GL: накопленные знания по оптимизации
+
+## 07.11 — вход в event update не равен границе одной команды
+
+`012ECDC0` вызывает interpreter и iterator в штатном цикле. Хук на входе
+может увидеть PC0 и затем PC4, пропустив регистрацию условия на PC1.
+Для гостевого прыжка к Ром допуск теперь применяется к исходной строке
+события до первого прохода. Уже собранная группа пересобирается штатно
+только при смене допуска. Native scheduler/iterator fixture подтверждает
+оба пути, старый PC-only guard воспроизводит блокировку. Нет новых циклов,
+хуков и сетевых сообщений. Пользователь подтвердил безопасное приземление
+гостя с личной защитой. См.
+[разбор](fixes/2026-11-07-rom-shared-jump-effects.md).
+
+## 07.11.2026 — native NPC room-member admission: SOURCE FIXED / checks PASS / gameplay OPEN
+
+Исправлены3native actor-dependent границы: channel16 intake018F092C,
+request-list retain018ED1B6 и channel17 recipient018ED470. Внутренний ключ
+привязан к актуальной native room identity/WorldId и не требует PlayerIns.
+Native host/member/authentication/packet-size проверки сохранены. Leave/rejoin/
+identity/room fencing; keys не переиспользуются. Original arbitration/grants,
+EnemyIns и position sender остаются единым авторитетом. Новых циклов/опросов/
+NPC walks/пакетов нет; existing membership lookup<=8members в старых транзакциях,
+2resolve calls на участника независимо от64NPC в packet. One-shot binding log.
+Join legacy alias удаляется в native retain; room-key mode сохраняется в
+той же комнате через Loading. Self fast path безC++callback; idle callbacks0.
+
+Full original host receive/list/prune/merge/grant/guest apply/brain/XYZ producer
+безremote PlayerIns и безhost NPC table PASS;3gate negative controls ожидаемо
+воспроизводят отказы. Native authority и installer6spans/2000ticks dependencies
+PASS; MOD syntax PASS. NOT BUILT/NOT INSTALLED; gameplay/FPS OPEN. Предыдущий
+cross-map FAILED ниже — результат старой DLL, не закрывать без нового прогона.
+Details fixes/2026-11-07-native-npc-room-members.md. Код/сейвы/settings игр не
+менялись; HEAD/pin и чужие доработки сохранены.
+
+
+
+## 07.11.2026 — discoverer AI retest: cross-map FAILED / native actor gate found
+
+Сбор npc-discoverer-rom-20261107/retest-pc exit0,2files,warnings0,обаlive,
+до03:51:24. П1host0261a503, П2guest3766a551. Rom boss clear у обоих03:42:50,
+guest reward logged; обаYahar03:48:24, П2Central03:50:10 при host на другой карте.
+Read-only snapshot: у П2Central28active REMOTE/FFFF, model bound;3samples
+HP343/150/70 death0. Это неLOD30. Native request/grant не выдаёт ИИ клиенту.
+
+Следующий native допуск:018F0966..09AD host сопоставляет channel16 sender
+через live PlayerIns, отсутствующий на чужой карте. Снимок: room2members,
+5player slots,толькоselfslot0,guest request-list у host отсутствует. Кроме
+intake,grant send018ED470..0524 также требует live target actor. Старый fixture
+покрывал lists/merge/grants/brain/XYZ, но НЕ этот cross-map actor lookup.
+Нужен roster-based native member resolve в обеих границах, без восстановления
+map-only brain/нового periodic repair. UDP delivery отдельно не трассировалась.
+
+Fault/fatal/install/1455 в собранном интервале нет. Смерть П2 перед victory и
+поздний spectate — уже отдельный SOURCE FIXED сценарий boss-before-spectate,
+его новая DLL не установлена. Код/сейвы/settings в этой проверке не менялись.
+Details parent out/coop-dev/runs/npc-discoverer-rom-20261107/retest-analysis.md.
+Discoverer правило в коде есть, cross-map gameplay FAILED/OPEN.
+
+
+
+## 07.11 — личный эффект может повторяться через общий ход события
+
+Разбор Ром:13204821/32/33 изолированы, но13204820 остался shared и теперь
+проходит default-allow guest type0. Native emitter/receiver + scheduler
+fixture воспроизводят передачу его progress обеими ролями и освобождение
+ложного локального ожидания. Команды10000 затем действуют на каждого
+локального игрока. Проверять все параллельные host/guest события эффекта,
+а не только SFX или уже локальный сценарий. Для исправления достаточно
+существующих localization/transport/type boundaries; новые циклы не нужны.
+Исправлено в исходниках: localization/transport13204820 и запрет guest
+host-bypass; целевые production/original проверки и оба negative controls PASS.
+Дополнительная цена — сравнения event ID в существующих обработчиках,
+фоновой работы нет. После установки пользователь подтвердил изоляцию
+воды и защиты в прогоне с прыжком гостя и хостом наверху. См.
+[разбор](fixes/2026-11-07-rom-shared-jump-effects.md).
+
+## 07.11.2026 — NPC discoverer rule: SOURCE FIXED / checks PASS / gameplay OPEN
+
+По уточнению пользователя общее правило ИИ — обнаруживший активного NPC,
+а не map owner. Свежий distance repro: owner П2 выгрузил201b/2028/205d/206e,
+П1 активировал их4/4, но map-only запрет оставлялREMOTE/FFFF у П1 и0/0 у П2.
+Удалены map AI cache/controller override/table hook и map-commit NPC walk.
+Оригинальный EnemyIns выбирает ИИ по тому же grant, что движение. Native
+request сохраняет допуски/нулевой отказ; действующий holder имеет7FFF,
+новые заявки<=7FFE; original merge выбирает единственного, count0 снимает
+старую заявку. Activation только логирует native_mode/native_local, words
+не меняет. Map owner для состояния/ламп сохранён. Новых циклов/опросов нет.
+
+Четыре живых203e/203f/206f/2076: LOD30 — штатное сокращение обработки,
+не смерть. Original distance LOD5/30 и omission gate корректны; багом был
+отдельный принудительныйLOCAL при отсутствии grant. LOD gate не снят.
+Targeted original LOD/request/merge/brain/XYZ, activation/map-commit/installer
+и negative controls PASS; MOD syntax PASS. SOURCE ONLY, игры со старой DLL.
+Details fixes/2026-11-07-npc-discoverer-authority.md; предыдущие map-only
+AI статусы ниже исторические. Gameplay/FPS новой версии OPEN.
+
+
+
+## 07.11.2026 — NPC movement authority: SOURCE FIXED / tests PASS / gameplay OPEN
+
+Native request01916A82 теперь подаёт только map owner (role2 пропускается;
+role0/1 сохраняют native priority/readiness). Original host request intake
+018F0880/018F09D1 ошибочно сохранял прежние списки при count0. Разрешён
+штатный assignment пустого списка, отрицательные counts отклоняются.
+Native merge/grants/position channel4 сохранены. Без постоянного word repair,
+новых циклов/опросов/обходов/каналов. Original request+list+grant+XYZ codec/
+receiver, negative controls обоих дефектов, early admission, installer и
+MOD syntax PASS. Игровое подтверждение OPEN; предыдущий FAILED не закрыт.
+Details fixes/2026-11-07-native-npc-authority.md; parent run native-npc-authority-20261107.
+
+
+## 07.11 — выбранный AI controller и native position authority должны совпадать
+
+После block-ID fix live подтверждены local AI у client owner и network AI у
+host follower, но совместное движение NPC FAILED по пользователю. Snapshot
+11active Cathedral handles: client local/FFFF9 +local/1 у2; host remote/1 у7
++remote/FFFF4. Cache roles1/2 не заменяют native signed words у других
+потребителей. Original018EE829 gated native channel4 XYZ corrections
+(018EE8A5..E4, send018EEA20; receive018EEB45). Early controller override
+отдельно от штатного position sender допускает рассогласование. Нужен общий
+native authority, а не постоянный word repair. Activation applied=true не
+доказывает position/animation sync; fixture должен выполнять sender/receiver
+при несовпадающих grants и возвращении host. Gameplay bug OPEN.
+Evidence parent out/coop-dev/runs/native-ai-block-id-20261107/shared-movement-analysis.md.
+
+
+## 07.11 — native block ID не равен позиции loaded-list
+
+CONFIRMED original01914C70 + one-shot live read:17 NPC records; loaded sorted
+list4entries с ID4,5,17,18 (players17/18). World+280/+290 — компактный
+SORTED список, индексировать его packed handle block ID нельзя. Прямой
+record=world[+28]+ID*160 при ID<world[+20]; list=record+B8 и world[+850+ID*8].
+Old count-2 gate объясняет Dream-only успех и отсутствие combat admission.
+Общий O(1) helper исправлен в early cache producer и completion. Native
+registration fixture + lower-ID insertion + loading→owner commit и negative
+control обязательны для этой привязки. Никаких новых периодических обработок;
+source/tests PASS, игровой результат новой привязки ещё OPEN.
+[Разбор](fixes/2026-11-07-native-ai-block-id.md).
+
+
+## 07.11 — ранний native выбор ИИ отделён от completion
+
+EnemyIns virtual+128/018E6540 выбирает local [chr+3B8] или network [chr+3C0]
+по native grant word ДО последующих стадий. Completion018BD488 не доказывает
+этот допуск; native host grant может снова менять word после возврата хоста.
+Решение: заменить само native условие чтением event-published роли блока,
+без runtime C++ snapshot/callback/lock/скана.32байта cache, обновление только
+map owner commit/реальная смена lease/native table creation018ECCD4. Scope
+по metadata map, world/room/ritual. Dream/forced/special сохранены. Native
+original entry/binding/publication/update, real store/trampoline и negative
+control проверены. Fixture cost~6.0→4.8ns, gameplay/FPS ещё OPEN.
+[Разбор](fixes/2026-11-07-native-ai-early-admission.md).
+
+
+## 07.11 — границы карты при выборе лампы смерти
+
+`here=false` ограничивал только coordinate revive, а отдельный shared native
+death reload обходил запрет соседней карты. По уточнению пользователя общая
+лампа теперь применяется только к текущей map/scope умершего (для m29 key+ritual),
+с повторной проверкой уже ожидающей цели перед native load. Иначе остаётся
+штатная личная точка; дата общей лампы важна внутри своей карты. Исправление
+в существующих reader/load boundaries, без новых циклов/hooks/пакетов/actor scans.
+Production/original same-map tests PASS; heap writer не установлен, gameplay OPEN.
+См. [разбор](fixes/2026-11-07-death-checkpoint-map-fence.md).
+
+Запись от 06.11.2026. Постоянная техническая память проекта для будущих
+доработок, оптимизации и разбора регрессий. Актуальный состав сборки,
+установки и открытые игровые ошибки брать из [HANDOFF.md](HANDOFF.md).
+Датированные отчёты ниже сохраняют доказательства конкретных прогонов.
+
+## Цикличные обработки — только с разрешения пользователя, 06.11.2026
+
+Любые новые цикличные обработки в моде (периодические опросы, таймеры,
+ticks, фоновые проверки и повторы), в том числе внутри существующего
+обработчика, добавлять только после явного разрешения пользователя
+на конкретный механизм. Общая просьба исправить баг или добавить функцию
+не считается таким разрешением. Обоснованная невозможность штатного решения
+тоже не заменяет разрешения. До согласования описать назначение, период,
+объём работы и ожидаемую стоимость; сначала искать штатный событийный путь.
+Такие обработки не должны ухудшать общую оптимизацию: оценивать суммарную
+нагрузку, включая простой и рост числа игроков/объектов, и проверять влияние
+на производительность. При обнаружении регрессии устранить её до принятия
+изменения; одно разрешение на механизм не означает согласия на ухудшение.
+
+## Основной принцип пользователя
+
+При любых изменениях и новых доработках сначала искать штатную реализацию
+игры/порта и пробовать использовать или корректировать её существующие
+условия и обработчики. Предпочитать снятие конкретной штатной блокировки
+и сохранение исходной цепочки выполнения добавлению собственного обработчика.
+
+Новый обработчик, hook, tick, опрос, обход памяти, очередь, сетевой канал,
+повтор команды или принудительное действие — только если штатным путём
+нельзя обеспечить требуемое поведение. В таком случае объяснить конкретное
+ограничение, стоимость и причину выбора. Для цикличных обработок дополнительно обязательно явное разрешение
+пользователя по правилу выше; для остальных механизмов это приоритет
+проектирования.
+Оригинальные игровые файлы остаются только для чтения.
+
+Для исправления сначала найти место отказа в оригинальной цепочке:
+допуск → условия → ожидание → команда → анимация → завершение/загрузка.
+Не заменять всю цепочку из-за одной проверки «игрок не хост».
+Не строить параллельную реализацию уже существующего механизма.
+
+## База сравнения и подтверждённые замеры
+
+Релизный BBSC v1.2.0: `bdd59b7ba6b5aec5cec96bff60bcb75d78ffc619`.
+HEAD исходников и pin на момент работ: `6e7d32f71199d17bae124aa768bc5e3ea46278bd`.
+Dirty-сборка отличается от обоих; номер версии или SOURCE.json сами по себе
+не доказывают её тождество чистому коммиту. Источник мода — `mods-src/BBSC`.
+
+Пользователь подтвердил минимальные просадки на полном пакете1.2.0.
+Два локальных профиля на одном ПК, Dream, лимит165FPS:
+
+| Показатель | Новая сборка до удаления сканера | Пакет1.2.0 |
+| --- | ---: | ---: |
+| FPS гостя до → после подключения | 103.94 → 68.89 | 93.72 → 81.59 |
+| FPS хоста до → после подключения | 100.42 → 79.80 | 97.51 → 88.64 |
+| Кадры гостя >50мс после подключения | 43 / 4143 | 6 / 4903 |
+| Кадры хоста >50мс после подключения | 9 / 4797 | 5 / 5323 |
+
+Сравнение всего пакета, а не изолированной DLL. Камера, движение, фокус
+окна и сцена строго не контролировались; это свидетельство регрессии
+в сценарии, а не точный benchmark или доказательство одной причины.
+Источник: [сравнение на165FPS](../../../docs/fixes/2026-11-06-v120-local-165-comparison.md).
+
+Private committed близок в обоих прогонах: примерно5.6–5.9GiB/процесс.
+При этом working set гостя новой сборки вырос3605→12986→13052MiB,
+а на1.2.0 оставался3791→3744MiB. Рабочий набор включает mapped/shared
+pages; этот рост не доказывает утечку private heap.
+
+На ноутбуке в native-NPC эксперименте17:14 поздние окна падали до
+3.6→2.99→2.51FPS, максимум кадра2104мс, working set3261→14030MiB
+при16GiB RAM, private5325→5766MiB, CPU системы98.5–99.6%.
+Одно отключение новой NPC-подсистемы не устранило просадки.
+[Разбор ноутбука](../../../docs/fixes/2026-11-06-native-npc-sync-stutters.md).
+
+## Найденная регрессия: глобальный скан при подключении
+
+В1.2.0 `TickBbscDream` запускал `StartBbscToolScan` только при
+`!BbscDreamOwnEnabled()`. После удаления режима собственного Dream вызов
+стал безусловным при входе гостя в Dream хоста.
+
+Detached worker трижды вызывал `FindInMemory`, перебирая committed readable
+regions адресного пространства до1TiB. Лимит8 — число совпадений, а не
+страниц. `memchr/memcmp` реально касались mapped/shared памяти. Worker
+находился вне BBSC кадровых scopes; дешёвый tick не исключал эту нагрузку.
+
+Удалены worker, три скана, периодический ремонт найденных мест ESD и
+выдача флагов инструментов. Доступ к мастерской использует существующий
+результат f47, точный текущий native frame/аргументы и реальный флаг
+инструмента у хоста. Нет выдачи предметов, опроса или правки ESD.
+
+Наличие вновь активированного сканера установлено по коду. Его связь
+с ростом working set правдоподобна, но доля всей потери FPS и возвращение
+производительности1.2.0 после удаления требуют нового игрового замера.
+[Подробности, ABI и тесты](fixes/2026-11-06-native-access-v120.md).
+
+## Какие обработки отключены по умолчанию
+
+`bbsc_native_sync_test.h`: отсутствующая переменная
+`BBSC_NATIVE_NPC_SYNC_TEST` или значение1 выбирает штатную NPC-синхронизацию
+по пути1.2. Значение0 явно включает прежнюю расширенную независимую
+NPC-подсистему для диагностики. Это не полный откат исходников к1.2.0.
+
+В штатном режиме не устанавливаются/не тикают новые block/history,
+HP/packet/ownership/wake hooks. Первоначально вместе с ними отключили
+обслуживание peer players; это вернуло невидимость при независимой встрече.
+Исправление06.11 возвращает существующий FirstSync render admission и одну
+операцию восстановления на загрузку/встречу. Вне допуска — atomic revision
+check без actor/task/model обходов; heartbeat не будит обработку. Ожидание
+native task ограничено текущим допуском, повторного watchdog нет.
+Пользователь подтвердил видимость при встрече в обоих направлениях после
+запуска22:46:34; регрессия закрыта для этого сценария.
+Подробности: [регрессия player admission](fixes/2026-11-06-player-reunion-native-mode.md).
+Используются LocalEvents50 из1.2, прежнее восстановление игроков/scaling.
+Capability16 отделяет разные режимы при согласовании перемещений.
+
+Сохранены presence, каталог чаш и ламп, перемещения для всех игроков,
+изоляция личных команд и штатные анимации/загрузка/warp. Не отключать
+их автоматически вместе с NPC. Исходники режима:
+`bbsc_native_sync_test.h`, `bbsc_independent_world.inc`, `bbsc_world_state.inc`.
+
+## Доступ клиента: штатная логика и чёрный список
+
+Пользователь разрешил клиенту по умолчанию те же локальные взаимодействия,
+что хосту. Исключения: финал/NG+, удаление и замена чаш хоста,
+завершение всей сессии. Телепортация между лампами остаётся у всех.
+
+Политика в `bbsc_guest_access.h`. Используются существующие условия
+f19/f26/f52, проверка локального entity10000/type0 и один ограниченный
+native host/client predicate для bank1003. Удалены отдельные whitelist
+и EndIfClient-переписывания для pickup/travel/kidnap.
+
+Native predicate017B21A0 пишет result bit+10; bank1003 читает этот бит,
+одного изменения RAX недостаточно. Проверяются native vtable0532D270,
+caller bank1003, текущая идентичность события и requested state0/1.
+Не менять глобально роль сессии, сетевой авторитет или владение NPC.
+Неопределённая идентичность не разрешает обход чёрного списка.
+
+Workshop f47: только t210692/t210699 и форма `(3,item,0,1,0)`,
+item4102/4103/4104, шесть элементов native argument reader; пять16-byte
+вариантов RBP-1E0..220. Допуск требует соответствующего флага хоста.
+Неверные типы/размеры/контексты оставляют оригинальный результат.
+
+## Полезные оптимизации горячих путей
+
+- Общий проверяемый индекс диапазонов EMEVD заменяет полный поиск directory
+  при каждом вызове. Проверять живые instance/ref/file/header/row/PC,
+  размеры, epoch и пересечения; при смене ID по тому же адресу перестраивать.
+  Thread-local кеши инвалидируются общим reload epoch. Кешировать
+  идентичность/неизменную классификацию, а не разрешения доступа к памяти.
+- `bbsc_event_steps.h` классифицирует descriptor один раз: постороннее
+  событие не должно запускать все guards. Динамические роль/условия/флаги
+  остаются штатными; неизвестный descriptor обрабатывается консервативно.
+- Проверка диапазона/ширины флага выполняется до получения role/map/context.
+  Для altar dirty нельзя терять9020..26 и lamp flags129078xx.
+- Проверять живой span125байт один раз на группу, затем читать нужные биты.
+  Не сохранять права памяти между проходами; не удалять необходимые точки
+  согласования с входящими сетевыми записями ради уменьшения числа вызовов.
+- Не писать прежнее значение network-sync/ownership word. Native restart
+  может снова включить sync: следующее выполнение должно это заметить.
+- FMG: переиспользовать найденные category/slot только с проверкой живых
+  repo/version/table/load/row. Неизменённый tick не должен повторять поиск
+  и запись. Native overwrite слота без смены pointer учитывать.
+- При выключенной диагностике выходить до mutex, map/session/load и поиска
+  акторов. Оставшиеся функциональные действия не подменять диагностикой.
+- Убирать временные копии maps/vectors и повторный расчёт общего контекста
+  внутри одного прохода. Исторические block optimizations полезны для mode0,
+  но не означают, что эта подсистема активна по умолчанию.
+
+В реальном прогоне после индекса/FMG-оптимизации число TickMessages>16мс
+уменьшилось129→9 у П1 и396→19 у П2; >50мс стало0 в том прогоне.
+Event lookup подешевел, но весь `BbscNpcPassHook` остался около2.1мс/тик.
+Этот hook вызывается на каждом шаге EMEVD вообще (около655–657/тик),
+а не только для ИИ врагов. Оптимизация одной вложенной части не доказывает
+удешевления общего callback или роста FPS.
+[Замеры](../../../docs/fixes/2026-11-06-bbsc-hotpath-results.md),
+[изменения](fixes/2026-11-06-bbsc-hotpath-optimization.md),
+[карточки оставшихся расходов](fixes/2026-11-06-native-execution-hotpath.md).
+
+## Лампы в чашах: урок регрессии и открытый результат
+
+Уточнение пользователя: проблема только в чашах. Нажатие «Зажечь лампу»
+скрывает подсказку, но анимация не начинается. Это отличается от отказа
+возврата после открытого меню. Отсутствие travel log не доказывает,
+что игра не приняла кнопку.
+
+Оригинальные события: ordinary7100 и m29/12907010 — зажигание;
+7200 и m29/12907020 — возврат. Зажигание не является командой поездки.
+ESD чаш t290110..290119; requests72900200..209 для зажигания,
+72900100..109 для возврата. Native12907010 сначала делает EndIfFlag,
+затем ждёт request, выполняет animation101170,32frames и2003[52].
+Доступность ESD10ламп не означает10 одинаковых native init: исходные
+данные содержат9 вызовов12907010; тесты должны учитывать реальные параметры.
+
+При отключении новой NPC-обработки был пропущен и существующий pre-event
+допуск флагов текущего ритуала. Это отдельная ошибка: штатная NPC-сеть
+не подготавливает за мод заимствованную чашу. Возвращён существующий путь
+только для m29; после успешного native load/session допуска дальнейшие
+шаги возвращаются до map/flags/NPC queries. NPC readiness остаётся выключенной.
+Нет нового lamp poller, принудительной анимации или повторного нажатия.
+
+Эта правка проверена целевыми тестами и вошла в общую сборку по HANDOFF
+22:28, но игровой результат не подтверждён. Точная история native PC
+в момент первоначального отказа не установлена; не считать лампы исправленными
+только по найденному пропуску допуска.
+[Разбор](fixes/2026-11-06-chalice-lamp-admission.md).
+
+## Методика проверки эффекта
+
+1. Фиксировать фактический пакет, dirty source, PID, время запуска, профиль,
+   путь native log, mode, host/guest, сцену, лимит FPS и диагностику.
+   Launcher runner и native bb-probe.exe — разные процессы.
+2. Сравнивать до/после join на том же устройстве, с одинаковой сценой,
+   камерой, активным окном и графикой. Не сравнивать ПК и ноут как равное
+   железо. Сначала повторить сценарий1.2, потом оценивать возврат его скорости.
+3. FPS считать как сумма кадров / сумма длительности выбранных окон.
+   Собирать p95/p99, количество кадров>33/50/100мс и максимальный кадр;
+   смешанный средний с меню/загрузками не является замером одной сцены.
+4. Измерять private committed отдельно от working set, VRAM, системного
+   CPU и нагрузки других процессов. Для вывода о paging нужны hard-fault/
+   residency данные; для exclusive CPU — соответствующее профилирование.
+5. BBSC PERF scopes показывают elapsed с возможным вытеснением ОС.
+   Вложенные scopes не складывать с родительскими. Top10 пропускает дешёвые
+   строки; отсутствие строки не означает0. Detached worker может быть вне scopes.
+6. Сравнивать одинаковую диагностику. Timeline/research/packet logging могут
+   сами добавлять стоимость при сотнях callbacks/frame. В1.2 отсутствие
+   BBSC PERF строк при тех же настройках не доказывает бесплатные обработчики.
+7. Тестировать production callbacks и реальные native ABI/control flow,
+   обе роли, неверный контекст, restart/load, reused memory и исходные игровые
+   параметры. Fixtures не заменяют игровой контроль.
+
+Прямые проверки по изменённому месту: `test_native_npc_sync_mode.py`,
+`test_guest_access.py`, `test_event_identity_hotpath.py`, `test_message_hotpath.py`,
+`test_world_native_bootstrap.py`, `test_lamp_activation.py`,
+`test_lamp_dream_returns.py`, `test_chalice_dream_return.py`,
+`test_world_travel_native.py`, `test_world_altars_native.py`, `test_hook_resume.py`.
+Это указатель, не обязательный полный набор: следовать
+[docs/TESTING.md](../../../docs/TESTING.md). Некоторые legacy fixtures требуют
+явного `BBSC_NATIVE_NPC_SYNC_TEST=0`; unset теперь проверяет другой режим.
+
+## Карта артефактов и практические детали
+
+Все следующие пути относительно корня `bloodborne_pc`; сохранять исходные
+логи и состав прогона перед заменой бинарников:
+
+| Сценарий | Каталог в out/coop-dev/runs |
+| --- | --- |
+| Два профиля до удаления сканера,165FPS | two-local-165-20261106-210648 |
+| Пакет1.2.0, два профиля,165FPS | v120-two-local-165-20261106-211345 |
+| Native NPC на ПК+ноуте,17:14 | native-npc-sync-pc-laptop-20261106 |
+| Удалённый сканер + deny list,21:44 | native-access-v120-20261106 |
+| Повтор ламп,21:57, П2 рестарт22:13 | lamp-native-repro-20261106-215703 |
+| П2 fault22:10:38 и исходные логи | p2-crash-20261106-221038 |
+| Исправление GPU admission race, общий build | p2-crash-fix-20261106 |
+
+Основная установка ПК: `D:/Games/Bloodborne/Bloodborne Game Launcher`.
+Player1/2 — отдельные профили `%LOCALAPPDATA%/Bloodborne Game Launcher Player N`,
+порты3658/3659. Данные мода лежат в профиле `coop/bbsc`, DLL — в установке
+`coop/client/bbsc`. Фактический user/log path получать из текущего запуска;
+launcher runner logs и native `user/run_*.log` не взаимозаменяемы.
+При отсутствии PlayerN.exe повтор использовал существующий `launch-165.py`
+из native-access run через Bloodborne.exe --script, с process-only
+BB_FPS=uncap / BB_FPS_LIMIT=165 / BB_VBLANK_HZ=0 и отдельным BBGL_PROFILE_DIR.
+Не считать этот исторический путь обязательным способом запуска будущей сборки.
+
+21:44 DLL была наложена delta на установленный пакет1.2.0 вместе с прямыми
+зависимостями Party compat/chalices. Не называть эту установку чистой1.2
+или полностью актуальным лаунчером по одной DLL. Backup того деплоя:
+`D:/Games/Bloodborne/coop-dev/backups/native-access-v120-20261106-214414`.
+Позднейшую установку проверять по актуальному HANDOFF/run.md.
+
+Чаши используют общий native namespace m29; ключ состояния должен включать
+мир группы, dungeon key и ritual incarnation, а не только map или loader
+revision. Предыдущая чаша не является источником состояния новой. Переход
+в Dream не должен переключать scope события отправления раньше native warp.
+Одноразовая команда другого игрока не является прогрессом мира или поводом
+запускать нашу поездку. Не смешивать discovery/unlock лампы с её локальной
+активацией и записью checkpoint.
+
+## Границы и дальнейшие задачи
+
+Порядок работ и инвентарь оставшихся вызовов ведём в
+[плане перехода на штатные обработки](NATIVE-PROCESSING-PLAN.md).
+
+- Возврат производительности1.2.0 после удаления сканера ещё подтвердить
+  повторным игровым замером. Не приписывать ему автоматически все просадки.
+- Проверить зажигание/возврат в чашах после установки общей сборки.
+- П2 Dream-join crash22:10:38 — отдельное расследование. Найдена и тестом
+  воспроизведена гонка GPU submission gate порта, исправление собрано.
+  Связь именно с этим heap fault и игровой результат ещё не доказаны.
+  Не объявлять недостаток RAM или последний personal event причиной по соседству
+  строк. См. parent `out/coop-dev/runs/p2-crash-fix-20261106/run.md`.
+- Сборка, установка и игровое подтверждение — разные статусы. Не заменять
+  бинарники при работающей игре; не завершать игру для деплоя. Сейвы не
+  восстанавливать без просьбы. Delta deploy, backups и сохранение профилей
+  обязательны по рабочим инструкциям; pin/push самовольно не менять.
+
+Обновлять этот файл при новых подтверждённых причинах/замерах; сохранять
+оговорки и ссылки на исходные артефакты. Не превращать гипотезу в факт.
+
+## Однократное состояние при retained travel — 06.11.2026
+
+Native NPC replication не повторяет summon CHR initialization при сохранённой
+сетевой сессии. Поэтому возвращающийся хост мог видеть живыми уже убитых
+у resident врагов, хотя существующий metadata ChooseOwner выбирал resident.
+По просьбе пользователя оставлена ТОЛЬКО передача один раз при загрузке:
+serializer01786360 → существующие WorldControl8/9 → handler0190E8B0.
+Структуры и historical-death/removal остаются оригинальными; нет ручных HP/
+Kill, ownership loop, task scan, receive poll, retry, event barrier или watchdog.
+В native send ENTRY существующий hook захватывает только явный load snapshot;
+остальные пакеты выполняют исходный путь без фильтрации. Стоимость: одна
+сериализация, временный пакет <=0x6400, до13 существующих control частей
+по2048байт; один обход локальных блоков preflight/application по приходу ответа.
+Цена включения существующего send ENTRY hook — также константный callback
+на штатную отправку (guards + native-mode branch); он не обходит NPC/память
+и не меняет обычные пакеты. Это нужно для заимствования временного буфера
+serializer, который исходная функция сама освобождает после Send.
+Ответ переносит исходные байты, чтобы порядок двух разных transport queues
+не требовал опроса native11 или повторной отправки. После обработки буфер очищен.
+При потере ответа/неподходящих local blocks автоматического ремонта нет —
+это сознательная граница one-shot запроса пользователя. Игровой эффект OPEN.
+
+## Native Lua death continuations — 06.11.2026
+
+Native0139A9D0 matcher не проверяет local registration mode при чужом
+Lua timer15/16 group4000: foreign context может исполнить и удалить локальное
+one-shot продолжение. Это воспроизведено original native bytes с настоящим
+production trampoline; узкий receive-dispatch guard сохраняет локальный timer.
+Смена event+8A недостаточна: native death functions уже ставят0. Не заменять
+цепочку собственным revive/watchdog. Новый guard — O(1) на Lua dispatch,
+без tick/списков/сетевых сообщений; local и нетаймерные события неизменны.
+Связь с live зависанием23:18 ещё требует gameplay. [Доказательства/границы](fixes/2026-11-06-native-death-continuation.md).
+
+## Повтор смерти и проверка истории — 06.11.2026
+
+Запись о foreign timer выше — историческая гипотеза, НЕ причина live зависания:
+в повторе233908/233909 все timer15 local, ошибка осталась. Guard удалён.
+По истории fb4d600 удалил ранее существовавший15s handoff в общий death controller,
+оставив вечную диагностику. Он восстановлен в том же tick: без новых hooks/ticks,
+искусственного текста или нового revive pipeline. Boss/wipe и существующий fade
+сохраняются; native repeat-detector rearm не откатывается. Отрицательная проверка
+исторического удаления handoff воспроизводит regression. Не считать native-only
+бесконечное ожидание оптимизацией, если оно отменяет старую гарантию завершения.
+[Разбор и границы](fixes/2026-11-06-death-handoff-restore.md). Gameplay OPEN.
+
+## Проверка restored handoff: существенное уточнение
+
+В повторе235555/235553 handoff исполняется, но оба не оживают: kidnap guard
+считает9421=true/9423=false незавершённым похищением независимо от текущей
+точки. Live point2412951/2102961 не тюрьма2802959, поэтому Ready=false и
+TickSpectate бесконечно ждёт prison preparation. Это конкретная блокировка;
+происхождение9421/9422=true пока не доказано. Не добавлять ещё watchdog/опрос.
+Отсутствие spectate-active/сообщения о respawn НЕ доказывает, что native final
+не исполнялся: Begin имеет ранний kidnap return. Проверять ветви до таймеров.
+Gameplay предыдущей правки FAILED. См. death-handoff-restore.md и live flags.
+
+## Исправление kidnap guard — 07.11.2026
+
+9421 — completion bit native event, не самостоятельный live abduction request.
+Pending должен проверять9420 либо existing Ready(9421+point2802959), при!9423.
+Historical9421/9422 на ordinary/Dream checkpoint не должны ждать prison readiness.
+Исправлен только predicate: без нового polling/state/packets и без ручной очистки
+флагов. Production controller tests обязаны включать REAL predicate и captured
+live flag combination, иначе boolean-заглушка скрывает такие ранние выходы.
+[Разбор](fixes/2026-11-07-kidnap-death-guard.md). Gameplay OPEN.
+
+Kidnap guard e7005ff: DLL build/delta/deploy exit0, PC installed07.11 00:06:41;
+P1/P2 launch00:06:51. Source tests PASS, gameplay OPEN.
+
+Startup initially blocked by unrelated MSI.CentralServer holding11469 UDP ports.
+User-authorized MSI Center restart succeeded; P1/P2 native startup00:10:41 confirmed
+in fresh per-profile run_20261107_001041.log,35/35 hooks each. Gameplay OPEN.
+
+## Игровое подтверждение — 07.11.2026
+
+Статус: gameplay PASS, баг блокировки обычной смерти закрыт для проверенного
+сценария свободного мира с живым напарником. Пользователь: «все работает как нужно».
+
+Сбор retest-pc exit0,2files,warnings0; оба run_20261107_001041.log:
+- Player1/game-7, host: SoloPlayDeath00:11:51.768 -> revived00:11:55.042,
+  HP594,type0, возврат к лампе(-193.40,-28.65,68.50). PLACE alive1,
+  та же Central Yharnam/map0x18010000/visit1, роль host сохранена.
+- Player2/game-14, guest: PartyGhostDeath00:12:31.910 -> revived00:12:36.169,
+  HP594,type1, та же лампа; PLACE alive1,map0x18010000/visit2,
+  роль guest сохранена. Штраф21779 echoes применён, stain21779, now0.
+
+Оба возрождения явно logged как respawn in place(no boss fight); смены visit,
+выхода из комнаты и повторов watchdog/kidnap-wait между смертью и revival нет.
+Затемнение без экрана загрузки подтверждено пользователем; лог подтверждает
+in-place path. Настоящее похищение/боссы этим игровым прогоном не проверялись
+(их прежние целевые production tests PASS).
+Сбор снят во время работы игр: ChangedDuringCopy отмечен у двух файлов;
+это живой снимок с завершёнными эпизодами смерти, не финальные логи выхода.
+Артефакты: parent out/coop-dev/runs/kidnap-death-guard-20261107/retest-pc.
+
+07.11 игровой результат one-shot: пользователь подтвердил сохранение состояния.
+В свежем run001041 есть успешное применение у guest и returning host; ещё два
+ответа host отклонены native initial validation (applied=false). Не считать
+каждый ответ применённым; подробный guard отказа не логировался. Повторов и
+новых циклов не добавляли. Evidence: fixes/2026-11-06-native-state-once.md.
+
+## 07.11.2026 — native checkpoint vs shared ignition: priority by action date
+
+Native lamp travel already wrote global+1528 correctly (2412953 in the live
+Oedon Tomb case). ResolveLastLampTransform and RequestBbscDeathReload then
+unconditionally preferred an older shared2412951. Preserve the native selection
+when its alive point-load request is later than the actual shared ignition.
+Timestamp ignition once, keep it unchanged through retry/ack/canonical replay,
+and compare dates also when host receives activations out of order. Death loads
+must not advance the personal selection date. Boss victory remains first.
+
+No new hook, timer, scan, retry or tick. Existing native warp callback adds one
+HP guard/clock read and a short presence lock per actual journey; actual lighting
+adds one clock read. Existing death resolution adds one integer comparison.
+LampCheckpoint payload grows4→12bytes: existing500ms send adds16bytes/s per
+recipient; frequency unchanged, no new message kind. Clock uses UTC system time;
+chronology across PCs assumes synchronized device clocks (no clock-sync subsystem
+added). Peers need matching builds for the12-byte checkpoint payload.
+Production regression covers host/two guests, Oedon vs Central within one map,
+first delayed delivery, replay, later ignition, out-of-order lighting, dead load;
+old-priority negative control fails as expected. Guest ignition before host ack
+uses the already written native point instead of the older canonical record.
+Original point-load ABI passes.
+Build/deploy/gameplay tracked separately in fixes/2026-11-07-native-lamp-selection.md.
+
+## 07.11: разрыв между metadata map owner и native AI authority
+
+В native-NPC default ChooseOwner/OwnerBook/independent_role продолжают работать,
+но InstallBbscIndependentWorld возвращается до hook019173B0 BbscWorldOwnership,
+который применял role к native ownership words. Метаданные карты и load-only
+resident snapshot сами по себе не передают native управление ИИ. Нельзя считать
+их подтверждением NPC handover. Найдено при проверке потери ИИ у П2 после
+ухода П1 в Сон; реальные NPC words не измерялись. Штатный native handoff надо
+исследовать до возврата hooks/сканирования; Coordinate/receive могут выполняться
+на сетевом потоке. Новых обработок и правок поведения не добавлено.
+Evidence: parent out/coop-dev/runs/p2-ai-host-dream-20261107/run.md.
+
+## 07.11: однократный AI handover на game-thread commit map owner
+
+Пробел выше исправлен в исходниках: BbscWorldPublishOwner заменяет прежнюю запись
+owner/role в TickBbscIndependentWorld и однократно вызывает существующее применение
+ownership words при смене owner/role/visit. Нет установки ownership/wake/HP hooks,
+таймеров/очередей/пакетов/повторов. На неизменном owner0 actor work; на переход
+O(loaded NPC + players), прежние unload/backread/player правила. Production fixture
+и original0191AAE0 PASS,2000 одинаковых commits0 actor reads/writes/traversals;
+negative metadata-only FAIL как ожидается. Реальный frame cost/native gameplay
+ещё не проверены; сборки/установки нет. См. fixes/2026-11-07-map-ai-handover.md.
+
+07.11 live run004519: takeover у П2 при уходе П1 вызвал существующий ownership
+проход1раз,8278us; повторов до00:48:17 нет. Это единичный пик>8ms без A/B,
+поэтому absence of regression не подтверждена; требуется учитывать стоимость
+при дальнейшем принятии. Returning host не попал в снимок. Evidence parent
+out/coop-dev/runs/map-ai-handover-deploy-20261107/run.md.
+
+07.11 gameplay FAILED: одноразовый обход при map owner commit не покрывает поздно
+загруженных/активированных NPC. Тест native0191AAE0 подтверждает лишь predicate
+уже назначенных words. Native018ECEB0/018ED006 и018F0780/018F080C сохраняют
+host role3 как источник назначения; map metadata не заменяет эту роль. П1 return
+00:48:32 в соседний Central Yharnam оживил NPC по наблюдению пользователя,
+без нового role commit у П2 в Cathedral Ward. Не возвращать регулярный ремонт;
+различать table creation и позднюю активацию/streaming. Исследованные адреса и
+границы доказательств: fixes/2026-11-07-map-ai-handover.md, parent run.md.
+
+## 07.11 — назначение AI на native activation completion
+
+Source: BbscWorldNpcActivated на018BD488, только successful state transition
+в current4 после native virtual78/018B9890. Никакого per-frame callback нового
+механизма: original-machine fixture2000 stable updates0 callback/read/write.
+Обычный NPC:26 bounded reads/event, текущий actor/list/slot binding, lookup
+Authoritative OwnerBook по карте самого native блока (соседние карты отдельно).
+Dream сохраняет прежний Doll lookup. Нет новых timers/ticks/пакетов/очередей/
+повторов. Единственный новый hook обоснован невозможностью охватить future
+activation из разового map commit без постоянного обхода. Штатные ожидания,
+готовность, unload и completion сохранены. Fixture timing0.015→0.451us/event
+с mock guards не является игровым benchmark; реальные расходы OPEN.
+Original transition machine + production trampoline / negative / idle / player /
+neighbor / reactivation PASS. См. fixes/2026-11-07-native-ai-activation.md.
+
+## 07.11 — event-only NPC AI diagnostics
+
+В existing activation completion добавлена строка actor/handle/maps/world/ritual/
+owner/epoch/before/desired/after/applied/visit/load, включая unchanged assignment.
+Отказы известного NPC получают reason. Логи вне presence lock. Нет новых hooks/
+циклов/ticks/опросов/очередей/повторов.2000 native stable updates0calls/reads/writes/
+строк; diagnostic-OFF остаются26 reads/activation без readback/форматирования.
+Diagnostic-ON добавляет2-byte readback+одну строку на реальную активацию. Это
+точечное подтверждение, не непрерывный контроль поздних native overwrites.
+Original-state-machine production logging assertions и MOD syntax PASS;
+реальная стоимость вывода в игре OPEN. См. fixes/2026-11-07-native-ai-activation-logging.md.
+
+## 07.11 — прямые native запросы ламп чаш
+
+M29 return72900100..109 больше не queued/intercepted до SetFlag: original ESD
+и12907020 отвечают за анимацию/таймер/9020..9026/точку Dream. Existing warp-entry
+обрабатывает уже начатую native поездку. Убран mod queue/input lock/destination
+snapshot wait до stage request для этого пути; новых hooks/ticks/повторов нет.
+Lighting request classification дополнена:729002xx и обычные аналоги проходили
+мимо guest range admission и исключения quest journal. Теперь native SetFlag
+не поглощается, а journal write/read/replay исключают эти одноразовые запросы.
+Быстрый numeric reject без lookup для остальных флагов; только реальная lamp
+команда проверяет существующий фиксированный список. Idle/actor scans не добавлены.
+Original range machine/ESD, production native return points, shared lamps и
+negative controls PASS. Runtime frame cost и solo-отказ не подтверждены в игре.
+Подробнее fixes/2026-11-07-chalice-lamps-native-requests.md.
+
+07.11 run013524: пользователь подтвердил работу ламп чаш в сессии и вне неё.
+Логи подтверждают host/guest actual lighting, shared checkpoint и native
+queued=false возвраты с правильными Dream points. Native solo checkpoint
+updates и возврат также присутствуют. Сценарий CLOSED; это функциональное
+подтверждение, без отдельного A/B frame-cost замера. Evidence parent
+out/coop-dev/runs/chalice-lamps-confirmed-20261107/run.md.
+
+07.11 run013524: AI activation-completion fix gameplay FAILED. Per-NPC logger
+даёт105 assignments гостя и48 хоста, все только Dream15000000; боевых maps0.
+Map lease гостя Cathedral role1 есть при хосте в Dream. Applied=false/поздняя
+перезапись не доказаны; различать невызов018BD488 и ранний guard до logger.
+Original-machine fixture начинал с synthetic-ready control/list и stub Setup,
+не охватывая полный hostless native spawn/admission. Не считать completion
+hook подтверждённой подходящей точкой для боевых NPC; искать ранний штатный
+допуск, не возвращать периодический word repair. Evidence logging run failed-pc.
+## 07.11 — ранний переход после Ром сохраняет штатную фазу
+
+Существующий запрос Remo 32000000 запоминает комнату и поколение загрузки.
+Только при попытке перезаписать 9802 более ранней фазой существующий
+ApplyBbscHostTime проверяет область Ром и первой загрузки Яаар’гула.
+Обычная синхронизация и нативные события сохранены. Память O(1), два битовых
+условия при несовпадении фазы, проверка комнаты и загрузки при возможном
+откате. Новых циклов, таймеров, хуков, обходов NPC и пакетов нет.
+Тест оригинального перехода и защита от старой фазы PASS. Игровой контроль
+и замеры производительности ожидаются.
+
+## 07.11 — совместный финал через исходные события Сна
+
+Подтверждение использует штатный диалог игры. Два точечных перехвата
+перехватывают принятое действие разговора и штатный результат кнопки.
+В существующих 92 байтах
+присутствия три ранее резервных байта передают этап, номер созыва и концовку.
+Обработка только по принятому действию, ответу диалога и изменению
+присутствия. Нет нового таймера, опроса Remo для живой сессии, обхода
+игровых объектов или типа пакета. На этапе ожидания оригинального события
+проверяется уже полученный допуск. Состав комнаты сверяется при действии
+или изменении присутствия. Старый путь с отключением гостя удалён.
+Игровая проверка и замеры ожидаются.
+
+## 07.11 — штатные предметные награды боссов
+
+Убраны поиск события награды в частой проверке типа игрока, очередь с
+мьютексом и обработка отложенной выдачи. Исходные события выбирают и выдают
+лоты. Существующая событийная проверка компенсации ждёт возврата в свой
+мир, чтобы исключить конкуренцию со штатной выдачей. Новых циклов, хуков
+и пакетов нет. Целевые проверки прошли, измерения и игровой контроль ожидаются.
+
+Для лота пуповины Мерго проверка по событию возврата дополнительно
+сверяет штатный флаг использования 9908 и наличие предмета в обычных
+сумке и хранилище. Она использует существующую выдачу и сигнал прогресса.
+## 07.11 — приём канала 13 и прогресс при сохранении комнаты на титрах
+
+В нулевой ветке WorldChrMan оригинальный приём канала 13 вызывал панику.
+Замена пяти байт в ветке ошибки использует штатный переход к следующему
+участнику и сохраняет исходную обработку при доступном менеджере.
+Дополнительной работы на обычном пути приёма нет. Личный цикл проходит
+через имеющиеся границы команды увеличения и формирования дескриптора.
+Старые записи сбрасываются один раз при загрузке. Добавлены только
+проверки допуска в существующих приёмниках и обработчиках ламп и возрождения.
+Новых хуков, опросов, таймеров, повторов и сообщений нет.
+[Разбор и границы проверки](fixes/2026-11-07-finale-credits-crash.md).
+
+
+## 07.11 — Собственный финал Сна и совместные сюжетные сцены
+
+- Прогон 07:05:44. P2 вошёл в Сон в 07:09:49.546, P1 в 07:10:13.765.
+  До первого события Сна P2 мод применил снимок из 53 групп. У обоих
+  исполнился 12100400, который требует 9462. Это подтверждает горящую
+  мастерскую. Журнал не фиксировал ветку размещения Германа 12100160.
+  Отдельная стадия 1028 берётся из штатного 12100143 и ставит Германа
+  в точку 2102312. Снимок и его восстановление теперь сохраняют локальные
+  диапазоны 1000..1039, 9462, фазы времени и победу 12601800. Родные
+  постановочные события m21 работают на госте локально. Если старый сейв
+  содержит 12601800 без 9462, единственная запись через SetEventFlag
+  при входе повторяет условие common 50 до запуска событий m21.
+- Ночь после Амелии начинается у черепа. Оригинальный 12401803 вызывает
+  2002[6] с параметром фазы 2, а 12400300 читает 9801. После Ром оригинальный
+  13201803 вызывает 2002[7] с фазой 3, ждёт завершения Remo и выполняет
+  штатную загрузку 2802958. Чужие native continuation и снимки карты
+  не заканчивают местное событие. Запоздавшее время хоста не отменяет
+  локальную ночь после сцены у черепа в том же мире.
+- Для двух точных сюжетных сцен существующий 0x28 принимается от любого
+  участника на той же карте и в том же мире. Инициатор проходит исходное
+  взаимодействие. Получатель использует существующий native iterator для
+  возобновления исходного события перед его штатной подготовкой сцены.
+  Используется прежняя очередь кат-сцен и прежний сетевой формат. Запрос
+  привязан к комнате и загрузке; делегированный запуск не рассылается
+  повторно. Отдельный tick проверки перехода, 30-секундный таймер и
+  линейный поиск события в каталоге удалены. Проверка тела события
+  выполняется при делегировании по записи, которой уже владеет интерпретатор.
+- Целевые проверки использовали оригинальный EMEVD и команды из 1.09
+  (native iterator, Remo condition, оба opcode, ожидание, очистка и warp),
+  а также маршрутизацию от гостя к хосту и другому гостю. Требуется игровой
+  прогон, в частности ранний вход гостя в Сон и запуск обеих сцен гостем.
+## 07.11 — максимум HP пересчитывает штатное обновление акторов
+
+Оригинальное обновление EnemyIns вызывает общий обработчик эффектов
+`018E66F9 → 018C9D90 → 018CA33F → 01A572E0 → 01A0D7D0`. Он читает
+активные SpEffect через `017E46E0` и пересчитывает максимум из базового HP,
+включая живые значения строк 7502/7503. Штатный пересчёт сам ограничивает
+текущее HP и применяет разницу при росте максимума, сохраняя полученный урон.
+Ветка обновления живых статов пропускает мёртвого актора.
+
+Удалены `TickBbscScaledMaxHp`, его вызов и обход блоков WorldChrMan раз в
+500 мс. Убрана запись максимума из текущего HP, включая переходные значения
+из сети. Существующее заполнение параметров масштабирования сохранено.
+Новых хуков, опросов, таймеров, сообщений и обходов нет.
+Тест таблиц масштабирования и оригинальный код 1.09 с эффектами 7502/7503
+прошли. Проверены x1.5/x2, первый удар, повторный пересчёт, уменьшение
+множителя и отключённый эффект.
+
+Run075928, ПК, два профиля: ×1,50 у обеих ролей, победа над Кормилицей
+в общей комнате. В живом снимке после боя у 18 общих акторов совпали HP
+и максимум. Для 17 из них 999 → 1498 от одного эффекта 7502.
+Состояние Кормилицы на первом ударе не снято.
+У прежнего обхода в run070544 были отдельные пики 11,65/19,76 мс
+и 0,12–0,25 мс/тик в окнах, попавших в top10. Обход удалён.
+FPS боя на П1 вырос, на П2 снизился, а в Сне снизился у обоих.
+Участки различались по нагрузке и событиям, общего прироста от одной
+правки не измерено. Разбор в parent
+`out/coop-dev/runs/native-scaled-hp-20261107-075708/analysis.md`.
+
+
+## 07.11 — Убрать повторный допуск группы после победы над Германом
+
+Прогон 075928. В 08:05:38 П1 подтвердил призыв, в 08:05:43 П2
+прибыл в Сон, в 08:05:56 оба получили вступление Германа 21000040.
+В 08:07:02.619 П1 получил лот 15000 и вошёл в оригинальное событие
+12100000. В 08:07:07 оба получили штатный BlockClear2_1, сессия осталась.
+Запроса 21000020 и перехода сигнала в Play не было. Источник:
+parent out/coop-dev/runs/finale-no-movie-20261107-080835/pc, game-7 и game-14.
+
+Снимок живого состояния только на чтение подтвердил у П1 Recall(1),
+dialogue=1 и group_ready=0. У П2 был Ready(1), оба были живы в Сне.
+На П1 актуальная запись присутствия П2 также содержала Ready(1).
+Однократный допуск при принятии диалога уже пройден, но фоновое обновление
+могло перезаписать его устаревшим group_ready, после чего native dispatch
+держал первое ожидание концовки. Причину конкретного раннего сброса кэша
+живой снимок после боя не показывает.
+
+Удалён кэш group_ready и его пересчёт по событиям присутствия.
+Используется существующий факт допуска исходного диалога. После победы
+штатный interpreter проходит своё ожидание и команду ролика. Подготовка
+местного актёра и согласование перехода всей комнаты в NG+ остаются
+на существующих границах. Новых опросов, таймеров и пакетов нет.
+Целевые проверки всех трёх концовок, текущего сетевого пути и оригинальных
+опкодов прошли. Сборка DLL, установка и игровой повтор остаются открыты.

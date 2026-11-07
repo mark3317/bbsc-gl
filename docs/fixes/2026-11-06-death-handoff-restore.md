@@ -1,5 +1,37 @@
 # Возвращён прежний retained-death handoff — 06.11.2026
 
+## Проверка23:58–23:59: restored handoff НЕ устранил зависание
+
+Штатные снимки двух профилей: parent out/coop-dev/runs/death-respawn-20261106/
+restored-retest-pc и restored-retest-pc-later, оба exit0/2files/warnings0;
+оба live ChangedDuringCopy. P1 run235555, P2 run235553.
+П1 death entry23:57:38.915, restored handoff23:57:47.366/23:58:02.386/
+23:58:17.413/23:58:32.444/23:58:47.476. П2 entry23:58:05.498,
+handoff23:58:15.460/23:58:30.492/23:58:45.544. Нет успешного respawn/curtain/
+новой загрузки в этих снимках. Оба оставались в state3/6; это не падение игры.
+
+Однократный READ-ONLY снимок известных native singleton/flag-tree адресов:
+parent restored-live-flags.json (тот же run directory). Оба HP0/loading0;
+9420=false,9421=true,9422=true,9423=false. П1 point2412951 (Central Yharnam),
+П2 point2102961 (Dream); native event_state П1=1/П2=2.
+В текущем production BbscKidnapDeathPending() требует !9423 и(9420||9421),
+поэтому при независимом travel возвращает true у ОБОИХ. BeginBbscCoopDeath
+затем выставляет request_death_reload вместо spectate-active; TickBbscSpectate
+ждёт BbscKidnapRespawnReady(), которому нужны9421 и point2802959. На найденных
+точках это false: мод бесконечно ждёт тюрьму и не передаёт обычную смерть в fade.
+Это конкретная действующая блокировка после restored handoff. Происхождение
+флагов9421/9422/9423 в этом прогоне не установлено; не объявлять их потерей сейва.
+
+Предыдущий вывод «не приходит native final» был чрезмерным: отсутствие
+Begin/spectate-active и diagnostic incomplete НЕ отличает native-final stall от
+раннего выхода Begin по kidnap guard. Native event_state1/2 также согласуется
+с исполнением native death processing. Само удаление старой страховки найдено
+в истории правильно, но её возврат не исправил этот живой случай.
+
+В этой проверке gameplay-код/бинарники не менялись, сборка/установка/перезапуск
+не выполнялись. Только чтение логов/известных структур и запись результатов.
+Не закрывать баг и не считать наличие handoff подтверждением возрождения.
+
 Статус: исходники исправлены, целевые проверки PASS. Сборка/деплой/игровой
 результат — отдельные статусы в HANDOFF и parent run.md.
 

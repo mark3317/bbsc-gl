@@ -1,4 +1,4 @@
-"""Production inventory barrier: never open a guest world before its generation is reconciled."""
+"""Production guest-world readiness, including chalice arrival and resident maps."""
 from pathlib import Path
 import os, subprocess, tempfile
 src=(Path(__file__).resolve().parents[1]/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
@@ -28,7 +28,6 @@ template<class T>T ReadValue(u64,size_t){return static_cast<T>(loading);}
 std::atomic<u64> bbsc_world_load_pending{0};
 std::atomic<bool> bbsc_reload_finish_pending{false};
 std::atomic<u32> bbsc_load_generation{1};
-u32 bbsc_ledger_guest_ready_generation=0;
 '''
 prefix+=r'''
 u32 current_map=0x18010000; bool mounted=true, needs_load=false, resident=false;
@@ -43,7 +42,7 @@ bool BbscChaliceNeedsLoad(u32){return needs_load;}
 u32 BbscMapArea(u32 m){return m>>24;}
 bool BbscMapResident(u32){return resident;}
 '''
-code=prefix+function('bool BbscGuestWorldReady()')+function('bool BbscGuestLoadItemsReady()')+r'''
+code=prefix+function('bool BbscGuestWorldReady()')+r'''
 int main(){
  assert(BbscGuestWorldReady());
  bbsc_follow_latest.packed_map=0x15000000;resident=true;assert(!BbscGuestWorldReady());
@@ -53,14 +52,7 @@ int main(){
  mounted=true;needs_load=true;assert(!BbscGuestWorldReady());needs_load=false;
  bbsc_follow_latest.received_ms=0;assert(!BbscGuestWorldReady());bbsc_follow_latest.received_ms=1;
 
- assert(!BbscGuestLoadItemsReady());
- bbsc_ledger_guest_ready_generation=1;loading=1;assert(!BbscGuestLoadItemsReady());
- loading=0;bbsc_world_load_pending=global;assert(!BbscGuestLoadItemsReady());
- bbsc_world_load_pending=0;bbsc_reload_finish_pending=true;assert(!BbscGuestLoadItemsReady());
- bbsc_reload_finish_pending=false;assert(BbscGuestLoadItemsReady());
- bbsc_load_generation=2;assert(!BbscGuestLoadItemsReady());
- bbsc_ledger_guest_ready_generation=2;world_ready=false;assert(!BbscGuestWorldReady());
- world_ready=true;assert(BbscGuestLoadItemsReady());
+ world_ready=false;assert(!BbscGuestWorldReady());
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

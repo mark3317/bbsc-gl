@@ -10,6 +10,7 @@ struct PlayerVisualInput {
     u32 local_map=0,peer_map=0;
     bool loading=true,here=false,alive=false,actor_alive=false,actor_ready=false,task_ready=false;
     bool disabled=false,actor_dead=false;
+    bool admitted_load=false; // native creation completed without a model watchdog
 };
 struct PlayerVisualAction {
     PlayerVisualPhase phase=PlayerVisualPhase::Loading;
@@ -26,7 +27,7 @@ public:
         // Preserve an already admitted actor when only adjacent map IDs change;
         // removing it drops both mesh and name and restarts native FirstSync.
         const bool border=journey && in.here && last_.here && in.alive && last_.alive &&
-            in.actor && in.actor==last_.actor && in.actor_ready && in.task_ready &&
+            in.actor && (in.actor==last_.actor || in.admitted_load) && in.actor_ready && in.task_ready &&
             in.local_load==last_.local_load &&
             (in.local_visit==last_.local_visit || PlayerMapBorder(in.local_map,last_.local_map)) &&
             (in.peer_visit==last_.peer_visit || PlayerMapBorder(in.peer_map,last_.peer_map));

@@ -67,14 +67,14 @@ int main(){
  auto buttons=[&](bool blocked){for(u32 id:{7030u,6030u,3200000u,3200001u,1000u}){
   assert(accept(0,0,id,0,0,0)==(blocked?0:1));assert(bbsc_world_travel_action_skip==0);
  }};
- for(int role:{3,6})for(int route=0;route<3;++route){
+ for(int role:{3,6})for(int route=0;route<2;++route){
   state=role;allowed=true;hp=594;global[8]=0;bbsc_world_load_pending=0;bbsc_reload_finish_pending=false;
   bbsc_world_travel_point=0;bbsc_world_travel_inflight=false;bbsc_world_travel_altar_pending=-1;
   bbsc_world_requested_mount.reset();bbsc_world_requested_scope.reset();snapshot_ready=false;
-  const u32 talk=route==0?210000:route==1?270000:290110;
-  current_map=route==0?0x15000000:route==1?0x1b000000:0x1d000000;
+  const u32 talk=route==0?210000:270000;
+  current_map=route==0?0x15000000:0x1b000000;
   const u32 flag=route==0?72102700:LampTravel::DreamReturnFlag(talk);
-  native_event=route==0?12107000:route==1?7200:12907020;
+  native_event=route==0?12107000:7200;
   args[2]=route==0?101164:101160;command(talk);buttons(false);
   const int early=animations,original=native_animations,actions=native_action_state;
   assert(QueueBbscWorldTravel(flag,1));assert(animations==early);buttons(true);
@@ -137,7 +137,7 @@ int main(){
             run=subprocess.run([str(exe)],env=env,capture_output=True,text=True,timeout=20)
             assert (run.returncode==0)==success,(label,run.returncode,run.stdout,run.stderr)
             print('PASS',label)
-    print('PASS original bank2004/action ENTRY with production DLL trampolines: both roles, headstones/ordinary/chalice; single native animation and action state; input gate through delayed condition/late destination/load; cancellation fences')
+    print('PASS original bank2004/action ENTRY with production DLL trampolines: both roles, headstones/ordinary (native chalice route tested separately); single native animation and action state; input gate through delayed condition/late destination/load; cancellation fences')
 
 
 if __name__=='__main__':main()

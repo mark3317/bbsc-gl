@@ -19,6 +19,10 @@ thread_local u32 bbsc_world_block_hp_source=0;
 World::Scope bbsc_world_block_scope{};
 bool bbsc_world_block_inventory_ready=false;
 u64 bbsc_world_block_inventory_load=~u64{0};
+// Guarded by block_mutex. A certificate describes metadata, never memory
+// access. Capture and accepted leases invalidate it before changing inputs.
+u64 bbsc_world_block_admission_revision=0;
+u64 bbsc_world_block_admitted_revision=~u64{0};
 bool BbscWorldBlocksActive(){return bbsc_world_blocks_active.load();}
 bool BbscWorldBlockSimulation(){return BbscWorldBlocksActive() && GetCurrentPackedMap()!=0x15000000;}
 void BbscWorldBlockWait(const World::Scope& scope,u32 block,u32 reason) {
@@ -192,6 +196,7 @@ void BbscWorldReceiveBlock(const BbscWorldIncoming& message) {
         auto& view=bbsc_world_block_views[key];
         if(c.epoch<view.lease.epoch || c.sequence<=view.sequence ||
            (c.epoch==view.lease.epoch && (c.owner!=view.lease.owner || decoded->retiring!=view.lease.retiring)))return;
+        ++bbsc_world_block_admission_revision;
         const bool changed=c.epoch!=view.lease.epoch;
         view.sequence=c.sequence;
         if(!c.owner)view.load=~u64{0};
@@ -210,7 +215,8 @@ void BbscWorldCaptureBlocks(const World::Scope& scope) {
 #ifdef BBSC_PERF_NESTED
     BBSC_PERF_NESTED("measure block capture");
 #endif
-    {std::scoped_lock lock{bbsc_world_block_mutex};bbsc_world_block_inventory_ready=false;}
+    {std::scoped_lock lock{bbsc_world_block_mutex};bbsc_world_block_inventory_ready=false;
+        ++bbsc_world_block_admission_revision;}
     const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
     const u64 player=GetLocalPlayerCharacter();
     if(!ReadablePointer(world,0x280) || !ReadablePointer(player,0x238))return;
@@ -270,6 +276,8 @@ bool BbscWorldAdmitBlocks(const World::Scope& scope) {
        bbsc_world_block_inventory_load!=bbsc_world_native_load.load()){
         BbscWorldBlockWait(scope,0,1);return false;
     }
+    if(bbsc_world_block_admitted_revision==bbsc_world_block_admission_revision)return true;
+    const u64 revision=bbsc_world_block_admission_revision;
     bool ready=true;
     for(auto& [id,item]:bbsc_world_block_local){
         const auto view=bbsc_world_block_views.find({World::BlockScope(scope,id),id});
@@ -296,6 +304,10 @@ bool BbscWorldAdmitBlocks(const World::Scope& scope) {
         BBSC_TIMELINE("WORLD","native block admitted map={:#x} block={:#x} owner={:08x} epoch={} load={}",
             scope.map,id,owner,epoch,item.load);
     }
+    // Apply releases the mutex around native code. A concurrent publication
+    // must be checked on the next call, even when this pass itself succeeded.
+    if(ready && revision==bbsc_world_block_admission_revision)
+        bbsc_world_block_admitted_revision=revision;
     return ready;
 }
 
@@ -303,13 +315,15 @@ void TickBbscWorldBlocks() {
 #ifdef BBSC_PERF_NESTED
     BBSC_PERF_NESTED("measure block tick");
 #endif
-    World::Presence local;std::map<u32,World::Member> members;
-    {std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;members=bbsc_world_presence_book.Members();}
-    bool negotiated=BbscIndependentActive() && (local.capabilities&World::BlockCapability);
-    for(const auto& [peer,m]:members)negotiated&=(m.presence.capabilities&World::BlockCapability)!=0;
+    World::Presence local;bool compatible=true;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;
+        for(const auto& [peer,m]:bbsc_world_presence_book.Members())
+            compatible&=(m.presence.capabilities&World::BlockCapability)!=0;}
+    const bool negotiated=BbscIndependentActive() && (local.capabilities&World::BlockCapability) && compatible;
     bbsc_world_blocks_active=negotiated;
     {std::scoped_lock lock{bbsc_world_block_mutex};
         if(bbsc_world_block_world!=local.world){
+            ++bbsc_world_block_admission_revision;
             bbsc_world_block_world=local.world;bbsc_world_block_local.clear();bbsc_world_block_withdrawn.clear();bbsc_world_block_handles.clear();bbsc_world_block_players.clear();
             bbsc_world_block_views.clear();bbsc_world_block_published.clear();bbsc_world_block_coordinator.Bind(local.world);
             bbsc_world_block_inventory_ready=false;
@@ -346,8 +360,7 @@ void TickBbscWorldBlocks() {
 #ifdef BBSC_PERF_NESTED
         BBSC_PERF_NESTED("measure block publication copy encode");
 #endif
-        auto reports=bbsc_world_block_local;reports.insert(bbsc_world_block_withdrawn.begin(),bbsc_world_block_withdrawn.end());
-        for(const auto& [id,item]:reports){
+        const auto report=[&](u32 id,const BbscBlockLocal& item){
             World::Control c;c.kind=World::ControlKind::BlockOffer;c.scope=World::BlockScope(scope,id);c.owner=self;c.sequence=++bbsc_world_block_sequence;
             World::BlockWire wire;wire.visit=local.visit;wire.origin_map=local.map;wire.block=id;wire.active=item.active;
             wire.loaded=bbsc_world_block_local.contains(id);if(!wire.loaded)wire.active=0;
@@ -355,7 +368,10 @@ void TickBbscWorldBlocks() {
                 c.epoch=view->second.lease.epoch;wire.retired=view->second.lease.retiring==self && item.quiesced;
             }
             auto bytes=World::EncodeBlock(wire,item.native);outgoing.push_back({self,c,std::move(bytes)});
-        }
+        };
+        for(const auto& [id,item]:bbsc_world_block_local)report(id,item);
+        for(const auto& [id,item]:bbsc_world_block_withdrawn)
+            if(!bbsc_world_block_local.contains(id))report(id,item);
         bbsc_world_block_withdrawn.clear();
     }
     for(const auto& message:outgoing){if(host)BbscWorldReceiveBlock(message);else BbscWorldSend(message.control,message.payload);}

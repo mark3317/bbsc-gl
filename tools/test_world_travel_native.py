@@ -24,6 +24,10 @@ using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s
 #define LOG_ERROR(...)
 int travel_observations=0;
 #define BBSC_TIMELINE(tag,format,...) do {if((std::string_view(format).starts_with("native travel observation") || std::string_view(format).starts_with("native travel script")))++travel_observations;} while(0)
+bool BbscNativeFinaleCommitted(){return false;}
+bool BbscNativeFinalePlaying(){return false;}
+bool BbscNativeFinaleActive(){return false;}
+bool GuardBbscNativeFinaleCommand(uint64_t){return false;}
 struct GuestRegisterSnapshot{u64 rax{},rbx{},rcx{},rdx{},rsi{},rdi{},rbp{},rsp{},r8{},r9{},r10{},r11{},r12{},r13{},r14{},r15{},rflags{};};
 constexpr u64 TalkConditionVtableOffset=0x0535AAB0,WorldFlagManPointerOffset=0x553b100;
 std::array<u8,0x1600> global{};
@@ -37,11 +41,11 @@ s32 GetLocalPlayerType(){return state==3?0:1;}
 s32 GetSessionState(){return state;}
 s32 GetCharacterHp(u64){return hp;}
 bool BbscRegisterRemotePlayer(u64 p){return p==0x30000;}
-bool BbscIndependentTravelAllowed(){return allowed;}
+bool BbscIndependentTravelAllowed(){return allowed;}bool BbscIndependentActive(){return allowed;}
 bool altar_view_ready=true;int altar_view_calls=0;
 bool BbscWorldApplyAltars(u32){++altar_view_calls;return altar_view_ready;}
 constexpr u32 BbscDreamStateMap=0x15000000;
-void BbscWorldSelectLampMenu(s32){}
+void BbscWorldSelectLampMenu(s32);
 bool scene_ready=true;bool BbscWorldSceneReady(){return scene_ready;}
 bool BbscOwnOpeningDone(){return opening;}
 s64 SteadyNowMs(){return now;}
@@ -49,11 +53,16 @@ bool ReadablePointer(u64 p,size_t){return p>=0x10000;}
 template<class T>T ReadValue(u64 p,size_t offset){if(p==image_base+WorldFlagManPointerOffset)return static_cast<T>(GetGlobalState());T v;std::memcpy(&v,reinterpret_cast<void*>(p+offset),sizeof(T));return v;}
 template<class T,size_t N>void Set(std::array<u8,N>& a,size_t offset,T value){std::memcpy(a.data()+offset,&value,sizeof(T));}
 std::set<u32> native_flags;
-bool BbscEventFlag(u32 flag){return native_flags.contains(flag)||(flag>=12907810&&flag<=12907990);}
+std::array<u8,125> lamp_group{};
+std::mutex bbsc_progress_mutex;
+bool BbscEventFlag(u32 flag){if(flag>=12907800&&flag<=12907999)return lamp_group[flag%1000/8]&(0x80u>>(flag%8));return native_flags.contains(flag);}
+u64 BbscFlagGroupStorage(u32 key){assert(key==12907);return reinterpret_cast<u64>(lamp_group.data());}
+void KeepBbscOwnWorldGroup(u32,const u8*){}
 namespace Core::Bbsc {bool SwitchEnabled(const char*){return true;}}
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
-struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;};
+struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;u64 native_lamps=0;};
 std::array<BbscWorldAltar,7> bbsc_world_altars;
+World::WorldId bbsc_world_altar_world{11,99};
 std::atomic<bool> bbsc_world_catalog_ready{false};
 std::atomic<u32> bbsc_load_generation{1};std::atomic<u64> bbsc_world_native_load{1};
 s32 bbsc_world_altar_visiting=-1;
@@ -79,15 +88,29 @@ void PS4_SYSV_ABI NativeAnimation(s32 entity,s32 animation,u32 loop,u32 skip){as
 void Link(u64 off,void* target){auto* p=reinterpret_cast<u8*>(image_base+off);p[0]=0x48;p[1]=0xb8;u64 a=reinterpret_cast<u64>(target);std::memcpy(p+2,&a,8);p[10]=0xff;p[11]=0xe0;
  if(off==0x13cfcc0)Link(0x13cbfd0,reinterpret_cast<void*>(&NativeAnimation));}
 '''
-# Use the actual ritual-scoped admission lookup with the actual travel queue.
-# This fixture's native flag getter deliberately reports EVERY layer unlocked.
+# Execute production native-flag projection and the actual travel queue.
 PREFIX+=r'''
 std::map<World::Scope,u64> bbsc_world_lamps;
 World::WorldId bbsc_world_lamp_world{};
 u64 BbscWorldLampMask(const World::Scope&){return 0x3ff;}
 '''
 _lamps=(ROOT/'emulator/src/core/bbsc_world_lamps.inc').read_text(encoding='utf-8')
-PREFIX+=_lamps[_lamps.index('u64 BbscWorldAltarLampBits('):_lamps.index('void BbscWorldSelectLampMenu(')]
+PREFIX+='s32 bbsc_world_lamp_menu=-1;u32 bbsc_world_lamp_menu_load=0;\n'
+PREFIX+=_lamps[_lamps.index('void BbscWorldSelectLampMenu('):_lamps.index('void TickBbscWorldLamps(')]
+PREFIX+=r'''
+#include "core/bbsc_guest_access.h"
+constexpr u32 GehrmanTalkId=210305, BbscHuntersDreamMap=0x15000000;
+bool BbscGuestInHostWorld(){return state==6;}
+bool BbscNightIsOver(){return native_flags.contains(1028);}
+bool IsEbootCodeAddress(u64 p){return p>image_base&&p<image_base+0x2000000;}
+bool BbscWorldTalkAllowed(u32 talk);
+s32 PS4_SYSV_ABI WorkshopCount(u64 object){return ReadValue<s32>(object,8);}
+'''
+_re=(ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+_a=_re.index('bool BbscGuestDialogueAllowed(u32 talk) {')
+_b=_re.index('\n}\n',_a)+3
+PREFIX+=_re[_a:_b]
+PREFIX+=(ROOT/'emulator/src/core/bbsc_workshop_tools.inc').read_text(encoding='utf-8')
 MAIN=r'''
 int main(){
  image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,0x2000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));assert(image_base);
@@ -171,14 +194,17 @@ int main(){
  assert(bbsc_world_travel_point==0); // actual native ESD order: altar first
  ++altar.entry.ritual;assert(QueueBbscWorldTravel(72100302,1)&&bbsc_world_travel_point==0);
  --altar.entry.ritual;assert(!QueueBbscWorldTravel(72100423,1));
- // No mask: Hall only, even though every personal native lamp flag is true.
+ // Authoritative native empty state rejects a stale personal unlock.
  assert(QueueBbscWorldTravel(72100302,1)&&bbsc_world_travel_point==0);
  assert(!QueueBbscWorldTravel(72100423,1));
  assert(QueueBbscWorldTravel(72100300,1)&&bbsc_world_travel_point==2902950);
  bbsc_world_travel_point=0;
  bbsc_world_lamp_world=bbsc_world_presence_local.world;
  const World::Scope cup{bbsc_world_lamp_world,0x1D000000,altar.mount.key,altar.entry.ritual};
- bbsc_world_lamps[cup]=4;
+ // Historical native host state authorizes travel with an EMPTY discovery
+ // cache: no host interaction or session lighting is needed.
+ altar.native_lamps=u64{2}<<4;
+ lamp_group.fill(255);
  assert(!QueueBbscWorldTravel(72100423,1));
  assert(QueueBbscWorldTravel(72100301,1)&&bbsc_world_travel_point==0);
  assert(!QueueBbscWorldTravel(72100423,1));
@@ -239,15 +265,15 @@ int main(){
  // failed lookup must not poison the travel-event cache for the whole load.
  native_event=-1;++bbsc_world_native_load;EnableBbscNativeTravelEvent(reinterpret_cast<u64>(instance.data()));
  native_event=12107000;EnableBbscNativeTravelEvent(reinterpret_cast<u64>(instance.data()));
- assert(ReadValue<s32>(reinterpret_cast<u64>(instruction.data()),0)==1001&&instance[0x78]==0&&ReadValue<u32>(reinterpret_cast<u64>(file.data()),0x100)==0);
+ assert(ReadValue<s32>(reinterpret_cast<u64>(instruction.data()),0)==1003&&instance[0x78]==0&&ReadValue<u32>(reinterpret_cast<u64>(file.data()),0x100)==256);
  // Dungeon returns have their own native event. Localize its instances
  // and admit the visitor's original EndIfClient without changing the return.
  for(int role:{3,6}){
   state=role;native_event=12907020;++bbsc_world_native_load;
   Set(instance,0x78,u8{1});Set(instruction,0,s32{1003});Set(instruction,4,s32{6});
   Set(file,0x100,u32{256});EnableBbscNativeTravelEvent(reinterpret_cast<u64>(instance.data()));
-  assert(instance[0x78]==0&&ReadValue<s32>(reinterpret_cast<u64>(instruction.data()),0)==1001);
-  assert(ReadValue<u32>(reinterpret_cast<u64>(file.data()),0x100)==0);
+  assert(instance[0x78]==0&&ReadValue<s32>(reinterpret_cast<u64>(instruction.data()),0)==1003);
+  assert(ReadValue<u32>(reinterpret_cast<u64>(file.data()),0x100)==256);
  }
  state=6;native_event=12107000;++bbsc_world_native_load;
  // Observe native animation/wait/warp progress without changing interpreter
@@ -275,6 +301,36 @@ int main(){
  EnableBbscNativeTravelEvent(reinterpret_cast<u64>(instance.data()));
  EnableBbscNativeTravelEvent(reinterpret_cast<u64>(other.data()));
  assert(travel_observations==first+3);
+ // The actual f47 dispatcher leaves its integer variants at RBP-1e0..220.
+ // Exercise the production entry/result callbacks; no process memory scanner.
+ std::array<u8,0x240> frame{};
+ std::array<u8,0x30> arguments{},vtable{};
+ Link(0x12000,reinterpret_cast<void*>(&WorkshopCount));
+ Set(vtable,0x18,image_base+0x12000);
+ Set(arguments,0,reinterpret_cast<u64>(vtable.data()));
+ Set(arguments,8,s32{6});
+ const u64 rbp=reinterpret_cast<u64>(frame.data())+0x220;
+ auto variants=[&](s32 item){
+   std::array<s32,5> values{3,item,0,1,0};
+   for(size_t i=0;i<5;++i){WriteValue<s32>(rbp-0x1e0-i*16,0,values[i]);WriteValue<u32>(rbp-0x1e0-i*16,8,2);}
+ };
+ state=6;current_map=BbscHuntersDreamMap;allowed=true;
+ for(auto [talk,item,flag]:{std::tuple{210699u,4104,6631u},std::tuple{210692u,4103,6630u},std::tuple{210692u,4102,6633u}}){
+   Set(context,0x10,talk);Set(context,0x18,u64{0x40000});variants(item);
+   r.rbp=rbp;r.r14=reinterpret_cast<u64>(arguments.data());r.r15=reinterpret_cast<u64>(context.data());r.rax=47;
+   BbscWorldEsdFunction(0,&r);r.rax=0;BbscWorldEsdResult(0,&r);assert(r.rax==0);
+   native_flags.insert(flag);r.rax=0;BbscWorldEsdResult(0,&r);assert(r.rax==1);
+   r.rbp=rbp+16;r.rax=0;BbscWorldEsdResult(0,&r);assert(r.rax==0);r.rbp=rbp;
+   WriteValue<s32>(rbp-0x200,0,3);r.rax=0;BbscWorldEsdResult(0,&r);assert(r.rax==0);variants(item);
+   Set(arguments,8,s32{5});r.r15=reinterpret_cast<u64>(context.data());r.rax=47;BbscWorldEsdFunction(0,&r);
+   r.rax=0;BbscWorldEsdResult(0,&r);assert(r.rax==0);Set(arguments,8,s32{6});
+   native_flags.erase(flag);
+ }
+ // Default-allow dialogue, with the agreed explicit exclusions.
+ for(u32 talk:{210692u,210699u,290001u,240000u,999999u})assert(BbscGuestDialogueAllowed(talk));
+ native_flags.insert(1028);assert(!BbscGuestDialogueAllowed(210305));
+ assert(!BbscGuestDialogueAllowed(210306));native_flags.erase(1028);
+ assert(BbscGuestDialogueAllowed(210305));state=3;assert(!BbscGuestDialogueAllowed(999999));
  VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 
 }

@@ -171,6 +171,6 @@ assert 'if (!BbscResearchEnabled())' not in backlog
 assert 'if (BbscResearchEnabled()) { BBSC_PERF_NESTED("tick TickBbscSendBacklog")' not in SOURCE
 with tempfile.TemporaryDirectory(prefix='bbsc-member-test-') as tmp:
     cpp, exe = Path(tmp) / 'test.cpp', Path(tmp) / 'test.exe'
-    cpp.write_text('#include "core/bbsc_patch_tables.h"\n' + prefix + binding + heal + reinsert + backlog + main, encoding='utf-8')
+    cpp.write_text('#include "core/bbsc_patch_tables.h"\n#include "core/bbsc_native_sync_test.h"\n' + prefix + binding + heal + reinsert + backlog + main, encoding='utf-8')
     subprocess.run([os.environ.get('CXX', 'g++'), '-std=c++20', '-O2', '-I', str(ROOT / 'emulator/src'), str(cpp), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)

@@ -382,21 +382,27 @@ constexpr std::array<WideEdit, 12> WideEdits{{
      {0xFF, 0xFF, 0xFF, 0xFF}, Group::Hunters},
 }};
 
-// Function entries replaced by a jmp to a sibling function with the same arguments.
+// Five-byte entries replaced by a jump to compatible native code.
 struct EntryJump {
     const char* name;
     u64 site;
-    std::array<u8, 5> prologue; // expected first 5 bytes (whole instructions)
+    std::array<u8, 5> prologue; // expected bytes (whole instructions)
     u64 target;
     Group group;
 };
 
-constexpr std::array<EntryJump, 1> EntryJumps{{
+constexpr std::array<EntryJump, 2> EntryJumps{{
     // Lua_MultiWall(id) (0x0138B720) shows the co-op fog wall entity: 0x013CABD0(id, 1) draw on,
     // 0x013CA580(id, 1) collision on, 0x01315FA0(id + 1) its effect. Lua_InvalidMultiWall (0x0138B890)
     // is the same function with 0 / 0x01315E50, i.e. hides the wall. Jumping there keeps every wall
     // hidden and walkable (CONFIRMED statically from both listings, 2026-09-17).
     {"Lua_MultiWall", 0x0138B720, {0x55, 0x48, 0x89, 0xE5, 0x53}, 0x0138B890, Group::NoFogWalls},
+    // With a retained room, channel 13 can receive an actor update during a
+    // stage teardown (e.g. the NG+ credits). The null WorldChrMan branch
+    // cannot apply that update. Resume the original next-member path, also
+    // used for a missing actor, instead of invoking the singleton panic.
+    {"Stage.Channel13NoWorld", 0x01783686, {0xBE, 0xB1, 0x00, 0x00, 0x00}, 0x01783590,
+     Group::Stage},
 }};
 
 // ---- Which groups are on (same switches in the emulator and the mod DLL) ----

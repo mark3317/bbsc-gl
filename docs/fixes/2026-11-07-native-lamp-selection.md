@@ -1,5 +1,21 @@
 # 07.11.2026 — штатный выбор личной лампы после общего зажигания
 
+## 07.11.2026 — приоритет лампы возрождения: USER CONFIRMED / CLOSED
+
+Пользователь в этом чате подтвердил: «готово, все проверено».
+Закрыт сценарий приоритета лампы: новое общее зажигание задаёт точку группе,
+более поздняя личная поездка выбирает собственную штатную лампу игрока;
+старые доставки не отменяют выбор. Исправление46a4ac2 вошло в общую DLL,
+установленную00:44:56 (map-ai-handover-deploy-20261107); прежний NOT INSTALLED
+ниже исторический. Логи обоих профилей сохранены в parent
+out/coop-dev/runs/personal-respawn-20261107/confirmed-pc: collect exit0,
+17files,warnings0. Логи содержат общие lamp native loads и retained revives;
+точное подтверждение проверенного пользователем сценария — его сообщение,
+а не вывод из одного native checkpoint. Отдельный баг «победа до spectate»
+и другие открытые задачи этим подтверждением не закрываются.
+В этом ходе код/бинарники/сейвы/settings не менялись, процессов не завершали.
+См. fixes/2026-11-07-native-lamp-selection.md.
+
 Пользователь сообщил: П1 переместился в Гробницу Идон, погиб, возродился
 в Центральном Ярнаме рядом с П2. Снимки обоих участников:
 `out/coop-dev/runs/personal-respawn-20261107/pc` родительского проекта;
@@ -31,7 +47,7 @@ Host дополнительно не принимает более старое 
 ## Проверки
 
 - test_shared_lamp_checkpoint: production host/two guests, same-map Oedon vs
-  Central, later ignition, first delayed delivery/replay, out-of-order activations,
+  Central, later ignition (including before guest ack), first delayed delivery/replay, out-of-order activations,
   dead point-load, existing scope/ritual/ordering/reload tests PASS.
 - BBSC_TEST_LAMP_PRIORITY_OLD=1: возврат старого приоритета ожидаемо FAIL;
   negative control PASS.
@@ -41,5 +57,12 @@ Host дополнительно не принимает более старое 
 - test_independent_death_destination: ordinary fade/boss hold/wipe/native kidnap PASS.
 - test_lit_lamp_checkpoint: actual ignition for both roles/catalog/dungeons PASS.
 
-SOURCE READY. Build/deploy/gameplay статусы дополняются отдельно.
+Исторический статус до общей установки00:44:56:
+DLL BUILT: final build exit0,8 прежних предупреждений. Commit46a4ac2;
+родительский pin6e7d32f не менялся. Existing agreed dirty changes входят в DLL,
+но не включены в коммит этой задачи. prepare-mod-delta exit0,5files;
+parent out/mod-delta.zip и staging готовы. NOT INSTALLED: Bloodborne.exe
+PIDs2104/26640 и bbsc-launch16172/30636 продолжают работать; замена общих
+файлов запрещена при работающих экземплярах. Gameplay OPEN.
+
 Сейвы/settings/файлы игры не менялись; действующие процессы не завершались.

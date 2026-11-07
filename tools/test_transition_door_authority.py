@@ -64,6 +64,7 @@ void RevertBbscNpcOwnFlags(){}
 bool GuardBbscSharedFinaleEvent(u64){return false;}
 bool GuardBbscWorldBootstrap(u64){return false;}
 bool BbscIndependentTravelAllowed(){return true;}
+bool BbscIndependentActive(){return true;}
 void EnableBbscNativeTravelEvent(u64 p){if(BbscEventIdOf(p)==13200310 || BbscEventIdOf(p)==13200311)WriteValue<u8>(p,0x78,0);}
 void EnableBbscKidnapEvent(u64){}
 void EnableBbscRomNativeTransition(u64){}
@@ -101,7 +102,7 @@ int main(){
   for(int step=0;step<4;++step){seek(id,step);inst[0x78]=1;other_passes=0;
    BbscNpcPassHook(0,&regs);
    assert(inst[0x78]==0);assert(!bbsc_transition_event_skip);
-   assert(other_passes==1);
+   assert(other_passes==0); // unrelated pickup work is no longer dispatched
   }
  }
  state=6;seek(13201800,0);inst[0x78]=1;BbscNpcPassHook(0,&regs);
@@ -112,6 +113,7 @@ int main(){
 }
 '''
 code = code.replace('EVD', ','.join(str(v) for v in evd.data))
+code = '#include "'+(root/'emulator/src/core/bbsc_event_steps.h').as_posix()+'"\nnamespace EventSteps=Core::Bloodborne::EventSteps;\n'+code
 install = function('void InstallBbscEventPassHook()')
 assert '&bbsc_transition_event_skip' in install and 'BbscNpcPassHook' in install
 assert source.count('image_base + 0x012ECDC0') == 1

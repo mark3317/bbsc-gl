@@ -17,7 +17,7 @@ PREFIX=r'''
 #include "core/bbsc_world_control.h"
 #include "core/bbsc_world_native_initial.h"
 using namespace Core::Bloodborne;
-using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
+using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define PS4_SYSV_ABI
 #define BBSC_TIMELINE(...)
 u64 image_base=0;constexpr u64 CandidateLocalStatePointerOffset=0x553E878;
@@ -39,12 +39,16 @@ namespace BbscMod{u32 RegisterOwnId(){return self;}}
 std::atomic<u64> bbsc_world_native_load{1};s64 now=10000;s64 SteadyNowMs(){return now;}
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 World::PresenceBook bbsc_world_presence_book;World::OwnerBook bbsc_independent_owners;
+std::optional<World::Scope> bbsc_world_requested_scope;
+u32 current_map=0x18000000;u32 GetCurrentPackedMap(){return current_map;}
+thread_local std::vector<u8>* bbsc_world_initial_capture=nullptr;
 struct BbscWorldIncoming{u32 sender;World::Control control;std::vector<u8> payload;};
 std::vector<BbscWorldIncoming> sent;void BbscWorldSend(World::Control c,std::span<const u8> p={}){sent.push_back({self,c,{p.begin(),p.end()}});}
 thread_local u32 bbsc_world_initial_sending=0;thread_local u64 bbsc_world_initial_fingerprint=0;
 std::vector<u8> packet;std::deque<std::vector<u8>> received;int applied=0,native_sends=0;
 void MockApply(u64 b,const u8* header,const u8* bits){assert(header==bits);assert(b==addr(block)||b==addr(block2));++applied;}
 bool MockSend(u64 unused,u64 member){assert(!unused&&member==native_member);++native_sends;
+ if(bbsc_world_initial_capture){*bbsc_world_initial_capture=packet;return send_ok;}
  assert(bbsc_world_initial_sending);bbsc_world_initial_fingerprint=World::NativeInitialFingerprint(packet);return send_ok;}
 s32 MockReceive(u64 n,u64 member,u32 ch,u8* bytes,u32 cap){assert(n==addr(net)&&member==native_member&&ch==0x11);
  if(received.empty())return 0;auto p=received.front();received.pop_front();assert(p.size()<=cap);std::memcpy(bytes,p.data(),p.size());return p.size();}
@@ -141,7 +145,7 @@ def main():
     for actual,mock in [('reinterpret_cast<Apply>(image_base+0x0190E8B0)','MockApply'),
                         ('reinterpret_cast<Send>(image_base+0x01786360)','MockSend'),
                         ('reinterpret_cast<Receive>(image_base+0x01789200)','MockReceive')]:
-        assert code.count(actual)==1
+        assert code.count(actual)>=1
         code=code.replace(actual,mock)
     compiler=shutil.which('clang++') or 'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-native-chr-') as tmp:
@@ -149,7 +153,7 @@ def main():
         cpp.write_text(PREFIX+code+MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
-        subprocess.run([str(exe)],env=env,check=True)
+        subprocess.run([str(exe)],env=dict(env,BBSC_NATIVE_NPC_SYNC_TEST='0'),check=True)
     print('PASS production native CHR admission: packet bounds, atomic block preflight, owner/epoch/load fences, once-only apply, native send failure')
     if os.environ.get('BBSC_TEST_EBOOT'):original_contract(os.environ['BBSC_TEST_EBOOT'])
 

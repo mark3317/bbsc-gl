@@ -50,7 +50,8 @@ void OnBbscProgressPacket(const u32*,size_t){++other;}
 void OnBbscKeyItemsPacket(const void*,size_t){++other;}
 int key_requests=0;
 void OnBbscKeyItemsRequest(u32,const void*,size_t){++key_requests;}
-void OnBbscCutscenePacket(const void*,size_t){++other;}
+int scenes=0;u32 scene_sender=0;bool scene_from_host=false;
+void OnBbscCutscenePacket(u32 sender,bool from_host,const void*,size_t){++scenes;scene_sender=sender;scene_from_host=from_host;}
 void OnBbscWorldFlagsPacket(const void*,u32){++other;}
 }
 namespace Libraries::Np::NpSignaling {constexpr u8 kSignalingBbscWorldFlagsType=0x22;}
@@ -89,6 +90,12 @@ int main(){
   Dispatch(packet(Protocol::RegisterKill,38),server);
  }
  assert(book==2&&mount==2&&kill==2);
+ Dispatch(packet(CutsceneType,96,1,1));assert(scenes==1&&scene_sender==1&&scene_from_host);
+ Dispatch(packet(CutsceneType,96,3,1));assert(scenes==2&&scene_sender==3&&!scene_from_host);
+ Dispatch(packet(CutsceneType,96,3,3));assert(scenes==2);
+ state=3;own_id=1;
+ Dispatch(packet(CutsceneType,96,2,1));assert(scenes==3&&scene_sender==2&&!scene_from_host);
+ state=6;own_id=2;
  for(auto type:{Protocol::Register,Protocol::RegisterKill,Protocol::ChaliceMount}){
   Dispatch(packet(type,136,3,3)); // unrelated room
   Dispatch(packet(type,136,own_id,1)); // reflected own packet

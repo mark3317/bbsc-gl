@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 s = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
-a = s.index('void PS4_SYSV_ABI BbscMemberDepartureLineHook(')
+a = s.index('u8 bbsc_finale_departure_line_skip = 0;')
 b = s.index('\n}\n', a) + 3
 hook = s[a:b]
 prefix = r'''
@@ -21,6 +21,9 @@ namespace BbscMod { u64 EbootAddress(){return image;} void LogPlain(const char* 
 u64 GetLocalPlayerCharacter(){return 0x10000;}
 int GetCharacterType(u64 p){return p==0x40000 ? 2 : p==0x50000 ? 12 : 1;}
 bool IsInvaderType(int t){return t==2 || t==12;}
+bool finale_committed = false, messages_enabled = true;
+bool BbscNativeFinaleCommitted(){return finale_committed;}
+bool BbscMessagesEnabled(){return messages_enabled;}
 '''
 main = r'''
 int main(){
@@ -33,13 +36,26 @@ int main(){
    0x48,0x89,0xf0,0x48,0x81,0xc4,0xb0,0,0,0,0x5b,0x5d,0xc3};
  auto p=reinterpret_cast<u8*>(image)+0x0178B146-15;
  std::memcpy(p,code,sizeof(code));
- assert(InstallGuestCodeHook(p+15,std::span<const u8>{code+15,7},0,BbscMemberDepartureLineHook));
+ auto* exit=reinterpret_cast<u8*>(image)+0x0178B298;
+ // Early exit from the original frame, before the banner path.
+ const u8 epilogue[]={0xb8,0xff,0xff,0xff,0xff,0x48,0x81,0xc4,0xb0,0,0,0,0x5b,0x5d,0xc3};
+ std::memcpy(exit,epilogue,sizeof(epilogue));
+ assert(InstallGuestCodeHook(p+15,std::span<const u8>{code+15,7},0,BbscMemberDepartureLineHook,
+                             &bbsc_finale_departure_line_skip,false,exit));
  using Run=u64 PS4_SYSV_ABI (*)(u64,u64);
  for(u64 id : {20000406ull,20000405ull,0ull}){
   assert(reinterpret_cast<Run>(p)(0x20000,id)==20000405); // remote role 0 / 7 / missing
   assert(reinterpret_cast<Run>(p)(0x30000,id)==20000405); // second remote
   for(u64 c : {0ull,0x10000ull,0x40000ull,0x50000ull})
    assert(reinterpret_cast<Run>(p)(c,id)==id); // local, absent, invaders unchanged
+ }
+ for(bool enabled : {true,false}){
+  messages_enabled=enabled;
+  finale_committed=true;
+  for(u64 c : {0x10000ull,0x20000ull,0x30000ull})
+   assert(reinterpret_cast<Run>(p)(c,20000406)==0xffffffff);
+  finale_committed=false;
+  assert(reinterpret_cast<Run>(p)(0x20000,20000406)==(enabled ? 20000405 : 20000406));
  }
  BbscMemberDepartureLineHook(0,nullptr);
  std::puts("Departure identity + native mid-function resume: PASS");

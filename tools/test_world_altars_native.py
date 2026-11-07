@@ -30,6 +30,8 @@ constexpr u32 BbscDreamStateMap=0x15000000;
 bool active=true;s32 session=6;
 u64 image_base=0;
 std::array<u8,64> manager{};
+std::array<u8,125*1200> lamp_backing{};
+s32 PS4_SYSV_ABI LampIndex(s32 kind,s32 area,s32 block,s32 group){assert((kind==1||kind==6||kind==7)&&area>=40&&area<47&&block==0&&group<10);return 61+group*115+(kind==1?0:kind==6?46:69)+(area==40?0:5+area-40);}
 std::map<u32,std::array<u8,125>> groups;
 std::map<u32,std::array<u8,125>> own_kept;
 std::mutex bbsc_progress_mutex;std::map<u32,std::array<u8,125>> bbsc_progress_groups;
@@ -72,13 +74,32 @@ void Link(u64 offset,void* target){
 '''
 MAIN=r'''
 int main(){
- image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,32*1024*1024,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));assert(image_base);
+ image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,128*1024*1024,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));assert(image_base);
  Link(0x1AB2A40,reinterpret_cast<void*>(&Channel));Link(0x1AB1DB0,reinterpret_cast<void*>(&Layout));
  Link(0x1AB3070,reinterpret_cast<void*>(&Parts));Link(0x1AB31C0,reinterpret_cast<void*>(&Type));
+ Link(0x13BC710,reinterpret_cast<void*>(&LampIndex));
+ u32 stride=125,count=1200;u64 backing=reinterpret_cast<u64>(lamp_backing.data());
+ std::memcpy(manager.data()+0x20,&stride,4);std::memcpy(manager.data()+0x24,&count,4);std::memcpy(manager.data()+0x28,&backing,8);
+ ORIGINAL_INDEX
+ using Index=s32 PS4_SYSV_ABI (*)(s32,s32,s32,s32);
+ for(int slot=0;slot<7;++slot){
+  const s32 idx=reinterpret_cast<Index>(image_base+0x13BC710)(1,40+slot,0,7);
+  assert(idx==LampIndex(1,40+slot,0,7));
+  for(int lamp=0;lamp<10;++lamp)for(int form=0;form<2;++form){
+   lamp_backing.fill(0);const u32 off=800+lamp*20+form*10;
+   lamp_backing[idx*125+off/8]=0x80u>>(off%8);u64 bits=0;
+   assert(BbscWorldReadAltarLamps(slot,bits)&&bits==(u64{1}<<(lamp*2+form)));
+  }
+ }
+ lamp_backing.fill(0);lamp_backing[LampIndex(1,43,0,7)*125+101]=0x20;
+ u64 unavailable=0;u32 zero_count=0;
+ std::memcpy(manager.data()+0x24,&zero_count,4);assert(!BbscWorldReadAltarLamps(3,unavailable));
+ std::memcpy(manager.data()+0x24,&count,4);
  const u32 first=94300;for(u32 i=0;i<6;++i)groups[first+i]={};
  groups[first][0]=29;groups[first+1][6]=2; // record byte 131, native feature low bits
  BbscWorldAltar altar;assert(BbscWorldReadAltar(3,altar));
  assert(getter_slots==std::vector<s32>({3,3,3,3}));
+ assert(altar.native_lamps==(u64{1}<<1));
  assert(altar.entry.occupied&&altar.mount.key.channel==58&&altar.mount.layout_map==0x1D0A5A00);
  assert(altar.mount.parts[0]==6109&&altar.mount.parts[1]==45&&altar.mount.feature==2);
  assert(altar.entry.form.size()==88&&Chalice::HashForm(altar.entry.form)==altar.mount.key.form_hash);
@@ -103,12 +124,13 @@ int main(){
  bbsc_world_presence_local.world={11,99};bbsc_world_guest_altars.Bind({11,99});
  for(u8 slot=0;slot<7;++slot){
   BbscWorldAltarWire wire;wire.slot=slot;wire.current=3;wire.revision=10;wire.ritual=8+slot+1;
-  if(slot==3){wire.occupied=1;wire.record=altar.entry.record;wire.mount=altar.mount;wire.lamps=1;}
+  if(slot==3){wire.occupied=1;wire.record=altar.entry.record;wire.mount=altar.mount;wire.lamps=1;wire.native_lamps=altar.native_lamps;}
   BbscWorldIncoming message;message.sender=11;message.control.scope={{11,99},0x15000000,{},0};message.control.parts=7;message.control.part=slot;
   message.payload.resize(sizeof(wire));std::memcpy(message.payload.data(),&wire,sizeof(wire));
   BbscWorldReceiveAltar(message);
   assert(bbsc_world_catalog_ready.load()==(slot==6));
  }
+ assert(bbsc_world_altars[3].native_lamps==altar.native_lamps);
  assert(bbsc_world_guest_altars.Destination(3,12,0));
  assert(!bbsc_world_guest_altars.Destination(3,11,0));
  assert(groups[94300]==before.at(94300)); // receiving a guest view does not install it into a save
@@ -160,6 +182,10 @@ int main(){
  // Host capture is driven by native writes/load changes. Timer retransmission
  // keeps the revision and does not reread the seven rituals.
  session=3;bbsc_world_altar_world=bbsc_world_presence_local.world;
+ for(u32 flag:{9020u,9026u,12907800u,12907810u,94000000u}){
+  bbsc_world_altars_dirty=false;QueueBbscWorldAltarWrite(flag,1,1);assert(bbsc_world_altars_dirty);
+ }
+ bbsc_world_altars_dirty=false;QueueBbscWorldAltarWrite(73100001,1,1);assert(!bbsc_world_altars_dirty);
  for(u32 i=0;i<7;++i)for(u32 j=0;j<6;++j)groups[94000+i*100+j]={};
  for(u32 j=0;j<6;++j)groups[94300+j]=before.at(94300+j);
  bbsc_world_altars_dirty=true;TickBbscWorldAltars();
@@ -171,6 +197,11 @@ int main(){
  assert(bbsc_world_altar_revision==revision+1);
  const auto read_after=getter_slots.size();++bbsc_world_native_load;TickBbscWorldAltars();
  assert(getter_slots.size()>read_after); // a new backing flag table needs a fresh capture
+ // Historical lamp changes alone invalidate/retransmit the existing catalogue.
+ const auto lamp_revision=bbsc_world_altar_revision;
+ lamp_backing[LampIndex(1,43,0,7)*125+103]^=0x02;
+ QueueBbscWorldAltarWrite(12907830,1,1);TickBbscWorldAltars();
+ assert(bbsc_world_altar_revision==lamp_revision+1);
  VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
 }
 '''
@@ -179,6 +210,22 @@ def main():
     section=SOURCE[SOURCE.index('struct BbscWorldAltar {'):SOURCE.index('struct BbscWorldState {')]
     state=SOURCE[SOURCE.index('struct BbscWorldState {'):SOURCE.index('std::map<World::Scope,BbscWorldState>')]
     code=PREFIX+section+state+function('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+function('void TickBbscWorldAltars()')+MAIN
+    original=''
+    if os.environ.get('BBSC_TEST_EBOOT'):
+        import struct
+        data=Path(os.environ['BBSC_TEST_EBOOT']).read_bytes()
+        ph=struct.unpack_from('<Q',data,32)[0];size,n=struct.unpack_from('<HH',data,54)
+        segments=[struct.unpack_from('<II6Q',data,ph+i*size) for i in range(n)]
+        def read(a,n):
+            seg=next(s for s in segments if s[0]==1 and s[3]<=a and a+n<=s[3]+s[5])
+            return data[seg[2]+a-seg[3]:seg[2]+a-seg[3]+n]
+        # Original selected-slot rebinding uses map40+slot and group7.
+        assert read(0x13BA788,15)==bytes.fromhex('41be2f0000004129cebf0100000031')
+        assert read(0x13BA98B,8)==bytes.fromhex('4489f6e87d1d0000')
+        for a,n in ((0x13BC710,0x16B),(0x4730C10,20),(0x47314D0,136)):
+            raw=read(a,n)
+            original+=' {const u8 bytes[]={'+','.join(str(x) for x in raw)+'};std::memcpy(reinterpret_cast<void*>(image_base+'+hex(a)+'),bytes,sizeof(bytes));}\n'
+    code=code.replace('ORIGINAL_INDEX',original)
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-world-altars-') as tmp:
         cpp=Path(tmp)/'altars.cpp';exe=Path(tmp)/'altars.exe';cpp.write_text(code,encoding='utf-8')

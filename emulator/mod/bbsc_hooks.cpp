@@ -25,6 +25,8 @@
 #include <xbyak/xbyak.h>
 
 #include "core/cpu_patches.h"
+#define BBSC_NATIVE_AI_EMITTER
+#include "core/bbsc_native_ai_admission.h"
 
 namespace BbscMod {
 void LogPlain(const char* text);
@@ -130,6 +132,20 @@ bool WriteJump(u8* site, const void* target, size_t length) {
 }
 
 } // namespace
+
+bool InstallGuestCodeRewrite(void* address, std::span<const u8> expected,
+                            GuestCodeEmitter emit, u64 image, u64 data) {
+    auto* code=static_cast<u8*>(address);
+    if(!code || !emit || expected.size()<5 || expected.size()>32)return false;
+    std::scoped_lock lock{hook_mutex};
+    if(!CheckArea() || std::memcmp(code,expected.data(),expected.size()))return false;
+    auto& out=*generator;const size_t before=out.getSize();const auto* start=out.getCurr();
+    try{emit(out,image,data);}catch(const Xbyak::Error& e){
+        out.setSize(before);BbscMod::LogPlain(e.what());return false;
+    }
+    FlushInstructionCache(GetCurrentProcess(),start,out.getSize()-before);
+    return WriteJump(code,start,expected.size());
+}
 
 bool InstallGuestCodeHook(void* address, std::span<const u8> expected_instructions, u64 tag,
                           GuestCodeHook hook, const u8* skip_flag, bool skip_instructions, const void* skip_resume) {

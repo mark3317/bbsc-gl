@@ -77,8 +77,23 @@ constexpr bool TouchesLampUnlock(std::uint32_t first, std::uint32_t width = 1) {
     return false;
 }
 
+constexpr bool IsLocalVisualFlag(std::uint32_t flag) {
+    return flag >= 12805920 && flag <= 12805923;
+}
+
 inline void CopyHostFlagGroup(std::uint32_t key, std::uint8_t* live,
                               const std::array<std::uint8_t, 125>& host) {
+    // m28 12805920 slots0..3: native creates object SFX928020 only before
+    // ThisEventSlot is complete. That receipt belongs to this process's SFX,
+    // not the resident's. Keep both0 and1 so a late visitor initializes once
+    // and later snapshots cannot repeat it. Exhaustion12805942/47/52/57 and
+    // the original hazard/restart remain shared and unchanged.
+    if (key == 12805) {
+        const auto local_sfx = live[115] & 0xF0u; // flags12805920..12805923
+        std::memcpy(live, host.data(), host.size());
+        live[115] = static_cast<std::uint8_t>((live[115] & 0x0Fu) | local_sfx);
+        return;
+    }
     if (key != LampUnlockFlags.front() / 1000) {
         std::memcpy(live, host.data(), host.size());
         return;

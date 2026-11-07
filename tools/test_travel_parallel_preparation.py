@@ -13,13 +13,12 @@ int main(){
   NoteBbscWorldTalkRecord(reinterpret_cast<u64>(context.data()),r.r14);r.rax=id;BbscWorldAltarCommand(0,&r);};
  std::array<u8,0xc0> instance{};std::array<u8,0x20> instruction{};
  Set(instance,0xb0,reinterpret_cast<u64>(instruction.data()));r.rbx=reinterpret_cast<u64>(instance.data());
- for(int role:{3,6})for(int route=0;route<4;++route){
+ for(int role:{3,6})for(int route:{0,2,3}){ // direct native m29 covered by test_chalice_dream_return
   state=role;snapshot_ready=false;chalice_ready=false;now+=1000;
   bbsc_world_travel_point=0;bbsc_world_travel_inflight=false;bbsc_world_travel_native_armed=false;
   bbsc_world_requested_mount.reset();bbsc_world_requested_scope.reset();
   u32 flag;
   if(route==0){current_map=0x17000000;command(230000,11);flag=72300100;native_event=7200;}
-  if(route==1){current_map=0x1d000000;command(290111,11);flag=72900101;native_event=12907020;}
   if(route==2){current_map=0x15000000;command(210000,11);flag=LampTravel::Returns[0].flag;native_event=12107000;}
   if(route==3){
    current_map=0x15000000;auto& altar=bbsc_world_altars[0];altar.entry.occupied=true;altar.entry.ritual=36;
@@ -59,4 +58,4 @@ int main(){
 
 if __name__=='__main__':
     travel.main()
-    print('PASS both roles: ordinary/dungeon return, headstone and cup entry; prepare with animation; only native warp waits; no timeout bypass or replay')
+    print('PASS both roles: ordinary return, headstone and cup entry; prepare with animation; only native warp waits; no timeout bypass or replay')

@@ -71,15 +71,16 @@ int main(){
 '''
 
 dream_prefix = r'''
+#include "core/bbsc_guest_access.h"
+using namespace Core::Bloodborne;
 struct GuestRegisterSnapshot {u64 rdi,rdx;};
-bool guest_world=true;int rewards=0;s64 event_id=7;
+bool guest_world=true;s64 event_id=7;
 std::array<u64,16> bbsc_dream_type_conditions{};
 size_t bbsc_dream_type_next=0;u8 bbsc_dream_type_skip=0;
 std::vector<s64> bbsc_dream_type_logged;
 constexpr std::array<s64,1> BbscDreamGuestEvents{7},BbscDreamOwnGuestEvents{8},BbscGuestGiftEvents{9};
 bool BbscGuestInHostWorld(){return guest_world;}
 s64 BbscEventIdOf(u64){return event_id;}
-void NoteBbscBossRewardEvent(s64){++rewards;}
 bool BbscDreamOwnEnabled(){return false;}
 bool IsBbscPersonalMapEvent(s64 e){return e==10;}
 bool BbscResearchEnabled(){return false;}
@@ -91,10 +92,10 @@ dream_main = r'''
 int main(){std::array<u8,0x30> condition{};std::array<u8,0xc0> event_memory{};
  auto c=memory(condition),e=memory(event_memory);GuestRegisterSnapshot regs{c,e};
  put(c,0x28,s32{10000});put(c,0x2c,s8{1});guards=0;
- BbscDreamTypeCheckHook(0,&regs);assert(rewards==1&&!bbsc_dream_type_skip&&guards==2);
+ BbscDreamTypeCheckHook(0,&regs);assert(!bbsc_dream_type_skip&&guards==1);
  put(c,0x2c,s8{0});BbscDreamTypeCheckHook(0,&regs);assert(bbsc_dream_type_skip&&condition[0x10]==1);
- bbsc_dream_type_skip=0;event_id=999;BbscDreamTypeCheckHook(0,&regs);assert(!bbsc_dream_type_skip);
- guest_world=false;int old=rewards;BbscDreamTypeCheckHook(0,&regs);assert(rewards==old);
+ bbsc_dream_type_skip=0;event_id=3503;BbscDreamTypeCheckHook(0,&regs);assert(!bbsc_dream_type_skip);
+ guest_world=false;BbscDreamTypeCheckHook(0,&regs);assert(!bbsc_dream_type_skip);
  regs.rdi=0;BbscDreamTypeCheckHook(0,&regs);BbscDreamTypeCheckHook(0,nullptr);
 }
 '''
@@ -132,6 +133,6 @@ with tempfile.TemporaryDirectory(prefix='bbsc-death-hotpaths-') as tmp:
                        ('dream', prefix+dream_prefix+function(SOURCE, 'void PS4_SYSV_ABI BbscDreamTypeCheckHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)')+dream_main)]:
         cpp, exe = Path(tmp)/(name+'.cpp'), Path(tmp)/(name+'.exe')
         cpp.write_text(code, encoding='utf-8')
-        subprocess.run([compiler,'-std=c++20','-O2',str(cpp),'-o',str(exe)],check=True)
+        subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),'-O2',str(cpp),'-o',str(exe)],check=True)
         subprocess.run([str(exe)],env=env,check=True,timeout=10)
 print('PASS: inventory guards, region churn/expiry and Dream guards; death processing covered by test_repeat_death')

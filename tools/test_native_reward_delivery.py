@@ -43,9 +43,8 @@ native_lots = cup_lots | scripted | {lot for _, _, first, repeat in bosses for l
 bbfiles.GAME = os.environ['BB_GAME']
 _, _, data, rows = param.load('ItemLotParam')
 assert 'GiveBbscBossGoods' not in source and 'BbscBossGoodsLots' not in source
-tick = function('void TickBbscBossRewards()')
-assert 'GiveBbscGuestDrop' not in tick and 'GetCharacterHp' not in tick
-assert 'ShowBbscItemPopup' not in tick
+for legacy in ('NoteBbscBossRewardEvent', 'TickBbscBossRewards', 'bbsc_boss_reward_queue'):
+    assert legacy not in source, legacy
 
 code = r'''
 #include <windows.h>
@@ -81,16 +80,14 @@ bool BbscBossRewardPersistentItem(u64){return true;}
 s32 BbscLedgerCount(u32){return 0;}
 void NoteBbscChaliceReward(const Ticket&){}
 u32 bbsc_native_pickup_flag=0;
-u8 bbsc_award_skip=0;u32 map=0x18010000;int manual=0,native_calls=0,skip_checks=0,wakes=0;
+u8 bbsc_award_skip=0;u32 map=0x18010000;int manual=0,native_calls=0,skip_checks=0;
 std::map<s32,std::array<u8,0x94>> lots;
 std::map<u32,int> inventory;std::set<u32> flags;
-std::mutex bbsc_ledger_mutex,bbsc_boss_reward_mutex;
+std::mutex bbsc_ledger_mutex;
 std::unordered_map<u32,s64> bbsc_ledger_own_flags;
-std::vector<s64> bbsc_boss_reward_queue,bbsc_boss_reward_given;
 enum class BbscLedgerSource{Award,Drop,Boss};
 struct BbscLedgerContext{BbscLedgerSource source;s32 lot;u32 flag;u32 gives;bool check;};
 std::optional<BbscLedgerContext> bbsc_ledger_context;
-enum class BbscWork{BossReward};void QueueBbscWork(BbscWork){++wakes;}
 template<class T>T ReadValue(u64 p,size_t off){T v;memcpy(&v,(void*)(p+off),sizeof(v));return v;}
 bool ReadablePointer(u64 p,size_t){return p!=0;}
 bool EnvFlagEnabled(const char*){return true;}
@@ -114,8 +111,8 @@ bool BbscLotHasGem(u64){return false;}bool BbscLotIsSure(u64){return true;}
 bool BbscEventFlag(u32 f){return flags.contains(f);}
 bool bbsc_ledger_picked_award=false;
 void GiveBbscGuestDrop(s32,u32){++manual;}
-u32 GetCurrentPackedMap(){return map;}u32 BbscMapArea(u32 m){return m>>24;}
-constexpr u64 ItemManPointerOffset=0x553d6e0,EventFlagManPointerOffset=0x553b0c8, AwardItemLotOffset=0x17ddc50;
+u32 GetCurrentPackedMap(){return map;}
+constexpr u64 AwardItemLotOffset=0x17ddc50;
 ''' + declaration(r'struct BbscBossReward \{.*?\};')
 code += declaration(r'constexpr std::array<BbscBossReward, 19> BbscBossRewards\{\{.*?\}\};')
 code += declaration(r'struct BbscUniqueChaliceReward \{.*?\};')
@@ -124,8 +121,7 @@ code += declaration(r'constexpr std::array<s32, 13> BbscNativeScriptedLots\{.*?\
 for signature in ('bool IsBbscNativeRewardLot(s32 lot)',
                   'void BeginBbscLedgerAward(s32 lot, u64 row)',
                   'void FinishBbscLedgerContext()',
-                  'void PS4_SYSV_ABI BbscGuestAwardHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)',
-                  'void NoteBbscBossRewardEvent(s64 event)', 'void TickBbscBossRewards()'):
+                  'void PS4_SYSV_ABI BbscGuestAwardHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)'):
     code += function(signature)
 code += r'''
 // Stub behind the hooked native entry: deterministic original lot data, no
@@ -146,8 +142,8 @@ void PS4_SYSV_ABI NativeAward(u64,s32 lot,u32 host_only){
  for(u32 f:BbscLotFlags(row))flags.insert(f);
 }
 void reset(){
- manual=native_calls=skip_checks=wakes=0;inventory.clear();flags.clear();
- bbsc_boss_reward_queue.clear();bbsc_boss_reward_given.clear();bbsc_ledger_context.reset();
+ manual=native_calls=skip_checks=0;inventory.clear();flags.clear();
+ bbsc_ledger_context.reset();
  bbsc_ledger_own_flags.clear();guest=ours=prerequisite=true;fail=empty=false;
  bbsc_native_boss_award=false;bbsc_award_skip=0;legacy_skip=true;current_event=12300130;chalice_ticket=true;chalice_claimed=false;
 }
@@ -164,7 +160,6 @@ code += r'''
  memcpy((void*)(image_base+AwardItemLotOffset),body,sizeof(body));
  u64 target=(u64)NativeAward;memcpy((void*)(image_base+AwardItemLotOffset+12),&target,8);
  assert(InstallGuestCodeHook((void*)(image_base+AwardItemLotOffset),std::span<const u8>{body,6},0,BbscGuestAwardHook,&bbsc_award_skip));
- u64 manager=1;memcpy((void*)(image_base+ItemManPointerOffset),&manager,8);memcpy((void*)(image_base+EventFlagManPointerOffset),&manager,8);
  using Award=void PS4_SYSV_ABI (*)(u64,s32,u32);auto award=(Award)(image_base+AwardItemLotOffset);
  for(auto& [lot,row]:lots){
   reset();award(1,lot,1);assert(native_calls==1&&manual==0&&skip_checks==0&&!inventory.empty());
@@ -176,23 +171,6 @@ code += r'''
   reset();ours=false;award(1,lot,0);assert(native_calls==0&&manual==0);
   reset();prerequisite=false;award(1,lot,0);assert(native_calls==0&&manual==0);
   reset();guest=false;award(1,lot,0);assert(native_calls==1&&manual==0&&skip_checks==0);
- }
- // Every boss's guest type wait polls repeatedly. Exactly one native award
- // per event, even for flagless lots: native pickup receipts alone cannot do it.
- for(const auto& reward:BbscBossRewards){
-  for(bool repeat:{false,true}){
-   reset();map=(u32((reward.event/100000)%100)<<24)|(u32((reward.event/10000)%10)<<16);
-   if(repeat&&reward.flag)flags.insert(reward.flag);
-   for(int i=0;i<5;++i)NoteBbscBossRewardEvent(reward.event);
-   assert(wakes==1);TickBbscBossRewards();
-   const int expected=repeat&&reward.flag&&reward.repeat_lot==0?0:1;
-   assert(native_calls==expected&&manual==0&&skip_checks==0&&!bbsc_native_boss_award);
-   if(expected)assert(bbsc_ledger_context->source==BbscLedgerSource::Boss);
-   FinishBbscLedgerContext();assert(manual==0);
-   for(int i=0;i<5;++i){NoteBbscBossRewardEvent(reward.event);TickBbscBossRewards();}
-   assert(native_calls==expected);
-  }
-  reset();map=0;NoteBbscBossRewardEvent(reward.event);TickBbscBossRewards();assert(native_calls==0);
  }
  // Personal receipt marking survives native delivery without a manual add.
  reset();award(1,43800,0);assert(bbsc_ledger_own_flags.contains(6671));
@@ -231,5 +209,5 @@ with tempfile.TemporaryDirectory(prefix='bbsc-native-rewards-') as folder:
     env = dict(os.environ)
     env['PATH'] = str(Path(compiler).parent) + os.pathsep + env.get('PATH', '')
     subprocess.run([str(exe)], env=env, check=True, timeout=15)
-print(f'PASS: {len(native_lots)} original native lots; 12 scripted sources; 19 boss first/repeat tickets; '
+print(f"PASS: {len(native_lots)} original native lots; 12 scripted sources; 19 boss events' first/repeat lots; "
       'personal guards; no manual add/K3 duplicate gate/reroll fallback; actual award trampoline')

@@ -52,7 +52,9 @@ namespace LampTravel=Core::Bloodborne::LampTravel;
 #include <vector>
 #include "core/cpu_patches.h"
 #include "core/bbsc_quest_event_rules.h"
+#include "core/bbsc_dream_finale.h"
 using Core::GuestRegisterSnapshot;
+namespace Bbsc=Core::Bbsc;
 namespace QuestRules=Core::Bloodborne::QuestRules;
 bool independent=false;bool BbscIndependentTravelAllowed(){return independent;}
 u64 image_base=0;bool own=true,timeline=true;int state=3,logs=0,sends=0;
@@ -191,15 +193,21 @@ for(int role:{3,6})for(bool npc:{false,true}){
  queued.push_back(packet(12410100,2));assert(run(11,22,0x31,output.data(),output.size())==0x1c);
 }
 independent=false;own=true;state=3;
-for(u32 event:{7100u,12907010u,7200u,12107000u,12107100u,12107200u,12907020u,13201803u,13200310u,13200311u,12800430u,12800431u,12405263u,12200131u}){
+for(u32 event:{7100u,12907010u,7200u,12107000u,12107100u,12107200u,12907020u,13201803u,12401803u,13200310u,13200311u,12800430u,12800431u,12405263u,12200131u}){
  put(instance,0x28,event);instance[0x78]=1;const int previous=sends;
  emit((u64)instance.data());assert(sends==previous+1);
  queued.push_back(packet(event,2));assert(run(11,22,0x31,output.data(),output.size())==0x1c);
 }
 for(bool features:{false,true}){independent=features;own=features;
-for(int role:{3,4,6}){state=role;put(instance,0x28,u32(13204821));instance[0x78]=1;
+for(int role:{3,4,6})for(u32 rom:{13204820u,13204821u,13204832u,13204833u}){state=role;put(instance,0x28,rom);instance[0x78]=1;
  const int previous=sends;emit((u64)instance.data());emit_first((u64)instance.data());assert(sends==previous);
- for(u16 kind:{1,2}){queued.push_back(packet(13204821,kind));assert(run(11,22,0x31,output.data(),output.size())==0);}
+ put(instance,0x48,u32(5));put(instance,0x4c,u32(0));bits=0;
+ const auto waiting=instance;
+ for(u16 kind:{1,2}){auto remote=packet(rom,kind);
+  if(kind==2){put(remote,0x10,u32(10002));put(remote,0x14,u32(6));put(remote,0x18,u32(0x1234));}
+  queued.push_back(remote);assert(run(11,22,0x31,output.data(),output.size())==0);
+  assert(instance==waiting&&bits==0&&decision((u64)instance.data())==0);
+ }
 }
 }
 VirtualFree((void*)image_base,0,MEM_RELEASE);

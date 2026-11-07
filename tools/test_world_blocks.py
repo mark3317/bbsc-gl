@@ -32,7 +32,8 @@ template<class T>T ReadValue(u64 a,size_t at){if(a==CandidateLocalStatePointerOf
  T v{};std::memcpy(&v,reinterpret_cast<void*>(a+at),sizeof(v));return v;}
 bool ReadablePointer(u64 a,size_t){return a>0x10000;}
 enum class MemoryProt{CpuWrite};bool HasMemoryAccess(u64 a,size_t s,MemoryProt){return ReadablePointer(a,s);}
-template<class T>void WriteValue(u64 a,size_t at,T v){std::memcpy(reinterpret_cast<void*>(a+at),&v,sizeof(v));}
+int ownership_writes=0;
+template<class T>void WriteValue(u64 a,size_t at,T v){if(a==addr(ownership))++ownership_writes;std::memcpy(reinterpret_cast<void*>(a+at),&v,sizeof(v));}
 bool active=true,curtain=false,flags_ready=true,peer_ready=true;u32 self=11;u32 map=0x17000000;
 namespace BbscMod{u32 RegisterOwnId(){return self;}}
 std::atomic<u64> bbsc_world_native_load{1};std::atomic<bool> bbsc_world_load_pending{false},bbsc_reload_finish_pending{false};
@@ -60,7 +61,7 @@ void BbscWorldSend(World::Control c,std::span<const u8> bytes={}){sent.push_back
 void BbscWorldCoordinateBlocks();
 std::vector<u8> native_record(u32 id,u8 bits=0){std::vector<u8> r(13);u32 size=13,count=2;
  std::memcpy(r.data(),&id,4);std::memcpy(r.data()+4,&size,4);std::memcpy(r.data()+8,&count,4);r[12]=bits;return r;}
-int applies=0,serializes=0;u8 native_bits=0,last_applied=0;
+int applies=0,serializes=0,admission_scans=0;u8 native_bits=0,last_applied=0;
 s32 MockSerialize(u64 a,u8* out){assert(a==addr(block));++serializes;auto r=native_record(0x17000000,native_bits);std::memcpy(out,r.data(),r.size());return r.size();}
 void MockApply(u64 a,const u8* r,const u8* bits){assert(a==addr(block)&&r==bits);++applies;last_applied=r[12];}
 '''
@@ -126,9 +127,21 @@ int main(){
  TickBbscWorldBlocks();assert(BbscWorldBlocksActive()&&serializes==1&&applies==0);
  now+=100;TickBbscWorldBlocks();assert(applies==1&&BbscWorldBlockOwner(77)==11&&BbscWorldBlockOwnsAny());
  assert(BbscWorldAdmitBlocks(scope)&&applies==1); // once per block/epoch/load
+ const int scans=admission_scans,serialized=serializes;
+ for(int repeat=0;repeat<2000;++repeat)assert(BbscWorldAdmitBlocks(scope));
+ assert(admission_scans==scans&&serializes==serialized&&applies==1);
+ auto foreign=scope;++foreign.world.room;assert(!BbscWorldAdmitBlocks(foreign));
  GuestRegisterSnapshot auth;auth.rdi=addr(world);auth.rbx=addr(actor);
  put(damage,8,addr(actor));auth.r12=addr(damage); // native target, distinct from attacker RBX
  BbscWorldOwnership(0,&auth);assert(ReadValue<u16>(addr(ownership),0)==1); // map follower owns THIS block
+ const int writes=ownership_writes;
+ for(int repeat=0;repeat<2000;++repeat)BbscWorldOwnership(0,&auth);
+ assert(ownership_writes==writes);
+ put(control,0x14,s32(0));BbscWorldOwnership(0,&auth);
+ assert(ReadValue<u16>(addr(ownership),0)==0xffff&&ownership_writes==writes+1);
+ BbscWorldOwnership(0,&auth);assert(ownership_writes==writes+1);
+ put(control,0x14,s32(4));BbscWorldOwnership(0,&auth);
+ assert(ReadValue<u16>(addr(ownership),0)==1&&ownership_writes==writes+2);
  BbscWorldHpRound(0,&auth);assert(auth.rflags&(u64{1}<<6));
  BbscWorldHitState(0,&auth);assert(auth.rax==3);
  put(block,0xB8,s32(-1));BbscWorldCaptureBlocks(scope);
@@ -143,6 +156,9 @@ int main(){
  BbscWorldReceiveBlock({11,lease.control,lease.payload});assert(BbscWorldBlockOwner(77)==0);
  peer_ready=false;assert(BbscWorldAdmitBlocks(scope)&&applies==2&&last_applied==1&&BbscWorldBlockOwner(77)==22);
  bbsc_independent_role=1;BbscWorldOwnership(0,&auth);assert(ReadValue<u16>(addr(ownership),0)==0xffff);
+ const int follower_writes=ownership_writes;
+ for(int repeat=0;repeat<2000;++repeat)BbscWorldOwnership(0,&auth);
+ assert(ownership_writes==follower_writes);
  auth.rflags=0x40;BbscWorldHpRound(0,&auth);assert(!(auth.rflags&0x40));
  BbscWorldHitState(0,&auth);assert(auth.rax==6); // map owner follows another block owner
  ++bbsc_world_native_load;assert(BbscWorldBlockOwner(77)==0&&!BbscWorldAdmitBlocks(scope));
@@ -200,6 +216,9 @@ int main(){
 
 def main():
     source=(ROOT/'emulator/src/core/bbsc_world_blocks.inc').read_text(encoding='utf-8')
+    loop='for(auto& [id,item]:bbsc_world_block_local){'
+    assert source.count(loop)==1
+    source=source.replace(loop,'++admission_scans;'+loop)
     for actual,mock in [('reinterpret_cast<Serialize>(image_base+0x0190E750)','MockSerialize'),
                         ('reinterpret_cast<Apply>(image_base+0x0190E8B0)','MockApply')]:
         assert source.count(actual)==1

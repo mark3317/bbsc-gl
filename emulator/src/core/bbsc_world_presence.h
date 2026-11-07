@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "bbsc_dream_finale.h"
 
 // Independent travel foundation. A room member is not necessarily present on a
 // map. Inspired by Yharnam Together's PlaceTracker/EnemyOwners/channel table
@@ -13,6 +14,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include "core/bbsc_native_sync_test.h"
 #include "core/bbsc_chalice.h"
 
 namespace Core::Bloodborne::World {
@@ -26,6 +28,7 @@ inline constexpr u32 PresenceCapability = 1;
 // Deliberately NOT advertised by this first bridge. A compatible presence packet
 // alone must never open lamps, suppress follow, or authorize enemy ownership.
 inline constexpr u32 IndependentTravelCapability = 2;
+inline constexpr u32 NativeFinaleCapability = 1u << 16;
 
 #pragma pack(push,1)
 struct WorldId {
@@ -55,7 +58,7 @@ struct Presence {
     u64 ritual = 0; // world-scoped ritual incarnation; NOT a loader revision
     float x = 0, y = 0, z = 0;
     u8 alive = 0;
-    std::array<u8, 3> padding{};
+    Core::Bbsc::DreamFinale::Signal finale{};
 };
 #pragma pack(pop)
 static_assert(sizeof(Presence) == 92);
@@ -65,7 +68,10 @@ inline bool Valid(const Presence& p) {
         p.version != 2 || !Valid(p.world) || p.sequence == 0 || p.reserved ||
         p.phase > Phase::Leaving || p.alive > 1 ||
         !(p.capabilities & PresenceCapability) ||
-        p.padding != std::array<u8, 3>{} ||
+        (p.finale != Core::Bbsc::DreamFinale::Signal{} &&
+         !(p.capabilities & NativeFinaleCapability)) ||
+        (!Core::Bbsc::DreamFinale::Valid(p.finale, true) &&
+         !Core::Bbsc::DreamFinale::Valid(p.finale, false)) ||
         !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
     if (p.phase == Phase::Playing && (!ValidMap(p.map) || p.visit == 0)) return false;
     if (p.map != 0 && !ValidMap(p.map)) return false;
@@ -181,7 +187,8 @@ public:
     }
     bool Hear(u32 sender, WorldId envelope, const Presence& p, s64 now) {
         if (!sender || sender == self_ || !self_ || !Valid(world_) ||
-            envelope != world_ || p.world != world_ || !Valid(p)) return false;
+            envelope != world_ || p.world != world_ || !Valid(p) ||
+            !Core::Bbsc::DreamFinale::Valid(p.finale, sender == world_.host)) return false;
         // Native movies/loading can suspend game ticks for many seconds.
         // Only an observed leave/map change or native room departure removes
         // residency; heartbeat age is not a new authority election.
@@ -223,7 +230,9 @@ public:
         for (const auto peer : native_members) {
             if (!peer || peer == self_) return false;
             const auto* member = Find(peer, now);
-            if (!member || !(member->presence.capabilities & IndependentTravelCapability)) return false;
+            if (!member || !(member->presence.capabilities & IndependentTravelCapability) ||
+                (member->presence.capabilities & SessionTest::Capability) !=
+                (local.capabilities & SessionTest::Capability)) return false;
         }
         return true;
     }

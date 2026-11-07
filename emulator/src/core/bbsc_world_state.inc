@@ -6,6 +6,7 @@
 struct BbscWorldAltar {
     World::AltarEntry entry;
     Chalice::Mount mount{};
+    u64 native_lamps=0; // exact lit/menu flags from this slot's native backing group
 };
 std::array<BbscWorldAltar,7> bbsc_world_altars;
 World::GuestAltars bbsc_world_guest_altars;
@@ -49,9 +50,41 @@ bool BbscWorldMountFor(u32 map,Chalice::Mount& out) {
     return Chalice::ValidMount(out);
 }
 bool BbscWorldProtectAltar(u32 flag,u32 width) {
+    if (flag < 94'000'000 || flag >= 94'700'000 || !width || width > 32) return false;
     const s32 session=GetSessionState();
     return BbscIndependentActive() && (session==4 || session==6) &&
            flag>=94'000'000 && Chalice::TouchesAltar(flag,width);
+}
+
+// Original013B89B0 binds the selected cup's virtual m29 groups to backing
+// storage indexed by013BC710(kind,40+slot,0,group). Use that same mapping
+// without selecting another altar or depending on which map the host loaded.
+u64 BbscWorldNativeAltarGroup(s32 slot,u32 kind,u32 group) {
+    if(slot<0 || slot>=7 || (kind!=1 && kind!=6 && kind!=7) || group>=10)return 0;
+    const u64 man=ReadValue<u64>(image_base+WorldFlagManPointerOffset,0);
+    if(!ReadablePointer(man,0x40) || ReadValue<u32>(man,0x20)!=125)return 0;
+    using Index=s32 PS4_SYSV_ABI (*)(s32,s32,s32,s32);
+    const s32 index=reinterpret_cast<Index>(image_base+0x013BC710)(kind,40+slot,0,group);
+    if(index<0 || static_cast<u32>(index)>=ReadValue<u32>(man,0x24))return 0;
+    const u64 backing=ReadValue<u64>(man,0x28);
+    if(!ReadablePointer(backing,125))return 0;
+    const u64 storage=backing+static_cast<u64>(index)*125;
+    return ReadablePointer(storage,125)?storage:0;
+}
+s32 BbscWorldHostAltarSlot(const World::Scope& scope) {
+    if(GetSessionState()!=3 || !Chalice::IsMap(scope.map) || scope.world!=bbsc_world_altar_world)return -1;
+    for(s32 slot=0;slot<7;++slot){const auto& a=bbsc_world_altars[slot];
+        if(a.entry.occupied && a.entry.ritual==scope.ritual && a.mount.key==scope.dungeon)return slot;}
+    return -1;
+}
+bool BbscWorldReadAltarLamps(s32 slot,u64& bits) {
+    const u64 storage=BbscWorldNativeAltarGroup(slot,1,7);if(!storage)return false;
+    bits=0;
+    for(size_t i=0;i<10;++i)for(size_t form=0;form<2;++form){
+        const u32 offset=800+static_cast<u32>(i)*20+static_cast<u32>(form)*10;
+        if(ReadValue<u8>(storage,offset/8)&(0x80u>>(offset%8)))bits|=u64{1}<<(i*2+form);
+    }
+    return true;
 }
 
 bool BbscWorldReadAltar(s32 slot,BbscWorldAltar& out) {
@@ -82,8 +115,9 @@ bool BbscWorldReadAltar(s32 slot,BbscWorldAltar& out) {
     out.mount.key.form_size=out.entry.form.size();out.mount.key.form_version=0;
     out.mount.key.form_hash=Chalice::HashForm(out.entry.form);
     out.entry.dungeon=out.mount.key;
-    // Progress itself is carried in the full record. The native menu decides
-    // the unlocked layer list; all requests are checked against that record.
+    if(!BbscWorldReadAltarLamps(slot,out.native_lamps))return false;
+    // Ritual metadata and native lamp progress travel together. The native
+    // menu and transition use the original per-layer unlock conditions.
     out.entry.lamps.fill(true);
     out.mount.revision=1;
     return Chalice::ValidMount(out.mount);
@@ -93,7 +127,7 @@ bool BbscWorldReadAltar(s32 slot,BbscWorldAltar& out) {
 struct BbscWorldAltarWire {
     u8 slot=0,occupied=0,current=0xFF,lamps=0;
     u64 revision=0,ritual=0;
-    u64 reserved_progress=0; // retained wire space; progress uses the host world snapshots
+    u64 native_lamps=0; // twenty exact native lamp flags, same wire size
     World::AltarRecord record{};
     Chalice::Mount mount{};
 };
@@ -112,7 +146,11 @@ void QueueBbscWorldLampWrite(u32 flag,u32 width,u32 value);
 
 void QueueBbscWorldAltarWrite(u32 flag,u32 width,u32 value) {
     QueueBbscWorldLampWrite(flag,width,value);
-    if(GetSessionState()==3 && (Chalice::TouchesAltar(flag,width) || Chalice::TouchesLampUnlock(flag,width)))
+    if (!width || width > 32) return;
+    // Includes selected-altar9020..26 and mounted ritual lamp flags12907800..
+    // as well as94xxxxxx records. Unrelated writes need no live role lookup.
+    if (!Chalice::TouchesAltar(flag,width) && !Chalice::TouchesLampUnlock(flag,width)) return;
+    if(GetSessionState()==3)
         bbsc_world_altars_dirty=true;
     if(!BbscIndependentActive() || GetSessionState()!=6 || !width || width>32 ||
        flag<94'000'000 || flag>=94'700'000)return;
@@ -174,9 +212,13 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
     if(!state.flags_ready) return;
     if(scope.map==BbscDreamStateMap)return; // dedicated host Dream phase, never guest map state
     const bool guest=GetSessionState()==6;
+    const bool host_cup=GetSessionState()==3 && Chalice::IsMap(scope.map);
+    const s32 slot=host_cup?BbscWorldHostAltarSlot(scope):-1;
+    if(host_cup && slot<0)return;
     for(size_t i=0;i<30;++i) {
         if(!(state.present&(u64{1}<<i))) continue;
-        const u32 key=BbscWorldGroupKey(scope.map,i);const u64 storage=BbscFlagGroupStorage(key);
+        const u32 key=BbscWorldGroupKey(scope.map,i);
+        const u64 storage=host_cup?BbscWorldNativeAltarGroup(slot,key/10000,key%10):BbscFlagGroupStorage(key);
         if(!storage) continue;
         auto* live=reinterpret_cast<u8*>(storage);
         std::array<u8,125> before;std::memcpy(before.data(),live,125);
@@ -185,10 +227,22 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
         // lamps must replace the previous mounted cup's runtime flags too.
         if(Chalice::IsMap(scope.map))std::memcpy(live,state.groups[i].data(),125);
         else Chalice::CopyHostFlagGroup(key,live,state.groups[i]);
+        // This is the SAME host cup's backing bank. An older owner snapshot
+        // must not revoke an already recorded lamp discovery/menu unlock.
+        if(host_cup && key==12907 && before!=state.groups[i])
+            for(const u32 unlock:Chalice::LampUnlockFlags)for(const u32 flag:{unlock-10,unlock})
+                live[flag%1000/8]|=before[flag%1000/8]&(0x80u>>(flag%8));
         // A resident peer supplies runtime state, not a rollback of shared story.
         // Kind1 progress is additive; retain the host's already-open world too.
         if(i<10 && !Chalice::IsMap(scope.map))
             BbscMergeSharedProgressGroup(key,live,before.data());
+        if (key == 12401 || key == 13201) {
+            // 12401803 / 13201803 mark each player's native movie complete.
+            // An owner's snapshot can arrive while the local Remo is playing.
+            constexpr size_t byte = 803 / 8;
+            constexpr u8 mask = 0x80 >> (803 % 8);
+            live[byte] = (live[byte] & ~mask) | (before[byte] & mask);
+        }
         KeepBbscGuestTalkBits(key,before.data(),live);
         KeepBbscNpcOwnBits(key,before.data(),live);
 #ifdef BBSC_MOD
@@ -197,17 +251,23 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
     }
 }
 BbscWorldState BbscWorldCaptureFlags(const World::Scope& scope) {
-    BbscWorldState state;
-    state.flags_ready=true;
-    if(Chalice::IsMap(scope.map)) {
+    BbscWorldState state;state.flags_ready=true;
+    const bool dungeon=Chalice::IsMap(scope.map);
+    const bool host_cup=dungeon && GetSessionState()==3;
+    const s32 slot=host_cup?BbscWorldHostAltarSlot(scope):-1;
+    if(dungeon){
         World::Scope current;
         {std::scoped_lock lock{bbsc_world_presence_mutex};current=World::ScopeOf(bbsc_world_presence_local);}
-        // m29's live flags belong to one mounted ritual only. An unvisited cup
-        // initializes from its own complete altar record, not another cup's flags.
-        if(current.dungeon!=scope.dungeon || current.ritual!=scope.ritual) return state;
+        // A visitor's own/previous cup must never become the initial world.
+        // The host can read its actual saved cup even while staying in Dream.
+        if(host_cup?slot<0:current!=scope){state.flags_ready=false;return state;}
     }
-    for(size_t i=0;i<30;++i) if(const u64 p=BbscFlagGroupStorage(BbscWorldGroupKey(scope.map,i));p){
-        state.present|=u64{1}<<i;std::memcpy(state.groups[i].data(),reinterpret_cast<const void*>(p),125);}
+    for(size_t i=0;i<30;++i){
+        const u32 key=BbscWorldGroupKey(scope.map,i);
+        const u64 p=host_cup?BbscWorldNativeAltarGroup(slot,key/10000,key%10):BbscFlagGroupStorage(key);
+        if(!p){if(dungeon){state.flags_ready=false;return state;}continue;}
+        state.present|=u64{1}<<i;std::memcpy(state.groups[i].data(),reinterpret_cast<const void*>(p),125);
+    }
     return state;
 }
 bool BbscWorldFlagsReady(const World::Scope& scope) {
@@ -215,7 +275,10 @@ bool BbscWorldFlagsReady(const World::Scope& scope) {
     if(it==bbsc_independent_states.end() || !it->second.flags_ready)return false;
     const bool ritual_seed=it->second.epoch==0 && Chalice::IsMap(scope.map) && std::ranges::any_of(bbsc_world_altars,[&](const auto& a){
         return a.entry.occupied && a.entry.ritual==scope.ritual && a.mount.key==scope.dungeon;});
-    if(!(it->second.present&1) && !ritual_seed)return false;
+    if(it->second.epoch==0 && Chalice::IsMap(scope.map) && !ritual_seed)return false;
+    // An epoch0 empty seed previously admitted a guest's personal first layer.
+    // m29 events need the complete progress bank, not merely a known ritual.
+    if(Chalice::IsMap(scope.map)?(it->second.present&0x3FF)!=0x3FF:!(it->second.present&1))return false;
     std::scoped_lock lock{bbsc_world_presence_mutex};
     const auto* owner=bbsc_independent_owners.Find(scope);
     return !owner || it->second.epoch==owner->epoch ||
@@ -260,17 +323,24 @@ void ApplyBbscIndependentAtLoad(u32 map) {
     scope=World::ScopeForMap(scope,map,bbsc_world_requested_scope);
     if(auto it=bbsc_independent_states.find(scope);it!=bbsc_independent_states.end()) BbscWorldApplyFlags(scope,it->second);
     if(map==BbscDreamStateMap && GetSessionState()==6){
+        // Older saves can have the native Mergo clear without its common 50
+        // phase flag. Apply that single native SetEventFlag before m21 starts.
+        if (!BbscNativeFinaleCommitted() && BbscEventFlag(12601800) && !BbscEventFlag(9462))
+            SetBbscLedgerFlag(9462, 1);
         ApplyBbscHostDreamState("independent arrival");
         BbscWorldApplyAltars(map);
     }
     if(Chalice::IsMap(map)) CompleteBbscChaliceLoad(map);
-    ApplyBbscHostTime("independent world arrival");
+    ApplyBbscHostTime("independent world arrival", map);
 }
 
 World::Scope bbsc_world_bootstrap_scope{};
 u64 bbsc_world_bootstrap_load=~u64{0};
 s32 bbsc_world_bootstrap_session=-1;
 bool BbscWorldSceneReady() {
+    // Travel metadata still has its own live phase/load/flags checks. Native
+    // NPC FirstSync/admission is intentionally left to the original engine.
+    if(SessionTest::NativeNpcSync())return true;
     std::scoped_lock lock{bbsc_world_presence_mutex};
     const auto& local=bbsc_world_presence_local;
     return bbsc_world_bootstrap_load==bbsc_world_native_load.load() &&
@@ -287,6 +357,28 @@ bool BbscWorldNativePeerReady(u32 owner) {
     return false;
 }
 bool GuardBbscWorldBootstrap(u64 instance) {
+    if (BbscNativeFinaleCommitted()) return false;
+    const bool native_npc=SessionTest::NativeNpcSync();
+    // Native NPC replication does not initialize a borrowed ritual's flags.
+    // Keep the existing once-per-load cup admission before native m29 events:
+    // their initial EndIfFlag must see this ritual, not the previous cup.
+    // Ordinary maps retain the native-mode fast exit.
+    if(native_npc){
+        if(!BbscIndependentTravelAllowed())return false;
+        const u64 load=bbsc_world_native_load.load();
+        const s32 session=GetSessionState();
+        // Successful admission belongs to the native load, not every event.
+        // No map lookup, flag copy or NPC readiness query on subsequent steps.
+        if(bbsc_world_bootstrap_load==load && bbsc_world_bootstrap_session==session)return false;
+        World::Scope scope;
+        {std::scoped_lock lock{bbsc_world_presence_mutex};scope=World::ScopeOf(bbsc_world_presence_local);}
+        scope=World::ScopeForMap(scope,GetCurrentPackedMap(),bbsc_world_requested_scope);
+        BbscWorldNativeInitialOnce(scope);
+        if(!Chalice::IsMap(GetCurrentPackedMap())){
+            bbsc_world_bootstrap_load=load;bbsc_world_bootstrap_session=session;
+            return false;
+        }
+    }
     if(!BbscIndependentTravelAllowed() || !ReadablePointer(instance,0xC0))return false;
     // Local player travel does not consume NPC/world initialization. Holding
     // its animation/exit behind owner FirstSync can keep a visitor trapped
@@ -308,8 +400,9 @@ bool GuardBbscWorldBootstrap(u64 instance) {
     // Joining can replace the native flag table without starting another map
     // load. State4 admission must not certify the subsequent state6 Dream view.
     if(bbsc_world_bootstrap_load==load && bbsc_world_bootstrap_scope==scope &&
+       (!native_npc || bbsc_world_bootstrap_session==session) &&
        !(scope.map==BbscDreamStateMap && bbsc_world_bootstrap_session==4 && session==6))
-        return BbscWorldBlocksActive() && scope.map!=BbscDreamStateMap && !BbscWorldAdmitBlocks(scope);
+        return !native_npc && BbscWorldBlocksActive() && scope.map!=BbscDreamStateMap && !BbscWorldAdmitBlocks(scope);
     BbscWorldEnsureSeed(scope);
     auto it=bbsc_independent_states.find(scope);
     if(scope.map!=BbscDreamStateMap && !BbscWorldFlagsReady(scope)){
@@ -326,9 +419,9 @@ bool GuardBbscWorldBootstrap(u64 instance) {
     {std::scoped_lock lock{bbsc_world_presence_mutex};if(const auto* lease=bbsc_independent_owners.Find(scope)){owner=lease->owner;owner_epoch=lease->epoch;}}
     // Wait before installing any host Dream data. Native FirstSync can still
     // replace the backing table; no event may consume this view until it is ready.
-    if(BbscWorldBlocksActive() && scope.map!=BbscDreamStateMap && (session==3 || session==6)){
+    if(!native_npc && BbscWorldBlocksActive() && scope.map!=BbscDreamStateMap && (session==3 || session==6)){
         if(!BbscWorldAdmitBlocks(scope))return true;
-    }else{
+    }else if(!native_npc){
         if(!BbscWorldNativePeerReady(owner))return true;
         if(!BbscWorldNativeInitialReady(scope,owner,owner_epoch))return true;
     }
@@ -365,8 +458,8 @@ void BbscWorldReceiveAltar(const BbscWorldIncoming& message) {
     World::WorldId world;
     {std::scoped_lock lock{bbsc_world_presence_mutex};world=bbsc_world_presence_local.world;}
     if(message.sender!=world.host || c.scope.world!=world || p.slot>=7 || p.current!=0xFF && p.current>=7 ||
-       p.occupied>1 || !p.ritual || c.parts!=7 || c.part!=p.slot || !p.revision) return;
-    BbscWorldAltar a;a.entry.occupied=p.occupied;a.entry.ritual=p.ritual;a.entry.record=p.record;
+       p.occupied>1 || (p.native_lamps&~u64{0xFFFFF}) || !p.ritual || c.parts!=7 || c.part!=p.slot || !p.revision) return;
+    BbscWorldAltar a;a.entry.occupied=p.occupied;a.entry.ritual=p.ritual;a.entry.record=p.record;a.native_lamps=p.native_lamps;
     if(p.occupied){a.mount=p.mount;a.entry.dungeon=p.mount.key;a.entry.form=BbscWorldLayoutProof(p.mount);
         for(size_t i=0;i<4;++i)a.entry.lamps[i]=(p.lamps&(1u<<i))!=0;
         if(!Chalice::ValidMount(p.mount) || !World::Valid(a.entry))return;
@@ -397,6 +490,7 @@ void BbscWorldReceiveAltar(const BbscWorldIncoming& message) {
 void TickBbscWorldSnapshots() {
     std::deque<BbscWorldIncoming> incoming;
     {std::scoped_lock lock{bbsc_independent_incoming_mutex};incoming.swap(bbsc_independent_incoming);}
+    if (BbscNativeFinaleCommitted()) return;
     World::Presence local;{std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;}
     if(local.world!=bbsc_world_states_world){bbsc_independent_states.clear();bbsc_world_states_world=local.world;}
     const u32 self=BbscMod::RegisterOwnId();const bool host=self && self==local.world.host;
@@ -461,7 +555,9 @@ void TickBbscWorldSnapshots() {
         if(c.kind==World::ControlKind::Flags && state.flags_ready){
             BbscWorldRememberProgress(c.scope,state);BbscWorldRememberLampSnapshot(c.scope,state);
         }
-        if(BbscIndependentActive() && World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,state.flags_ready))
+        if(BbscIndependentActive() &&
+           (World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,state.flags_ready) ||
+            (host && !from_host && Chalice::IsMap(c.scope.map) && state.flags_ready)))
             BbscWorldApplyFlags(c.scope,state);
     }
     if(!BbscIndependentActive() || local.phase!=World::Phase::Playing || !World::Valid(World::ScopeOf(local)) ||
@@ -484,7 +580,7 @@ void TickBbscWorldSnapshots() {
             acknowledged&=(record[625+i]&progress.mask[i])==(progress.bits[i]&progress.mask[i]);
         if(acknowledged)progress.mask.fill(0);
     }
-    auto next=BbscWorldCaptureFlags(scope);next.epoch=lease.epoch;next.sequence=++bbsc_world_state_sequence;
+    auto next=BbscWorldCaptureFlags(scope);if(!next.flags_ready)return;next.epoch=lease.epoch;next.sequence=++bbsc_world_state_sequence;
     saved=std::move(next);
     BbscWorldRememberLampSnapshot(scope,saved);
     BbscWorldRememberProgress(scope,saved);
@@ -520,7 +616,7 @@ void TickBbscWorldAltars() {
             }
             s32 current=-1;for(s32 i=0;i<7;++i)if(BbscEventFlag(9020+i))current=i;
             bool changed=!bbsc_world_catalog_ready.load() || current!=bbsc_world_altar_current;
-            for(size_t i=0;i<7;++i)changed|=next[i].entry!=bbsc_world_altars[i].entry || next[i].mount!=bbsc_world_altars[i].mount;
+            for(size_t i=0;i<7;++i)changed|=next[i].entry!=bbsc_world_altars[i].entry || next[i].mount!=bbsc_world_altars[i].mount || next[i].native_lamps!=bbsc_world_altars[i].native_lamps;
             {std::scoped_lock lock{bbsc_world_presence_mutex};bbsc_world_altars=next;bbsc_world_altar_current=current;}
             if(changed)++bbsc_world_altar_revision;
             bbsc_world_catalog_ready=true;
@@ -533,7 +629,7 @@ void TickBbscWorldAltars() {
         if(!bbsc_world_catalog_ready.load())return;
         last=now;sent_revision=bbsc_world_altar_revision;
         for(u8 i=0;i<7;++i){const auto& altar=bbsc_world_altars[i];BbscWorldAltarWire p;p.slot=i;p.occupied=altar.entry.occupied;p.current=bbsc_world_altar_current<0?0xFF:bbsc_world_altar_current;
-            p.revision=bbsc_world_altar_revision;p.ritual=altar.entry.ritual;p.record=altar.entry.record;p.mount=altar.mount;
+            p.revision=bbsc_world_altar_revision;p.ritual=altar.entry.ritual;p.record=altar.entry.record;p.mount=altar.mount;p.native_lamps=altar.native_lamps;
             for(size_t j=0;j<4;++j)if(altar.entry.lamps[j])p.lamps|=1u<<j;
             World::Control c;c.kind=World::ControlKind::Altar;c.scope={local.world,0x15000000,{},0};c.part=i;c.parts=7;
             BbscWorldSend(c,{reinterpret_cast<const u8*>(&p),sizeof(p)});

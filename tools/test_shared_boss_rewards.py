@@ -41,7 +41,7 @@ defeats = list(map(int, re.findall(r'\d+', re.search(
 assert len(defeats) == len(bosses) == 19
 bbfiles.GAME = os.environ['BB_GAME']
 _, _, data, rows = param.load('ItemLotParam')
-_, _, goods_data, goods_rows = param.load('EquipParamGoods')
+goods_layout, _, goods_data, goods_rows = param.load('EquipParamGoods')
 shop_l, _, shop_d, shop_rows = param.load('ShopLineupParam')
 for shop in [100008,110008,120008,130008,140008]:
     offer=param.row_values(shop_l,shop_d,shop_rows[shop])
@@ -62,6 +62,15 @@ for (event, _, first, _), defeat in zip(bosses, defeats):
                for i in range(8) if struct.unpack_from('<H', raw, 0x40+2*i)[0]]
     assert len(entries) == 1 and entries[0][0] > 0 and entries[0][1] != 0xffffffff
     assert first + 1 not in rows, 'Review native multi-row award before enabling reconciliation'
+
+# The native consumption event binds Mergo's goods effect to slot 3 of 9905.
+common = dict(emevd.Emevd(bbfiles.GAME + '/event/common.emevd.dcx').events)
+assert any((b, i) == (2000, 0) and a == struct.pack('<III', 3, 9905, 4688)
+           for b, i, a in common[0])
+assert common[9905][0] == (1003, 2, bytes.fromhex('0001020000000000'))
+assert common[9905][2] == (2003, 31, struct.pack('<III', 9901, 4, 4))
+assert param.row_values(goods_layout, goods_data, goods_rows[4323], {'refId'})['refId'] == 4688
+assert struct.unpack_from('<i', data, rows[55100000])[0] == 4323
 
 code = r'''
 #include <windows.h>
@@ -88,8 +97,7 @@ using s64=int64_t;using s32=int32_t;using u32=uint32_t;using u16=uint16_t;
 constexpr size_t BbscWorldGroupBytes=125;
 constexpr u64 ItemManPointerOffset=0x553d6e0,AwardItemLotOffset=0x17ddc50;
 u64 image_base=0;std::array<u8,16> global{};
-std::mutex bbsc_ledger_mutex,bbsc_boss_reward_mutex;
-std::vector<s64> bbsc_boss_reward_given,bbsc_boss_reward_queue;
+std::mutex bbsc_ledger_mutex;
 struct Slot{int user=1,slot=0;};using BbscSaveSlot=Slot;
 std::atomic<u32> bbsc_native_loot_receipt_revision{0};std::optional<s32> bbsc_ledger_loot_cycle;std::optional<Slot> bbsc_ledger_slot=Slot{};Slot active;
 std::optional<Slot> BbscActiveSaveSlot(){return active;}
@@ -103,9 +111,7 @@ std::map<u32,std::array<u8,0x40>> goods;
 u64 BbscGameParamTable(const char*){return 1;}
 u64 BbscParamRow(u64,u32 id,size_t){return goods.contains(id)?(u64)goods.at(id).data():0;}
 void SetBbscLedgerFlag(u32 f,u8 v);
-bool guest=false,guest_ready=true;bool BbscGuestInHostWorld(){return guest;}
-bool BbscGuestLoadItemsReady(){return guest_ready;}
-int GetLocalPlayerType(){return 1;}
+bool guest=false;
 bool BbscSharedProgressEnabled(){return true;}
 int GetSessionState(){return guest?6:0;}
 std::map<u32,s32> bag,storage;std::set<u32> flags;
@@ -147,7 +153,6 @@ code += fun('void NoteBbscLedgerLot(s32 lot, u32 code)')
 code += fun('void NoteBbscLedgerWindow(u64 caller_offset, u32 type, u32 id, s32 count)')
 code += fun('bool BbscSharedBossDefeated(size_t index, const std::vector<u32>& flags,\n        const std::map<u32, std::array<u8, BbscWorldGroupBytes>>& groups)')
 code += fun('bool BbscBossRewardPersistentItem(u64 row)')
-code += fun('void MarkBbscBossRewardAccounted(s64 event)')
 code += decl(r'constexpr std::array<u16, 130> BbscDreamShopUnlockFlags\{.*?\};')
 code += r'''
 constexpr std::array<u32,2> BbscDreamStateKeys{5,6};
@@ -199,7 +204,7 @@ void PS4_SYSV_ABI NativeAward(u64,s32 lot,u32 host_only){
 }
 void SetBbscLedgerFlag(u32 f,u8 v){if(v)flags.insert(f);else flags.erase(f);}
 void PS4_SYSV_ABI NativeSet(u64,u32 f,u8 on){if(on)flags.insert(f);else flags.erase(f);}
-void reset(){bbsc_boss_reward_given.clear();bbsc_boss_reward_queue.clear();bbsc_progress_slot.reset();guest=false;guest_ready=true;bbsc_reward_check_pending=true;bbsc_reward_check_complete=false;bbsc_pending_work=0;bbsc_progress_backed_up=false;backup_ok=true;bbsc_progress_host_flags.clear();bbsc_progress_groups.clear();bag.clear();storage.clear();flags.clear();bbsc_ledger_lots.clear();
+void reset(){bbsc_progress_slot.reset();guest=false;bbsc_reward_check_pending=true;bbsc_reward_check_complete=false;bbsc_pending_work=0;bbsc_progress_backed_up=false;backup_ok=true;bbsc_progress_host_flags.clear();bbsc_progress_groups.clear();bag.clear();storage.clear();flags.clear();bbsc_ledger_lots.clear();
  std::filesystem::remove("ledger.bin");bbsc_ledger.clear();bbsc_ledger_host_counts.clear();bbsc_ledger_trip.clear();bbsc_ledger_retro.clear();
  bbsc_dream_own={};bbsc_own_world.clear();bbsc_own_world_dirty=false;
  calls=writes=0;fail=fake_window=false;write_ok=true;bbsc_ledger_dirty=false;
@@ -242,17 +247,19 @@ code += r'''
   if(!r.flag&&BbscLotFlags(original).empty()&&!BbscBossRewardPersistentItem(original)){
    reset();assert(ReconcileBbscSharedBossRewards({},groups)&&calls==0);continue;
   }
-  reset();bbsc_boss_reward_queue.push_back(r.event);assert(ReconcileBbscSharedBossRewards({},groups));assert(calls==1&&writes==1);
-  assert(bbsc_boss_reward_queue.empty()&&std::ranges::find(bbsc_boss_reward_given,r.event)!=bbsc_boss_reward_given.end());
+  reset();assert(ReconcileBbscSharedBossRewards({},groups));assert(calls==1&&writes==1);
   assert(bbsc_ledger_lots.contains(r.first_lot));assert(!bbsc_native_boss_award);
   // Repeated merge, rejoin, and a spent/sold reward never issue the repeat lot.
   bag.clear();storage.clear();flags.clear();
+  if(r.first_lot==55100000)flags.insert(9908);
   for(int k=0;k<4;++k)assert(ReconcileBbscSharedBossRewards({},groups));assert(calls==1);
   // The same character's persisted journal survives a new process (disk fixture).
   bbsc_ledger_lots.clear();LoadBbscLedgerLocked(*bbsc_ledger_slot);
   assert(ReconcileBbscSharedBossRewards({},groups)&&calls==1);
   // A native award from participating in the fight already recorded this lot.
-  reset();NoteBbscLedgerLot(r.first_lot,0);assert(ReconcileBbscSharedBossRewards({},groups)&&calls==0);
+  reset();NoteBbscLedgerLot(r.first_lot,0);
+  if(r.first_lot==55100000)bag[0x400010e3]=1;
+  assert(ReconcileBbscSharedBossRewards({},groups)&&calls==0);
   if(r.repeat_lot){reset();NoteBbscLedgerLot(r.repeat_lot,0);assert(ReconcileBbscSharedBossRewards({},groups)&&calls==0);}
   // A failed give retains pending progress and is retried only via the native entry.
   reset();fail=true;assert(!ReconcileBbscSharedBossRewards({},groups));assert(!bbsc_ledger_lots.contains(r.first_lot));
@@ -265,8 +272,8 @@ code += r'''
   reset();bbsc_ledger_home_ready=false;assert(!ReconcileBbscSharedBossRewards({},groups)&&calls==0);
   reset();bbsc_load_generation=2;assert(!ReconcileBbscSharedBossRewards({},groups)&&calls==0);
   auto row=BbscLedgerLotRow(r.first_lot);auto receipts=BbscLotFlags(row);
-  for(u32 f:receipts){reset();flags.insert(f);assert(ReconcileBbscSharedBossRewards({},groups)&&calls==(BbscBossRewardPersistentItem(row)?1:0));}
-  if(r.flag){reset();flags.insert(r.flag);assert(ReconcileBbscSharedBossRewards({},groups)&&calls==(BbscBossRewardPersistentItem(row)?1:0));}
+  for(u32 f:receipts){reset();flags.insert(f);assert(ReconcileBbscSharedBossRewards({},groups)&&calls==(BbscBossRewardPersistentItem(row)||r.first_lot==55100000));}
+  if(r.flag){reset();flags.insert(r.flag);assert(ReconcileBbscSharedBossRewards({},groups)&&calls==(BbscBossRewardPersistentItem(row)||r.first_lot==55100000));}
   // Existing carried OR stored award prevents a duplicate, including old journals.
   for(int e=0;e<8;++e)if(ReadValue<u16>(row,0x40+e*2)){
    u32 c=(ReadValue<u32>(row,0x20+4*e)<<28)|ReadValue<u32>(row,4*e);
@@ -283,10 +290,10 @@ code += r'''
  assert(ReconcileBbscSharedBossRewards({3400,3401,3402,3403},{}));assert(calls==0);
  // Ordinary consumables stay excluded even for a new shared victory.
  reset();bbsc_progress_host_flags={9452};assert(MergeBbscSharedProgress("consumable").first==1&&calls==0);
- // Lost shop unlock with an already owned cup: host/guest, bag/storage/journal.
+ // Lost shop unlock with an already owned cup in the player's world.
  // Native PARAM ties Ritual Blood1 at2500/unlimited to the cup's get flag5000.
- for(bool visitor:{false,true})for(int proof=0;proof<3;++proof){
-  reset();guest=visitor;bbsc_progress_host_flags={9453};
+ for(int proof=0;proof<3;++proof){
+  reset();bbsc_progress_host_flags={9453};
   bbsc_dream_own.held=1;bbsc_dream_own.own[0][1]=0x20;
   bbsc_own_world[5][1]=0x20;
   if(proof==0)bag[0x40000000u|6109u]=1;
@@ -340,22 +347,54 @@ code += r'''
  bbsc_pending_work=0;bbsc_reward_check_pending=false;OnBbscProgressPacket(incoming,3);
  assert(bbsc_pending_work==0&&!bbsc_reward_check_pending);
  // Do not use the previous character's collected eligibility after a character switch.
- reset();guest=true;bbsc_progress_slot=Slot{};bbsc_progress_slot->slot=5;
+ reset();bbsc_progress_slot=Slot{};bbsc_progress_slot->slot=5;
  bbsc_progress_host_flags={5020};ProcessBbscRewardCheck();assert(calls==0&&bbsc_reward_check_pending);
- // Host-load event: receive entitlement with no local boss defeat and no local receipt.
- for(const auto& cup:BbscUniqueChaliceRewards){
-  reset();guest=true;bbsc_ledger_home_ready=false;bbsc_progress_host_flags={cup.flag};
-  guest_ready=false;ProcessBbscRewardCheck();assert(calls==0&&bbsc_reward_check_pending);
-  guest_ready=true;RequestBbscRewardCheck();ProcessBbscRewardCheck();
-  assert(calls==1&&bbsc_reward_check_complete&&bbsc_ledger_lots.contains(cup.lot));
-  RequestBbscRewardCheck();ProcessBbscRewardCheck();assert(calls==1);
-  reset();bbsc_progress_host_flags={cup.flag};fail=true;
-  assert(MergeBbscSharedProgress("receipt").first==0&&!flags.contains(cup.flag)&&calls==0);
-  RequestBbscRewardCheck();ProcessBbscRewardCheck();assert(!flags.contains(cup.flag));
+ // Entitlement may arrive before the native award (or while a boss was already dead).
+ // A guest keeps recovery pending. At home, only a missing reward is awarded.
+ for(const auto& cup:BbscUniqueChaliceRewards)for(bool native_given:{false,true}){
+  reset();guest=true;bbsc_progress_host_flags={cup.flag};
+  ProcessBbscRewardCheck();assert(calls==0&&bbsc_reward_check_pending);
+  if(native_given)NoteBbscLedgerLot(cup.lot,0);
+  guest=false;bbsc_ledger_home_ready=false;
+  ProcessBbscRewardCheck();assert(calls==0&&bbsc_reward_check_pending);
+  bbsc_ledger_home_ready=true;RequestBbscRewardCheck();ProcessBbscRewardCheck();
+  assert(calls==!native_given&&bbsc_reward_check_complete&&bbsc_ledger_lots.contains(cup.lot));
+  RequestBbscRewardCheck();ProcessBbscRewardCheck();assert(calls==!native_given);
  }
- reset();guest=true;bbsc_ledger_home_ready=false;bbsc_progress_host_flags={9453};
- ProcessBbscRewardCheck();assert(calls==1&&bbsc_ledger_lots.contains(80000000));
- for(int i=0;i<100;++i)ProcessBbscRewardCheck();assert(calls==1); // no polling
+ reset();bbsc_progress_host_flags={5020};fail=true;
+ assert(MergeBbscSharedProgress("receipt").first==0&&!flags.contains(5020)&&calls==0);
+ RequestBbscRewardCheck();ProcessBbscRewardCheck();assert(!flags.contains(5020));
+ for(bool native_given:{false,true}){
+  reset();guest=true;bbsc_progress_host_flags={9453};
+  ProcessBbscRewardCheck();assert(calls==0&&bbsc_reward_check_pending);
+  if(native_given)NoteBbscLedgerLot(80000000,0);
+  guest=false;assert(MergeBbscSharedProgress("home").first==1);
+  ProcessBbscRewardCheck();assert(calls==!native_given&&bbsc_ledger_lots.contains(80000000));
+  for(int i=0;i<100;++i)ProcessBbscRewardCheck();assert(calls==!native_given);
+ }
+ // A visiting guest can finish the fight while dead. The old receipt must
+ // not hide a missing, unused cord once victory is merged at home.
+ constexpr s32 cord_lot=55100000;
+ constexpr u32 cord=0x400010e3, cord_receipt=50000305, cord_used=9908, mergo_defeat=9462;
+ reset();guest=true;bbsc_progress_host_flags={mergo_defeat};
+ flags.insert(cord_receipt);NoteBbscLedgerLot(cord_lot,cord);
+ ProcessBbscRewardCheck();assert(calls==0&&bbsc_reward_check_pending);
+ guest=false;assert(MergeBbscSharedProgress("home").first==1);
+ fail=true;ProcessBbscRewardCheck();
+ assert(calls==1&&!bbsc_reward_check_complete&&bag[cord]==0);
+ assert(flags.contains(cord_receipt)&&bbsc_ledger_lots.at(cord_lot)==cord);
+ fail=false;RequestBbscRewardCheck();ProcessBbscRewardCheck();
+ assert(calls==2&&bbsc_reward_check_complete&&bag[cord]==1&&flags.contains(cord_receipt));
+ RequestBbscRewardCheck();ProcessBbscRewardCheck();assert(calls==2&&bag[cord]==1);
+ for(bool journal:{false,true}){
+  reset();if(journal)NoteBbscLedgerLot(cord_lot,cord);
+  flags.insert(cord_used);flags.insert(mergo_defeat);
+  RecoverBbscOwnBossRewards();assert(calls==0&&bag[cord]==0&&flags.contains(cord_used));
+ }
+ reset();NoteBbscLedgerLot(cord_lot,cord);flags.insert(cord_receipt);
+ RecoverBbscOwnBossRewards();assert(calls==0); // no victory, no recovery
+ reset();NoteBbscLedgerLot(cord_lot,cord);flags.insert(mergo_defeat);
+ RecoverBbscOwnBossRewards();assert(calls==1&&bag[cord]==1); // missing native receipt too
  reset();Groups all;for(auto& r:BbscBossRewards)bit(all,(u32)r.event);
  assert(ReconcileBbscSharedBossRewards({},all));assert(calls==15);
  assert(ReconcileBbscSharedBossRewards({},all)&&calls==15);
