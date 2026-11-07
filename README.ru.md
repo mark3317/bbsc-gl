@@ -1,8 +1,8 @@
 # BBSC-GL — Bloodborne Seamless Co-op Game Launcher
 
-[English](README.md) · **Русский** · [Скачать BBGL](https://github.com/mark3317/bbgl/releases/latest)
+[English](README.md) · **Русский** · [Скачать BBGL 1.3.2](https://github.com/mark3317/bbgl/releases/tag/v1.3.2)
 
-BBSC-GL — форк [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), встроенный в [BBGL](https://github.com/mark3317/bbgl). Для игры скачайте BBGL: согласованные версии DLL и P2P-службы уже включены. Версия **1.3.1**.
+BBSC-GL — форк [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), встроенный в [BBGL](https://github.com/mark3317/bbgl). Для игры скачайте BBGL: согласованные версии DLL и P2P-службы уже включены. Последний релиз [**BBSC-GL 1.3.2**](https://github.com/mark3317/bbsc-gl/releases/tag/v1.3.2).
 
 В одной сессии охотники могут перемещаться по отдельности, пользоваться личным Сном и снова встречаться на другой карте. Лампы и прогресс чаши хоста синхронизируются у гостей.
 
