@@ -106,6 +106,66 @@ try:
         ctypes.CFUNCTYPE(None)(image)()
         assert ctypes.c_uint8.from_address(task+0x150).value==confirmed
         assert ctypes.c_int32.from_address(menu+0x250).value==0
+    # Full original System Yes body: native save latches and exit selector are
+    # published together BEFORE any native Stop. Host production now resumes it.
+    yes = read(0x01C0D050, 0x7F)
+    ctypes.memmove(image + 0x01C0D050, yes, len(yes))
+    put64(image + 0x05562878, menu)
+    ctypes.c_uint8.from_address(world + 8).value = 0
+    ctypes.c_uint8.from_address(world + 0x1578).value = 1
+    ctypes.c_uint8.from_address(world + 0x1544).value = 0
+    ctypes.c_int32.from_address(world + 0x1490).value = 2
+    ctypes.c_int32.from_address(world + 0x154C).value = -1
+    ctypes.c_int32.from_address(menu + 0x84).value = 0
+    command(0x01C0D050)
+    assert ctypes.c_int32.from_address(menu + 0x250).value == 1
+    assert ctypes.c_int32.from_address(menu + 0x25C).value == 1
+    assert ctypes.c_uint8.from_address(world + 0x1547).value == 1
+    assert ctypes.c_uint8.from_address(world + 0x1548).value == 1
+    assert ctypes.c_uint8.from_address(world + 8).value == 0
+
+    # Reinstall branch wrapper (command() uses the same wrapper allocation).
+    ctypes.memmove(image, wrapper, len(wrapper))
+    def stage_exit(confirmed):
+        ctypes.c_int32.from_address(frame+0x200-0x160).value=confirmed
+        ctypes.c_int32.from_address(frame+0x200-0x140).value=0
+        kernel.FlushInstructionCache(ctypes.c_void_p(-1), image, 0x6000000)
+        ctypes.CFUNCTYPE(None)(image)()
+
+    ctypes.c_uint8.from_address(task+0x150).value=0
+    ctypes.c_uint8.from_address(task+0x153).value=0
+    stage_exit(1)  # save still pending: retain native exit intent, no admission yet
+    assert ctypes.c_uint8.from_address(task+0x150).value == 1
+    assert ctypes.c_uint8.from_address(task+0x153).value == 0
+    assert ctypes.c_int32.from_address(menu+0x250).value == 1
+    ctypes.c_uint8.from_address(world+0x1547).value=0
+    ctypes.c_uint8.from_address(world+0x1548).value=0
+    stage_exit(1)  # native save completed: admit the exit, preserving its kind
+    assert ctypes.c_uint8.from_address(task+0x150).value == 1
+    assert ctypes.c_uint8.from_address(task+0x153).value == 1
+    assert ctypes.c_int32.from_address(menu+0x250).value == 0
+    assert ctypes.c_uint8.from_address(world+8).value == 0
+
+    # Old handoff window: custom save/Stop with no title request or menu latch.
+    # Once StageFlow admits a world-return transition here, task+150 is absent.
+    # The later idle-time latch write cannot make the earlier admission an exit.
+    ctypes.c_uint8.from_address(task+0x150).value=0
+    ctypes.c_uint8.from_address(task+0x153).value=0
+    ctypes.c_int32.from_address(request+8).value=0
+    ctypes.c_uint8.from_address(world+0x1448).value=0
+    ctypes.c_uint8.from_address(world+0x20).value=0
+    ctypes.c_uint8.from_address(world+0x1494).value=0
+    ctypes.c_uint8.from_address(world+0x1521).value=0
+    ctypes.c_uint8.from_address(world+0x1520).value=0
+    ctypes.c_uint8.from_address(world+0x1524).value=0
+    ctypes.c_uint8.from_address(world+0x1578).value=0
+    ctypes.c_int32.from_address(frame+0x200-0x170).value=0
+    # Let the original non-exit branch run to the shared admission boundary.
+    ctypes.memmove(image+0x01940E16, read(0x01940E16,1),1)
+    stage_exit(0)
+    assert ctypes.c_uint8.from_address(task+0x153).value == 1
+    assert ctypes.c_uint8.from_address(task+0x150).value == 0
+    print('Native System Yes/save/StageFlow: exit kind retained before save completes; old zero-selector window admits world return: PASS')
     print('Native StageFlow: confirmed menu latch selects exit +150; title request alone omits it: PASS')
     print('Native title request alone: no reload; old title + StageTransition: world reload armed: PASS')
 finally:

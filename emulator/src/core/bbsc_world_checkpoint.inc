@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Death uses the original point-load entry, without a lamp departure animation.
+// Only a checkpoint in this player's current map/ritual may override native death.
 // Prepare exactly the selected world/ritual, then let the existing native loader
 // and FirstSync/bootstrap barriers rebuild the local character and collision.
 bool BeginBbscSharedLampLoad(const World::Scope& scope,s32 point) {
+    World::Presence local;{std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;}
+    const u32 map=GetCurrentPackedMap();
+    if(scope!=World::ScopeOf(local) || scope.map!=(Chalice::IsMap(map)?0x1D000000u:map))return false;
     const u64 global=GetGlobalState();
     if(!ReadablePointer(global,0x1530) || ReadValue<u8>(global,8) ||
        !HasMemoryAccess(global+0x1528,8,MemoryProt::CpuWrite))return false;
@@ -159,6 +163,12 @@ bool ReadBbscSharedLampCheckpoint(s32& point,bool& here) {
     World::Presence local;{std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;}
     BindBbscSharedLamp(local.world);
     if(!bbsc_checkpoint.revision || !ValidBbscSharedLamp(bbsc_checkpoint))return false;
+    // A newer ignition on another map must not replace this player's native
+    // checkpoint, either for an in-place revive OR for a full death reload.
+    // Resident neighbours and equal m29 point IDs are not the same destination.
+    const u32 map=GetCurrentPackedMap();
+    if(bbsc_checkpoint.scope!=World::ScopeOf(local) ||
+       bbsc_checkpoint.scope.map!=(Chalice::IsMap(map)?0x1D000000u:map))return false;
     // Arrival at a different lamp remains authoritative until a later actual
     // ignition. Replayed/delayed canonical packets keep their activation date.
     if(bbsc_native_lamp_selected_ms && bbsc_checkpoint.lit_ms<=bbsc_native_lamp_selected_ms)return false;
@@ -168,10 +178,7 @@ bool ReadBbscSharedLampCheckpoint(s32& point,bool& here) {
     point=bbsc_checkpoint.point;
     // Residency is insufficient, including adjacent ordinary maps. Dungeon
     // point IDs additionally require the exact mounted ritual, not just m29.
-    const u32 map=GetCurrentPackedMap();
-    here=bbsc_checkpoint.scope==World::ScopeOf(local) &&
-        bbsc_checkpoint.scope.map==(Chalice::IsMap(map)?0x1D000000u:map) &&
-        (!Chalice::IsMap(map) || (BbscChaliceArrivalReady(map) && !BbscChaliceNeedsLoad(map)));
+    here=!Chalice::IsMap(map) || (BbscChaliceArrivalReady(map) && !BbscChaliceNeedsLoad(map));
     return true;
 }
 bool RequestBbscSharedLampReload() {
@@ -187,6 +194,7 @@ bool RequestBbscSharedLampReload() {
     return true;
 }
 void TickBbscSharedLampCheckpoint() {
+    if (BbscNativeFinaleCommitted()) return;
     World::Presence local;{std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;}
     BindBbscSharedLamp(local.world);
     if(!BbscIndependentTravelAllowed() || (GetSessionState()!=3 && GetSessionState()!=6)){
@@ -213,7 +221,9 @@ void TickBbscSharedLampCheckpoint() {
     if(!bbsc_checkpoint_reload.point)return;
     if(bbsc_checkpoint_reload_load!=bbsc_load_generation.load()) {bbsc_checkpoint_reload={};return;}
     const auto target=bbsc_checkpoint_reload;
-    if(!ValidBbscSharedLamp(target) || now-bbsc_checkpoint_reload_since>30000){
+    const u32 map=GetCurrentPackedMap();
+    if(!ValidBbscSharedLamp(target) || target.scope!=World::ScopeOf(local) ||
+       target.scope.map!=(Chalice::IsMap(map)?0x1D000000u:map) || now-bbsc_checkpoint_reload_since>30000){
         bbsc_checkpoint_reload={};bbsc_checkpoint_fallback=true;
         RequestBbscDeathReload("shared lamp destination unavailable");bbsc_checkpoint_fallback=false;return;
     }

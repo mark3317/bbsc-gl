@@ -35,7 +35,22 @@ int main() {
     bad=a; bad.version=1; assert(!Valid(bad));
     bad=a; bad.sequence=0; assert(!Valid(bad));
     bad=a; bad.reserved=1; assert(!Valid(bad));
-    bad=a; bad.padding[2]=1; assert(!Valid(bad));
+    namespace Finale=Core::Bbsc::DreamFinale;
+    bad=a; bad.finale.ending=1; assert(!Valid(bad));
+    PresenceBook finale; finale.Bind(a.world,22);
+    auto recall=a; recall.capabilities|=NativeFinaleCapability;
+    recall.finale={Finale::Phase::Recall,7,0};
+    assert(!finale.Hear(33,a.world,recall,100));
+    assert(finale.Hear(11,a.world,recall,100));
+    assert(!finale.Hear(11,a.world,recall,101)); // replay cannot recall twice
+    auto ready=recall; ready.finale.phase=Finale::Phase::Ready;
+    assert(!finale.Hear(11,a.world,ready,101));
+    assert(finale.Hear(33,a.world,ready,101));
+    auto release=recall; ++release.sequence; release.finale={Finale::Phase::Release,7,2};
+    assert(!finale.Hear(33,a.world,release,102));
+    assert(finale.Hear(11,a.world,release,102));
+    release.sequence++; release.finale.ending=4;
+    assert(!finale.Hear(11,a.world,release,103));
     bad=a; bad.phase=static_cast<Phase>(9); assert(!Valid(bad));
     bad=a; bad.map=0; assert(!Valid(bad));
     bad=a; bad.alive=2; assert(!Valid(bad));

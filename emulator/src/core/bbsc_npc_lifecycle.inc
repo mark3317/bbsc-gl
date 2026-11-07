@@ -38,6 +38,7 @@ bool BbscNpcLifecycleContext() {
     return enabled;
 }
 void WatchBbscNpcLifecycle(u32 entity,s64 event,s32 opcode,u8 operand) {
+    if(!BbscTimelineEnabled())return;
     std::scoped_lock lock{bbsc_npc_lifecycle_mutex};
     if(!BbscNpcLifecycleContext() || !IsBbscPersonalMapEvent(event))return;
     if(!bbsc_npc_lifecycle_watches.contains(entity) && bbsc_npc_lifecycle_watches.size()>=64)return;
@@ -45,6 +46,7 @@ void WatchBbscNpcLifecycle(u32 entity,s64 event,s32 opcode,u8 operand) {
     watch.event=event;watch.opcode=opcode;watch.operand=operand;
 }
 void ObserveBbscNpcLifecycle(std::string_view boundary,u32 block=0) {
+    if(!BbscTimelineEnabled())return;
 #ifdef BBSC_PERF_NESTED
     BBSC_PERF_NESTED("measure NPC lifecycle");
 #endif
@@ -74,6 +76,7 @@ void ObserveBbscNpcLifecycle(std::string_view boundary,u32 block=0) {
     }
 }
 void BeginBbscNpcLifecycleWake() {
+    if(!BbscTimelineEnabled())return;
     std::scoped_lock lock{bbsc_npc_lifecycle_mutex};
     if(!BbscNpcLifecycleContext())return;
     const s64 now=SteadyNowMs();
@@ -87,6 +90,7 @@ void BeginBbscNpcLifecycleWake() {
     ObserveBbscNpcLifecycle("wake-before");
 }
 void EndBbscNpcLifecycleWake() {
+    if(!BbscTimelineEnabled())return;
     std::scoped_lock lock{bbsc_npc_lifecycle_mutex};
     if(std::exchange(bbsc_npc_lifecycle_wake_sample,false) &&
        bbsc_npc_lifecycle_wake_generation==bbsc_load_generation.load() &&

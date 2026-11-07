@@ -8,14 +8,16 @@ bool BbscPersonalEventIsolation() {
     return state==3 || state==4 || state==6;
 }
 bool BbscIsolatedNativeEvent(s64 event) {
-    if(event==13204821)return true; // Rom jump protection belongs to this player
+    // Host and guest jump scripts both target their own local player10000.
+    // Foreign progress must not release another player's region wait.
+    if(event==13204820 || event==13204821 || event==13204832 || event==13204833)return true;
     // These are the same native local journeys localized at event update.
     // m29 uses12907020 for lamp return (separate from common7200).
     // Both channel31 schemas ignore that setting at receive; timed sending
     // also ignores it. Foreign continuations must not steer a local journey.
     if(BbscIndependentTravelAllowed() &&
-       (LampTravel::IsNativeTravelEvent(event) || event==13201803 || LampTravel::IsLampActivationEvent(event) ||
-        IsBbscKidnapEvent(event)))return true;
+       (LampTravel::IsNativeTravelEvent(event) || event==13201803 || event==12401803 || LampTravel::IsLampActivationEvent(event) ||
+        IsBbscKidnapEvent(event) || Bbsc::DreamFinale::EventEnding(event)))return true;
     return BbscOwnNpcQuestsEnabled() && IsBbscPersonalMapEvent(event);
 }
 bool BbscPersonalEventMessage(std::span<const u8> bytes,u32& event,u16& kind) {

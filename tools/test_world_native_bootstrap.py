@@ -48,6 +48,7 @@ bool blocks_active=false,blocks_ready=false;
 bool BbscWorldBlocksActive(){return blocks_active;}
 bool BbscWorldAdmitBlocks(const World::Scope&){return blocks_ready;}
 bool BbscWorldNativeInitialReady(const World::Scope&,u32,u64){return npc_ready;}
+void BbscWorldNativeInitialOnce(const World::Scope&){}
 // NPC initial-state admission is a separate production dependency; this fixture
 // exercises the Dream/flag barrier after that dependency grants admission.
 std::atomic<bool> bbsc_world_catalog_ready{true};
@@ -95,7 +96,8 @@ int main(){
  map=0x1d0a5a00;++bbsc_world_native_load;
  auto& altar=bbsc_world_altars[1];altar.entry.occupied=true;altar.entry.ritual=18;altar.mount.key={55,66,88,0};
  World::Scope cup{p.world,0x1d000000,altar.mount.key,18};bbsc_world_requested_scope=cup;
- bbsc_independent_states[cup]={0,1,0,true};assert(BbscWorldFlagsReady(cup));
+ bbsc_independent_states[cup]={0,1,0,true};assert(!BbscWorldFlagsReady(cup));
+ bbsc_independent_states[cup]={0,1,0x3FF,true};assert(BbscWorldFlagsReady(cup));
  assert(!GuardBbscWorldBootstrap(1));
  p.map=map;p.dungeon=cup.dungeon;p.ritual=cup.ritual;bbsc_world_presence_local=p;
  assert(World::ScopeOf(p)==cup&&BbscWorldSceneReady());

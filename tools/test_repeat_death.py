@@ -44,7 +44,7 @@ bool bbsc_spectate_active=false,bbsc_spectate_releasing=false;
 bool bbsc_boss_at_own_death=false,curtain=false;
 int handoffs=0,echoes=123,bbsc_echoes_at_death=-1;bool boss=false;
 int GetBloodEchoes(){return echoes;}
-void BeginBbscCoopDeath(std::string_view why,s32 role){assert(why=="watchdog"&&role==state);++handoffs;bbsc_spectate_active=true;}
+void BeginBbscCoopDeath(std::string_view why,s32 role){assert(why=="watchdog"&&role==state);assert(bbsc_dead_since_ms>0&&now-bbsc_dead_since_ms>=BbscDeadWatchdogMs);++handoffs;bbsc_spectate_active=true;}
 bool BbscSpectateEnabled(){return enabled;}s64 SteadyNowMs(){return now;}
 s32 GetSessionState(){return state;}u64 GetGlobalState(){return global;}
 u64 GetLocalPlayerCharacter(){return player;}

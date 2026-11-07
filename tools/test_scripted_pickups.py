@@ -28,6 +28,8 @@ def declaration(pattern):
 
 code = r'''
 #include "core/bbsc_quest_event_rules.h"
+#include "core/bbsc_guest_access.h"
+namespace GuestAccess=Core::Bloodborne::GuestAccess;
 namespace QuestRules=Core::Bloodborne::QuestRules;
 #include <algorithm>
 #include <array>
@@ -54,6 +56,8 @@ u64 image_base=0;u32 current_map=0;bool guest=true,writable=true;
 s64 event_id=0;
 u32 GetCurrentPackedMap(){return current_map;}
 bool BbscGuestInHostWorld(){return guest;}
+bool BbscIndependentTravelAllowed(){return false;}
+namespace LampTravel=Core::Bloodborne::LampTravel;
 bool BbscResearchEnabled(){return false;}
 namespace Chalice{bool IsMap(u32 m){return (m>>24)==29;}}
 bool BbscDreamOwnEnabled(){return false;}
@@ -103,12 +107,12 @@ for signature in [
     'void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live)',
     'bool IsBbscKidnapEvent(s64 event)',
     'bool IsBbscPersonalMapEvent(s64 event)',
-    'void EnableBbscScriptedPickupEvent(u64 instance)',
     'void PS4_SYSV_ABI BbscDreamTypeCheckHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)',
     'void NoteBbscLedgerGiven(BbscLedgerSource source, s32 lot, u32 flag, u32 code, s32 count)',
 ]:
     code += function(signature)
 start = SOURCE.index('struct BbscQuestRange {')
+code = '#include "'+(ROOT/'emulator/src/core/bbsc_event_steps.h').as_posix()+'"\n'+code
 end = SOURCE.index('void LocalizeBbscQuestEvent(u64 instance) {', start)
 code += SOURCE[start:end]
 code += function('void LocalizeBbscQuestEvent(u64 instance)')
@@ -156,30 +160,7 @@ int main(){
    WriteValue<u64>(inst,0xb0,(u64)file+offset);instance[0x78]=1;
    LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);
   }
-  // Only reviewed EndIfClient is replaced. The rest of the event stays native.
-  WriteValue<u64>(inst,0xb0,(u64)file+0x100);
-  auto reset_gate=[&](){
-   WriteValue<s32>((u64)file,0x100,1003);WriteValue<s32>((u64)file,0x104,6);
-   WriteValue<u64>((u64)file,0x108,4);WriteValue<u64>((u64)file,0x110,0);
-   WriteValue<u32>((u64)file,0x300,256);instance[0x78]=1;
-  };
-  reset_gate();current_map^=0x10000;EnableBbscScriptedPickupEvent(inst);
-  assert(ReadValue<u32>((u64)file,0x300)==256);current_map=rule.map;
-  writable=false;EnableBbscScriptedPickupEvent(inst);writable=true;
-  assert(ReadValue<u32>((u64)file,0x300)==256);
-  WriteValue<u32>((u64)file,0x300,257);EnableBbscScriptedPickupEvent(inst);
-  assert(ReadValue<u32>((u64)file,0x300)==257);
-  // Parameterized reward has a verified constant role gate; other
-  // parameterized event instances remain blocked.
-  reset_gate();WriteValue<u64>(inst,0xb8,1);EnableBbscScriptedPickupEvent(inst);
-  assert((ReadValue<s32>((u64)file,0x100)==1001)==(rule.event==13400995));
-  WriteValue<u64>(inst,0xb8,0);
-  reset_gate();EnableBbscScriptedPickupEvent(inst);
-  if(rule.client_gate){
-   assert(ReadValue<u32>((u64)file,0x300)==0);
-   assert(ReadValue<s32>((u64)file,0x100)==1001&&ReadValue<s32>((u64)file,0x104)==1);
-   assert(instance[0x78]==0);EnableBbscScriptedPickupEvent(inst);
-  }else assert(ReadValue<u32>((u64)file,0x300)==256);
+  // Host/client gates are exercised by test_guest_access through the native predicate.
  }
  // Standalone Orphanage Key, Balcony Key and Cainhurst covenant gift:
  // the production host-role gate permits each guest's own original event.
@@ -214,7 +195,7 @@ int main(){
  WriteValue<s64>((u64)file,0xa0,event_id);instance[0x78]=1;
  LocalizeBbscQuestEvent(inst);assert(instance[0x78]==1);
  bbsc_dream_type_conditions.fill(0);bbsc_dream_type_skip=0;condition[0x10]=0;
- BbscDreamTypeCheckHook(0,&regs);assert(!bbsc_dream_type_skip&&condition[0x10]==0);
+ BbscDreamTypeCheckHook(0,&regs);assert(bbsc_dream_type_skip&&condition[0x10]==1);
  // Eye Pendant direct native receipt follows only a positive, matching item delivery.
  image_base=1;guest=true;
  auto given=[&](s32 lot,u32 flag,u32 code,s32 count){NoteBbscLedgerGiven(BbscLedgerSource::Award,lot,flag,code,count);};

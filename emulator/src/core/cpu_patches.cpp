@@ -1,5 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#define BBSC_NATIVE_AI_EMITTER
+#include "core/bbsc_native_ai_admission.h"
 
 #include <array>
 #include <atomic>
@@ -2249,6 +2251,24 @@ static bool CanCopyGuestHookInstructions(void* address, std::span<const u8> inst
         offset += instruction.length;
     }
     return true;
+}
+
+bool InstallGuestCodeRewrite(void* address, std::span<const u8> expected,
+                            GuestCodeEmitter emit, u64 image, u64 data) {
+    auto* code=static_cast<u8*>(address);auto* module=GetContainingModule(code);
+    if(!module || !emit || expected.size()<5 ||
+       expected.size()>static_cast<size_t>(module->end-code))return false;
+    std::unique_lock lock{module->mutex};
+    if(!std::ranges::equal(expected,std::span<const u8>{code,expected.size()}))return false;
+    const auto* end=code+expected.size();
+    if(std::ranges::any_of(module->patched,[&](const u8* p){return p>=code && p<end;}))return false;
+    auto& out=module->trampoline_gen;const size_t before=out.getSize();const auto* start=out.getCurr();
+    try{
+        emit(out,image,data);
+        auto& patch=module->patch_gen;patch.reset();patch.setSize(code-patch.getCode());
+        patch.jmp(start,Xbyak::CodeGenerator::LabelType::T_NEAR);patch.nop(expected.size()-5);
+    }catch(const Xbyak::Error& error){out.setSize(before);HandleTrampolineError(module,error);return false;}
+    module->patched.insert(code);return true;
 }
 
 bool InstallGuestCodeHook(void* address, std::span<const u8> expected_instructions, u64 tag,

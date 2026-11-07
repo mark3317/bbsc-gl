@@ -59,6 +59,7 @@ code = r'''
 #include <map>
 #include <vector>
 #include "core/bbsc_quest_event_rules.h"
+#include "core/bbsc_event_steps.h"
 namespace QuestRules=Core::Bloodborne::QuestRules;
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s64=int64_t;
 #define BBSC_PERF_NESTED(...)

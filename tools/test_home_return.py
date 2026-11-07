@@ -41,7 +41,8 @@ u64 GetLocalPlayerCharacter(){return 1;}
 auto ReadCharacterTransform(u64){return transform;}
 bool IsUsablePackedMap(u32 m){return m!=0;}
 struct GuestRegisterSnapshot {u64 rsi=0,rcx=0,rbp=0,rax=0;};
-struct Quit {int session=0;} bbsc_pending_quit,bbsc_title_quit;
+struct Quit {int session=0;} bbsc_title_quit;
+bool bbsc_targeted_kick_received=false; void HandleBbscTargetedKick(){}
 bool quit=false; bool BbscQuitInProgress(){return quit;}
 std::string ReadGuestAscii(u64 p,size_t){return (const char*)p;}
 int captures=0,ledger=0,world=0,leaves=0,ending=0,releases=0;

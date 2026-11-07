@@ -125,6 +125,13 @@ constexpr bool IsDreamReturn(std::uint32_t flag) {
         if (talk / 1000 != 210 && 70000100 + (talk / 1000) * 10000 + talk % 1000 == flag) return true;
     return flag >= 72900100 && flag < 72900110;
 }
+constexpr bool IsLampActivationCommand(std::uint32_t flag) {
+    if (flag < 72110200 || flag > 73600209 || flag % 10000 < 200 || flag % 10000 > 209) return false;
+    if (flag >= 72900200 && flag < 72900210) return true;
+    for (const auto talk : Talks)
+        if (talk / 1000 != 210 && flag == 70000200 + (talk / 1000) * 10000 + talk % 1000) return true;
+    return false;
+}
 // Original non-lamp journeys. Preserve their native item/story/action checks.
 constexpr bool IsNativeTransitionEvent(std::int64_t event) {
     return event==12200131 || event==12405263 || event==12800430 || event==12800431 ||
@@ -144,7 +151,7 @@ constexpr bool IsNativeTravelEvent(std::int64_t event) {
     return event==7200 || event==12107000 || event==12107100 || event==12107200 || event==12907020;
 }
 constexpr bool IsTravelCommand(std::uint32_t flag) {
-    if ((flag >= 70000200 && flag < 70000210) || IsDreamReturn(flag) ||
+    if ((flag >= 70000200 && flag < 70000210) || IsDreamReturn(flag) || IsLampActivationCommand(flag) ||
         (flag >= 72100420 && flag < 72100427) || (flag >= 72100300 && flag < 72100310)) return true;
     for (const auto& destination : Returns) if (destination.flag == flag) return true;
     return false;

@@ -43,13 +43,13 @@ using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s
 std::atomic<u32> bbsc_load_generation{1};
 bool timeline=true;int role=3;u32 map=0x18000000;u64 image_base=0; s64 now=1000;
 std::array<u8,0x100> actor{},replacement{},control{};
-u64 resolved=0;int lookups=0;std::vector<std::string_view> boundaries;
+u64 resolved=0;int lookups=0,context_reads=0;std::vector<std::string_view> boundaries;
 template<class T>T ReadValue(u64 p,size_t off){T value;memcpy(&value,(void*)(p+off),sizeof(value));return value;}
 template<class T>void put(auto& a,size_t off,T value){memcpy(a.data()+off,&value,sizeof(value));}
 bool ReadablePointer(u64 p,size_t size){for(auto* a:{&actor,&replacement,&control}){
  const u64 start=(u64)a->data();if(p>=start&&p-start<=a->size()&&size<=a->size()-(p-start))return true;}return false;}
 bool BbscTimelineEnabled(){return timeline;}
-s32 GetSessionState(){return role;}u32 GetCurrentPackedMap(){return map;}
+s32 GetSessionState(){++context_reads;return role;}u32 GetCurrentPackedMap(){++context_reads;return map;}
 s64 SteadyNowMs(){return now;}
 bool IsBbscPersonalMapEvent(s64 e){return e==12400520;}
 u64 PS4_SYSV_ABI Find(u32,u64,u64){++lookups;return resolved;}
@@ -106,6 +106,9 @@ int main(){
  role=0;ObserveBbscNpcLifecycle("offline");assert(bbsc_npc_lifecycle_watches.empty());
  role=3;timeline=false;WatchBbscNpcLifecycle(2400750,12400520,29,0);
  ObserveBbscNpcLifecycle("disabled");assert(bbsc_npc_lifecycle_watches.empty());
+ const int disabled_lookups=lookups,disabled_context=context_reads;
+ for(int repeat=0;repeat<2000;++repeat){BeginBbscNpcLifecycleWake();EndBbscNpcLifecycleWake();}
+ assert(lookups==disabled_lookups&&context_reads==disabled_context);
  assert(actor==original_actor);VirtualFree(code,0,MEM_RELEASE);
  puts("PASS original native backread-off branch; production diagnostics read-only, lifecycle changes, scopes, roles, deduplication and budgets");
 }

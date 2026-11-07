@@ -1,3 +1,6 @@
+> 07.11: Hall-only fallback заменён чтением исторических ламп через native mapper.
+> См. [новое исправление](2026-11-07-chalice-native-lamp-catalog.md); игровой результат OPEN.
+
 # Guest host-cup menu lamp leakage — 06.11.2026, SOURCE corrected; gameplay OPEN
 
 ## Implemented after user clarification

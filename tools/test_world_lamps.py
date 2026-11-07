@@ -11,9 +11,10 @@ PREFIX=r'''
 #include "core/bbsc_lamp_travel_data.h"
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
-bool active=true;int session=6;u32 self=22;u32 current=0x18010000;s64 now=1000;
+bool active=true,finale_committed=false;int session=6;u32 self=22;u32 current=0x18010000;s64 now=1000;
 std::array<u8,16> global{};
 bool BbscIndependentActive(){return active;}s32 GetSessionState(){return session;}
+bool BbscNativeFinaleCommitted(){return finale_committed;}
 namespace BbscMod{u32 RegisterOwnId(){return self;}}
 u32 GetCurrentPackedMap(){return current;}bool BbscWorldSceneReady(){return true;}
 u64 GetGlobalState(){return reinterpret_cast<u64>(global.data());}
@@ -23,7 +24,18 @@ s64 SteadyNowMs(){return now;}
 std::atomic<u32> bbsc_load_generation{1};constexpr u32 BbscDreamStateMap=0x15000000;
 std::mutex bbsc_world_presence_mutex,bbsc_progress_mutex;World::Presence bbsc_world_presence_local;
 struct Book{const int* Resident(u32 peer){static int member;return peer==22||peer==33?&member:nullptr;}}bbsc_world_presence_book;
-struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;};std::array<BbscWorldAltar,7> bbsc_world_altars;
+struct BbscWorldAltar{World::AltarEntry entry;Chalice::Mount mount;u64 native_lamps=0;};std::array<BbscWorldAltar,7> bbsc_world_altars;
+World::WorldId bbsc_world_altar_world{11,99};
+std::atomic<bool> bbsc_world_altars_dirty{false};
+std::array<std::array<u8,125>,7> host_lamp_groups{};
+s32 BbscWorldHostAltarSlot(const World::Scope& scope){
+ if(session!=3||scope.world!=bbsc_world_altar_world)return -1;
+ for(s32 slot=0;slot<7;++slot)if(bbsc_world_altars[slot].entry.occupied&&bbsc_world_altars[slot].entry.ritual==scope.ritual&&bbsc_world_altars[slot].mount.key==scope.dungeon)return slot;
+ return -1;
+}
+u64 BbscWorldNativeAltarGroup(s32 slot,u32 kind,u32 group){assert(kind==1&&group==7);return slot<0?0:reinterpret_cast<u64>(host_lamp_groups[slot].data());}
+
+std::atomic<bool> bbsc_world_catalog_ready{true};
 struct BbscWorldState{bool flags_ready=false;u64 present=0;std::array<std::array<u8,125>,30> groups{};};
 std::map<u32,std::array<u8,125>> groups,own,bbsc_progress_groups;
 bool BbscSharedProgressEnabled(){return true;}
@@ -62,7 +74,10 @@ int main(){
   groups.clear();own.clear();bbsc_progress_groups.clear();bbsc_world_lamps.clear();bbsc_world_lamp_pending=guest_pending;
   self=peer;session=6;current=peer==22?0x15000000:0x17000000;bbsc_world_presence_local.map=current;
   BbscWorldReceiveLamps(invalid);assert(bbsc_world_lamps.empty());
-  BbscWorldReceiveLamps(canonical);BbscWorldReceiveLamps(canonical);now+=1000;TickBbscWorldLamps();
+  BbscWorldReceiveLamps(canonical);BbscWorldReceiveLamps(canonical);now+=1000;
+  finale_committed=true;sent.clear();TickBbscWorldLamps();
+  assert(!BbscEventFlag(12417800)&&sent.empty());
+  finale_committed=false;TickBbscWorldLamps();
   assert(BbscEventFlag(12417800)&&BbscEventFlag(12417810));assert((own[12417]==std::array<u8,125>{}));
   assert((bbsc_world_lamp_pending.begin()->second==0&&bbsc_progress_groups[12417]!=std::array<u8,125>{}));
  }
@@ -75,7 +90,11 @@ int main(){
  assert(bbsc_world_lamp_pending[cup]==2&&own[12907]==personal);
  // Transport retry is retained until canonical host acknowledgement.
  now+=1000;sent.clear();TickBbscWorldLamps();auto cup_proposal=sent.back();assert(cup_proposal.control.scope==cup);
- self=11;session=3;bbsc_world_lamp_pending.clear();BbscWorldReceiveLamps(cup_proposal);
+ self=11;session=3;bbsc_world_lamp_pending.clear();
+ current=0x15000000;bbsc_world_presence_local.map=current;
+ const auto unrelated=groups[12907];BbscWorldReceiveLamps(cup_proposal);
+ assert((host_lamp_groups[2][103]&0x02)&&(host_lamp_groups[2][102]&0x08));
+ assert(groups[12907]==unrelated&&bbsc_world_altars_dirty.load());
  now+=1000;sent.clear();TickBbscWorldLamps();auto cup_canonical=sent.back();
  self=22;session=6;bbsc_world_lamps.clear();BbscWorldReceiveLamps(cup_canonical);
  current=0x15000000;bbsc_world_presence_local.map=current;bbsc_world_presence_local.dungeon={};bbsc_world_presence_local.ritual=0;
@@ -84,37 +103,39 @@ int main(){
  BbscWorldSelectLampMenu(3);assert(!BbscEventFlag(12907830)&&BbscEventFlag(12907850));
  BbscWorldSelectLampMenu(2);assert(BbscEventFlag(12907830)&&!BbscEventFlag(12907850));
  assert(own[12907]==personal&&!bbsc_progress_groups.contains(12907));
- // A guest's progressed personal cup must not leak into an unseen host cup.
- // No canonical mask is different from inheriting the live native flags.
- b.entry.ritual=13;groups[12907].fill(255);
- const auto personal_before_unknown=own[12907];
- BbscWorldSelectLampMenu(3);
- assert(BbscWorldAltarLampUnlocked(3,0));
- for(int i=0;i<10;++i){
-  assert(!BbscEventFlag(12907800+i*20)&&!BbscEventFlag(12907810+i*20));
-  if(i)assert(!BbscWorldAltarLampUnlocked(3,i));
+ // Historical host lamps arrive with the catalogue BEFORE any interaction,
+ // discovery packet or mounted snapshot. Exact native forms are preserved.
+ bbsc_world_lamps.clear();bbsc_world_lamp_pending.clear();
+ for(int slot=0;slot<7;++slot){
+  auto& altar=bbsc_world_altars[slot];altar.entry.occupied=true;
+  altar.entry.ritual=100+slot;altar.mount.key={u64(1000+slot),66,88,0};
+  for(int i=0;i<10;++i)for(int form=0;form<2;++form){
+   groups[12907].fill(255);altar.native_lamps=u64{1}<<(2*i+form);
+   BbscWorldSelectLampMenu(slot);
+   for(int j=0;j<10;++j)for(int f=0;f<2;++f)
+    assert(BbscEventFlag(12907800+j*20+f*10)==(j==i&&f==form));
+  }
  }
- assert(own[12907]==personal_before_unknown);
- // Personal writes after list construction cannot authorize a stale selection.
- groups[12907].fill(255);assert(!BbscWorldAltarLampUnlocked(3,2));
- const World::Scope fresh{world,0x1D000000,b.mount.key,13};
- bbsc_world_lamp_pending[fresh]=4;assert(!BbscWorldAltarLampUnlocked(3,2));
- bbsc_world_lamp_pending.erase(fresh);
- // The first confirmed lamp makes only that destination available.
- bbsc_world_lamps[fresh]=4;BbscWorldSelectLampMenu(3);
- assert(BbscEventFlag(12907850)&&!BbscEventFlag(12907830));
- assert(BbscWorldAltarLampUnlocked(3,2)&&!BbscWorldAltarLampUnlocked(3,1));
- // Explicit zero, ritual replacement and session changes all fall back to Hall.
- bbsc_world_lamps[fresh]=0;BbscWorldSelectLampMenu(3);assert(!BbscEventFlag(12907850));
- bbsc_world_lamps[fresh]=4;++b.entry.ritual;BbscWorldSelectLampMenu(3);
- assert(!BbscWorldAltarLampUnlocked(3,2)&&!BbscEventFlag(12907850));
- ++bbsc_world_presence_local.world.room;assert(!BbscWorldAltarLampUnlocked(2,1));
- bbsc_world_presence_local.world=world;b.entry.ritual=12;
- // Host's original view remains intact before it publishes a discovery mask.
- session=3;groups[12907].fill(255);b.entry.ritual=20;BbscWorldSelectLampMenu(3);
- assert(BbscEventFlag(12907850));session=6;b.entry.ritual=12;
- assert(!BbscWorldAltarLampUnlocked(-1,0)&&!BbscWorldAltarLampUnlocked(7,0));
- assert(!BbscWorldAltarLampUnlocked(3,-1)&&!BbscWorldAltarLampUnlocked(3,10));
+ // A native empty cup is empty because of authoritative state, not a missing
+ // discovery-cache entry; unrelated bits/personal backup remain untouched.
+ a.native_lamps=0;b.native_lamps=0;const auto personal_backup=own[12907];
+ groups[12907].fill(255);BbscWorldSelectLampMenu(2);
+ for(int i=0;i<10;++i)assert(!BbscEventFlag(12907810+i*20));
+ assert(own[12907]==personal_backup&&groups[12907][0]==255);
+ // A missing catalogue or a different world is not fabricated lamp data.
+ const auto before_guard=groups[12907];bbsc_world_catalog_ready=false;
+ BbscWorldSelectLampMenu(3);assert(groups[12907]==before_guard);bbsc_world_catalog_ready=true;
+ ++bbsc_world_presence_local.world.room;BbscWorldSelectLampMenu(3);
+ assert(groups[12907]==before_guard);--bbsc_world_presence_local.world.room;
+ // A new confirmed discovery augments historical state before a new revision.
+ const World::Scope fresh{world,0x1D000000,b.mount.key,b.entry.ritual};
+ b.native_lamps=u64{2}<<12;bbsc_world_lamps[fresh]=4;
+ BbscWorldSelectLampMenu(3);assert(BbscEventFlag(12907930)&&BbscEventFlag(12907850));
+ // Host native state is never projected from either catalogue or cache.
+ session=3;groups[12907].fill(255);BbscWorldSelectLampMenu(2);
+ assert(BbscEventFlag(12907850));session=6;
+ // Restore the original scope for the subsequent lighting/snapshot tests.
+ a.entry.ritual=11;a.mount.key={55,66,88,0};b.entry.ritual=12;b.mount.key={56,66,88,0};
  // Every dungeon lamp uses both lit/menu flags and a ritual-scoped snapshot.
  for(size_t i=0;i<10;++i){
   current=0x1D0A5A00;bbsc_world_presence_local.map=current;bbsc_world_presence_local.dungeon=a.mount.key;bbsc_world_presence_local.ritual=11;
@@ -135,13 +156,18 @@ int main(){
  BbscWorldLampBind({11,100});assert(bbsc_world_lamp_pending.empty()&&bbsc_world_lamps.empty()&&bbsc_world_lamp_menu==-1);
 }
 '''
-def main():
+def main(negative=False):
  compiler=shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
  with tempfile.TemporaryDirectory(prefix='bbsc-lamps-') as tmp:
   p=Path(tmp);cpp=p/'lamps.cpp';exe=p/'lamps.exe'
-  cpp.write_text(PREFIX+(ROOT/'emulator/src/core/bbsc_world_lamps.inc').read_text()+MAIN,encoding='utf-8')
+  source=(ROOT/'emulator/src/core/bbsc_world_lamps.inc').read_text()
+  if negative:source=source.replace('u64 flags=a.native_lamps;', 'u64 flags=0;')
+  cpp.write_text(PREFIX+source+MAIN,encoding='utf-8')
   subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
   env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
-  subprocess.run([str(exe)],check=True,env=env)
- print('PASS production session lamps: non-owner guest -> host -> two guests, lit/headstone bits, retry/ack, separate rituals, personal backup, malformed/stale/world fencing')
-if __name__=='__main__':main()
+  result=subprocess.run([str(exe)],env=env,capture_output=True)
+  assert (result.returncode!=0) if negative else (result.returncode==0),result.stderr.decode(errors='replace')
+ if negative:
+  print('PASS negative control: omitted native historical lamp flags rejected');return
+ print('PASS production session lamps: non-owner guest -> host -> two guests, lit/headstone bits, retry/ack, separate rituals, personal backup, native historical catalogue for seven slots/ten lamps, exact flag forms, malformed/stale/world fencing')
+if __name__=='__main__':main();main(negative=True)

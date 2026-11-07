@@ -48,6 +48,7 @@ u64 BbscFlagGroupStorage(u32){return reinterpret_cast<u64>(live.data());}
 bool BbscSharedMapProgressAllowed(u32 f){++policy_checks;return f%8!=0;}
 '''
 index=s[s.index('struct BbscQuestRange {'):s.index('\nbool BbscTalkEventIsOurs')]
+index='#include "'+(Path(__file__).resolve().parents[1]/'emulator/src/core/bbsc_event_steps.h').as_posix()+'"\n'+index
 main=r'''
 int main(){
  bbsc_progress_groups[1].fill(0xff);live.fill(0xff);

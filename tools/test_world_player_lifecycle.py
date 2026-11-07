@@ -16,11 +16,13 @@ PREFIX=r'''
 #include <mutex>
 #include <set>
 #include <vector>
+#include <tuple>
 #include "core/bbsc_world_players.h"
 #include "core/cpu_patches.h"
 using Core::GuestRegisterSnapshot;
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
+std::atomic<u64> bbsc_world_player_revision{1};
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 #define BBSC_TIMELINE(...)
 constexpr u64 CandidateLocalStatePointerOffset=0x553e878,MultiPlayerInsSetStateOffset=0x1e52560;
@@ -68,6 +70,7 @@ void Hear(){peer.sequence++;assert(bbsc_world_presence_book.Hear(22,peer.world,p
 '''
 MAIN=r'''
 int main(){
+ _putenv_s("BBSC_NATIVE_NPC_SYNC_TEST","0");
  image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,0x5600000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));assert(image_base);
  Link(0x18f27c0,reinterpret_cast<void*>(&Bind));Link(0x18c6390,reinterpret_cast<void*>(&Disable));
  Link(MultiPlayerInsSetStateOffset,reinterpret_cast<void*>(&Insert));Link(0x19186e0,reinterpret_cast<void*>(&Remove));

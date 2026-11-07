@@ -29,7 +29,14 @@ bool IsStaticPatchingEnabled() noexcept;
 // End Windows static guest red-zone protection
 // ============================================================================
 
+namespace Xbyak { class CodeGenerator; }
 namespace Core {
+
+// Generate a replacement native condition once at installation. No runtime
+// snapshot/callback is inserted by this API.
+using GuestCodeEmitter = void (*)(Xbyak::CodeGenerator&, u64, u64);
+bool InstallGuestCodeRewrite(void* address, std::span<const u8> expected,
+                            GuestCodeEmitter emit, u64 image, u64 data);
 
 struct alignas(16) GuestRegisterSnapshot {
     u64 rax;

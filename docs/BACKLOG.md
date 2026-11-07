@@ -1,4 +1,843 @@
-## 07.11.2026 — выбор лампы по дате: SOURCE / tests PASS / gameplay OPEN
+## 07.11.2026 — выход в личный NG+ / PASS; личный счётчик гостя / OPEN
+
+Run084429/084428 подтвердил запуск ролика после победы над Германом у обоих
+и закрытие комнаты во время загрузки. После неё оба в личном мире с нулём
+кооператоров, без записей `SN-kept-home` и баннера выхода. У П2 слот 3 снова
+показал цикл 1, как и в предыдущем прогоне. Открыта проверка личного счётчика
+на повторном NG+ и причины расхождения. См. HANDOFF.
+
+## 07.11.2026 — компенсация пропущенной пуповины Мерго / GAMEPLAY OPEN
+
+В run084428 П2 в NG+1 остался без предмета при установленном флаге получения
+50000305 и выключенном 9908. Лот и отголоски прошли, зависимости от барьера
+лог не подтверждает. Уточнить происхождение флага и проверить компенсацию
+при возврате в свой мир с сохранённой победой. См. HANDOFF.
+
+В run081734 повторная победа сохранила у П2 одну пуповину из боя в 08:03.
+Штатный лот сработал без новой выдачи. После боя предмет в сумке, флаг
+получения включён, использования выключен. Проверка компенсации для П2
+с пропущенной наградой остаётся открытой. См. HANDOFF.
+
+## 07.11.2026 — проверить первый удар по боссу / GAMEPLAY PARTIAL
+
+П1 хост со снимком перед Мерго, П2 гость. +50% HP обычных врагов и боссов
+за гостя. Кормилица побеждена в общей сессии. У 18 общих активных акторов
+в Сне подтверждён согласованный максимум. Уменьшение полоски с первого
+попадания и фактический максимум Кормилицы в бою остаются открытыми.
+См. HANDOFF и OPTIMIZATION.
+
+## 07.11.2026 — П2 вылетел на титрах совместного финала / SOURCE FIXED
+
+На переходе в NG+ штатный приём канала 13 у гостя дошёл до проверки
+`WorldChrMan` при нулевом указателе. `DL_PANIC` завершил П2, П1 загрузился.
+Ветка при нулевом менеджере возвращается в исходный обход участников.
+Личный цикл П2 сохраняется в штатном дескрипторе перехода. Проверить в игре
+прибытие в одну комнату, затем выход П2 из неё с прогрессом нового цикла.
+[Логи и стек](fixes/2026-11-07-finale-credits-crash.md).
+
+## 07.11.2026 — Яаар’гул после Ром: закрытые двери и отсутствующие враги у гостя / OPEN
+
+П2 загрузился на 9,834 с раньше П1. Перед переходом существующая синхронизация
+времени записала гостю обычную ночь вместо кровавой луны. Первая инициализация
+12800400 отключила другой набор NPC и объектов. После получения фазы кровавой
+луны набор команд совпал с П1. Исправление внесено в существующую синхронизацию
+времени, целевой тест прошёл. После общей сборки проверить штатный переход
+2802958 с быстрым выходом гостя из катсцены. Точные ID замеченных дверей не
+установлены. См. HANDOFF и parent out/coop-dev/runs/p2-enemies-visibility-20261107-060843.
+
+## 07.11.2026 — прыжок гостя к Ром: USER CONFIRMED / CLOSED
+
+Гость выжил. Пользователь видел воду и защиту только у прыгнувшего гостя,
+без повтора эффектов у хоста наверху. Логи run060248/run060210 подтверждают
+выживание и изоляцию отправок личных событий. Ранние OPEN/FAILED относятся
+к этапам до визуального подтверждения. Разбор:
+out/coop-dev/runs/rom-guest-native-wait-20261107/retest-analysis.md.
+
+## 07.11.2026 — приземление гостя к Ром: установка перед проверкой
+
+Исправлен допуск13204821 до начала штатного event update, включая уже
+зарегистрированное ожидание. Original scheduler/iterator и transport PASS,
+старый PC-only guard воспроизводит отказ. DLL build/delta exit0.
+См. fixes/2026-11-07-rom-shared-jump-effects.md.
+
+## 07.11.2026 — приземление гостя к Ром: RETEST FAILED на предыдущей сборке
+
+П2 в коопе погиб в05:46:28.212 и возродился у фонаря. События физики
+у тумана видны, снятие условия личной защиты13204821 не зафиксировано.
+Проверить, где останавливается исходная цепочка: условие13204800,
+область3202800 или выполнение2004[15]. Безопасное приземление OPEN.
+Разбор: out/coop-dev/runs/rom-guest-fall-retest-20261107/analysis.md.
+
+## 07.11.2026 — отголоски гостя без напарника на карте: LOG CONFIRMED / CLOSED
+
+П2Central05:40:14:4860->0, native stain4860, затем reload/возрождение;
+П1вOldYharnam. Повторного списания до выхода нет. Проверенный сценарий закрыт.
+Подбор пятна не проверялся. Evidence parent
+out/coop-dev/runs/p2-central-echoes-confirmed-20261107/analysis.md.
+Ранние source-only/gameplay OPEN ниже исторические.
+
+## 07.11.2026 — прогресс первого слоя и лампы чаш: USER CONFIRMED / CLOSED
+
+Пользователь подтвердил: «все работает, прогресс первого слоя сохраняется
+и лампы синхронизируются». Закрыты баги сброса прогресса первого слоя при
+повторном входе, неполного списка ламп чаши хоста у клиента и отсутствия
+клиентской лампы в меню хоста. Действия игроков записываются в native backing
+нужного слота хоста, включая работу участников на разных картах.
+
+Игровой результат основан на прямом подтверждении пользователя. Логи П1
+run052149 / П2run051950 дополнительно подтверждают полный seed3fffffff,
+writeback хосту вDream, новую лампу2902953 от клиента и последующий native
+переход хоста к ней. Кодовые проверки,6negative controls, build/delta/deploy
+прошли ранее; новых hooks/опросов/таймеров/сетевых сообщений не добавляли.
+Ранние FAILED/OPEN и ограниченный RETEST PASS ниже — исторические записи.
+Подтверждение не расширяется на непроверенные комбинации всех чаш и ролей.
+
+Разборы: [native progress](fixes/2026-11-07-chalice-native-progress.md),
+[каталог ламп](fixes/2026-11-07-chalice-native-lamp-catalog.md).
+Evidence parent out/coop-dev/runs/chalice-progress-confirmation-20261107/analysis.md.
+При фиксации результата код/DLL/сейвы/settings не менялись, игры не завершались.
+
+## 07.11.2026 — NPC AI и движение: USER CONFIRMED / CLOSED
+
+Пользователь после проверки сообщил: «ок, все работает правильно».
+Закрыты проверенные сценарии: выдача штатного ИИ новым NPC у клиента без
+хоста на карте, сохранение работы при возвращении хоста и синхронизация
+передвижения общих NPC при нахождении игроков рядом. Основание полного
+игрового результата — подтверждение пользователя; read-only снимки ранее
+подтвердили cross-map grants/пустые очереди и согласованное движение рядом.
+Native transport admission01789274 и room-member boundaries работают вместе;
+новых циклов/опросов/таймеров/пакетов нет. Ранние FAILED/OPEN по этим сценариям
+ниже исторические. Иные несвязанные задачи этим подтверждением не закрываются.
+Evidence parent out/coop-dev/runs/npc-transport-chalice-uncap-20261107/retest-analysis.md
+и out/coop-dev/runs/npc-nearby-motion-20261107/analysis.md.
+В этом ходе код/DLL/сейвы/settings не менялись, процессы не завершались.
+
+## 07.11.2026, 05:38 МСК — nearby NPC motion: OBSERVED PASS / bounded sample
+
+P1host7948/P2guest19060, обаCentral. Пользователь поставилрядомиспровоцировал
+движение.3read-onlyснимка05:37:46/53/05:38:12: дистанцияигроков1.33/8.55/21.14,
+общихживыхactiveNPC20/20/18. У8NPC движение, втомчисле2871travel22.136units,
+копиирасходятся0.323/0.311/0.392. Maxpairederror0.426за3снимка; обаLOCAL/word1
+ниуодногообщегоживогоNPCнеобнаружены. ВременныеREMOTE/FFFF получаютштатные
+grantsвследующихснимках; некоторыеNPCпереходяткP1безодновременноговладения.
+Чтениепрофилейпоследовательное: этонаблюдениепередачидвижения, не точныйlag
+и негарантияотсутствиялюбыхвизуальныхрывков. Collect2livefilesexit0/warnings0,
+новыхFault/cannotmapне найдено. Код/сейвы/settingsне менялись, игрне завершали.
+Evidence parent out/coop-dev/runs/npc-nearby-motion-20261107/analysis.md.
+
+## 07.11.2026, 05:34 МСК — NPC transport: cross-map native grants CONFIRMED
+
+П1host366fc0d5/PID7948OldYharnam с05:32:19; П2guest85e9ca33/PID19060Central
+с05:32:24. Latest runs052149/051950 включают transport admission marker
+(общая DLL после последующего chalice deploy05:19). Read-only: P2Central
+9activeLOCAL/word1/modelbound; ещё1LOCAL/FFFF288f ужеHP0/death6/e4=-1.
+Hostguestrequest-list10/block5; в05:34:19 channel16/17queue0уобоих. Старый
+отказ allREMOTE/FFFF+24queuedgrants в этом cross-map снимке устранён.
+Визуальные атаки/движение и возвратhost/nearby вCentral отдельно OPEN;
+не закрывать их по данному снимку. Latest fatal/NPCinstall errors не найдены.
+Collect exit0/4files/warnings0,liveChangedDuringCopy. Код/DLL/сейвы/settings
+не менялись, процессы не завершались. Evidence parent
+out/coop-dev/runs/npc-transport-chalice-uncap-20261107/retest-analysis.md.
+
+## 07.11.2026 — чаши: RETEST PASS для native seed/writeback/клиентской лампы
+
+Пользователь: «вроде ошибок нет и всё корректно». П1host/П2guest run052149/
+051950: первыйseed05:24:45.690 present3fffffff (непустой); boss clear05:27:00
+уобоих. HostвDream с05:27:50;05:27:58.945 native writeback отguest меняет
+12900094/12901452. Guest lamp2902953 в05:28:13.762, hostcheckpoint+14мс;
+hostвыбираетновуюлампу05:28:23.799 ивходит05:28:29.242. Повторногоboss-clear
+послевозврата нет, целевыхFault/fatal/отказовперехода не найдено.
+С05:29:53 роли поменялись: П2hostиегоchannel0x81fce924a8ab2 вместо прежнего
+0x736fcbc954e1c — другаяличнаячаша/мир, несбросстарогоритуала.
+Полное визуальное состояние дверей/лифтов ибосса — понаблюдениюпользователя;
+каждыйflag не журналируется. Collect05:31:43..45 exit0/2files/warnings0,
+обаliveChangedDuringCopy. Evidenceparent:
+out/coop-dev/runs/chalice-progress-confirmation-20261107/analysis.md.
+Код/DLL/сейвы/settings не менялись; игры не завершались.
+
+## 07.11.2026 — награда первого босса чаши: повторная выдача, дефект не подтверждён
+
+Запрос пользователя о П1; затем уточнение «возможно все отработало правильно».
+Run П1 052149 host / П2 051950 guest: победа BlockClear2_1 05:27:00.817/.776.
+Оба получили +1995 echoes; П1 insight +2, П2 +3. П2 в05:26:55.731 получил
+lot110001000/item0x40000bb8 x2. УП1 в существующем журнале тойже чаши
+channel000736fcbc954e1c/formc2fc94c7bd9222e3/140 уже записаны event12901693,
+slot0 lots110001000 и131300160; файл изменён05:08:22 ДО текущего запуска.
+BbscGuestAwardHook отклоняет уже подтверждённый ticket — наиболее обоснованное
+объяснение отсутствия повторной предметной награды П1. Прямого skip marker нет,
+поэтому runtime-ветка не доказана отдельным логом. П2 использует form64be2e44fa667d4c/88,
+его новая квитанция обновлена05:26:55.731. Разницу native/guest form идентичностей
+не объявлять новым дефектом без отдельного исследования.
+Логи сохранены parent out/coop-dev/runs/chalice-first-boss-reward-20261107/pc;
+collect exit0/2files/warnings0, live ChangedDuringCopy=true. Журналы только прочитаны,
+не скопированы/изменены; код, DLL, сейвы и settings не менялись, процессы не завершались.
+## 07.11.2026, 05:19 МСК — чаши: BUILT / PC INSTALLED / P2 STARTED; gameplay OPEN
+
+Исправлена native backing привязка полного прогресса чаши хоста, запрет
+empty seed и запись guest owner snapshots/ламп хосту дажеoff-map.
+Целевые production/original проверки и6negative controls PASS. DLL build
+exit0/8прежних warnings, inputs size/mtime unchanged0. Delta5files/deploy exit0.
+Backup D:/Games/Bloodborne/coop-dev/backups/chalice-native-progress-20261107-20261107-051901.
+По просьбе сохранены текущиеsavedata+matchingBBSCjournals П1/П2 внаборе
+«Тест чаш»: D:/Games/Bloodborne/coop-dev/saves/chalice-tests-current-20261107-051618.
+Сейвы не восстанавливались. П2cheat_no_death=0 вINI иfalse вsettings.
+Запрошен толькоП2 черезсуществующий профильныйCMD; native run051950,
+startup05:19:50.774,35/35hooks, startup Fault/fatal/install errors не найдены.
+П1 не запускался; игры длядеплоя не завершались. HEAD46a4ac2/pin прежние;
+общие dirty изменения сохранены, push/коммит не выполнялись.
+Игровая проверка двери/лифта/босса слоя1 после возврата черезDream и
+клиентскойлампы вменюhost остаётсяOPEN. Details fixes/2026-11-07-chalice-native-progress.md;
+parent out/coop-dev/runs/chalice-progress-native-20261107/run.md.
+
+## 07.11.2026 — первый слой чаши и запись клиентской лампы хосту: SOURCE FIXED
+
+Host из Dream раньше давал epoch0/present0 seed, допускавший личный progress
+первого guest. Теперь полный seed читается через original013BC710 из native
+backing нужного слота; пустой/неполный не допускается. Existing complete owner
+snapshot записывается host вnative cup дажеoff-map; existing Lamps receive
+также обновляет native lit/unlock икаталог. Только20lamp bits своей чаши
+не отзываются старым snapshot. Новых polls/timers/hooks/пакетов нет.
+Original mapper+production transport/re-entry/seven slots и6negative controls,
+целевые зависимости/MOD syntax PASS. Build/install/gameplay — отдельныестатусы.
+[Разбор](fixes/2026-11-07-chalice-native-progress.md). Parent run:
+out/coop-dev/runs/chalice-progress-native-20261107.
+
+## 07.11.2026 — прогресс чаши после перезахода: GAMEPLAY FAILED / OPEN
+
+Новый ответ пользователя отменяет общий вывод «всё ок»: прогресс сбросился
+при повторном входе через Сон. P1host/P2guest run045100/045142 остаются
+в той же сессии; slot1/channel0x736fcbc954e1c/ritual10 не изменились.
+Host повторно входит04:56:55.561; перед этим04:56:51.801 мод применяет
+cached m29 snapshot с33отличиями. Guest повторно входит04:57:44.351;
+04:57:39.834 применены47отличий и позднее native initial applied=true.
+Подтверждён порядок записей, но count/range не содержат before/after:
+конкретный обнулённый progress flag и stale writer ещё не установлены.
+Предыдущий PASS относится только к меню/первому переходу/lighting, не re-entry.
+Collect04:58:13..14МСК exit0/2files/warnings0, обаlive ChangedDuringCopy=true.
+Evidence parent out/coop-dev/runs/chalice-rejoin-desync-20261107/analysis.md.
+Код/DLL/сейвы/settings не менялись; игры не завершались.
+
+## 07.11.2026 — меню ламп чаш: GAMEPLAY PASS в проверенном сценарии
+
+Пользователь: «вроде все ок». P1host/P2guest run045100/045142: каталог
+получен04:54:46.234, guest native menu slot1 открыт04:54:58.601; запрос
+непервой точки2902952 прошёл04:55:08.915 ДО host altar selection04:55:11.736.
+Guest прибыл в чашу04:55:13.923. Guest lighting2902953 в04:56:01.764,
+host shared checkpoint04:56:01.779 (15мс). Ошибок перехода/fatal не найдено.
+Видимая полнота списка — по пользователю, число строк в логах не пишется;
+7слотов/пересоздание/rejoin отдельно не проверены. Host до подключения уже
+посещал чашу, cold-start без такого посещения этим прогоном не доказан.
+Collect exit0/2files/warnings0, обаlive ChangedDuringCopy=true. Общая DLL
+установлена в npc-transport-chalice-uncap-20261107. Evidence parent:
+out/coop-dev/runs/chalice-menu-confirmation-20261107/analysis.md.
+Код/DLL/сейвы в проверке не менялись; игры не завершались.
+
+## 07.11.2026, 04:52 МСК — NPC transport: BUILT / INSTALLED / P1+P2 STARTED; gameplay OPEN
+
+DLL build exit0/8warnings, input metadata unchanged, related chats ready.
+Delta5files/deploy exit0; backup
+D:/Games/Bloodborne/coop-dev/backups/npc-transport-chalice-uncap-20261107-20261107-045036.
+P1 run045100/PID24468, P2 run045142/PID37116: оба live,35/35hooks и новый
+NPC native transport admission ready. Новая маска каналов загружена;
+работа ИИ Central безhost/после возврата/рядом ещё требует игрового подтверждения.
+По запросу восстановлены личные наборы Player1/2 изchalice-tests-20261104-143129,
+fullsavedata+matchingBBSCjournals; более поздние journals отложены с прежними
+сейвами. Backup текущего состояния:
+D:/Games/Bloodborne/coop-dev/saves/before-npc-transport-chalice-20261107-044927.
+«Деревня» и исходные снимки сохранены. fps_mode=uncap/frame_cap=0 обоим;
+бессмертие вINI сохранено. Процессы не завершались,HEAD/pinне менялись.
+Evidence parent out/coop-dev/runs/npc-transport-chalice-uncap-20261107/run.md.
+
+## 07.11.2026 — Central NPC: transport receive gate FOUND / SOURCE FIXED / checks PASS
+
+Пользователь подтвердил отсутствие ИИ. Read-only04:43МСК: P2Central28active
+REMOTE/FFFF, hostужеимеет25requests block5, уP2 channel17queue24/native state4,
+нонетremote PlayerIns. Original ReceiveFromMember01789274 classification
+на16/17требуетPlayerIns ДО queue read; ReceiveFromHost вызываеттотжепуть.
+Native mask расширен ровно bits15/16 в прежней verified инструкции;
+прочиеchannels/session/identity/endpoint gates прежние. Новых loops/hooks/
+опросов/пакетов/callbacks нет. Startup-only marker. Previous fixture stubs
+ReceiveMember/ReceiveHost скрывали gate; теперь исполняются original functions.
+Full receive/intake/list/grant/guest/brain/XYZ +24queued backlog PASS;
+5negative controls, installer7spans/native modes/2000ticks иMODsyntax PASS.
+NOT BUILT/NOT INSTALLED/gameplay OPEN; игрыlive, не завершались.
+Details fixes/2026-11-07-native-npc-transport-admission.md, parent evidence
+out/coop-dev/runs/npc-central-transport-20261107. HEAD/pinсохранены.
+
+## 07.11.2026 — выход в меню обоих: USER CONFIRMED / CLOSED
+
+Пользователь подтвердил: «Оба вышли в меню, затем я нажал „Продолжить“».
+В run043145/043223 П2System exit04:37:55.120,П1 04:37:57.917; оба Stop из
+native StageTaskDestructor019471B6. Forced host Stop при уходе П2 отсутствует.
+Последующая загрузка мира и повторное соединение были после ручного Continue,
+а не автоматическим возвратом. Проверенный сценарий guest exit -> host exit ->
+главное меню обоих -> Continue закрыт. Одновременный/обратный порядок отдельно
+этим подтверждением не заявляется. Сбор exit0/2files/warnings0,обаlive.
+Evidence parent out/coop-dev/runs/menu-native-retest-20261107/analysis.md;
+source fixes/2026-11-07-native-menu-both-roles.md. Прежние OPEN/FAILED ниже
+исторические для этого проверенного сценария. Код/сейвы/settings не менялись.
+## 07.11.2026 — NPC room-member retest: частично подтверждён / gameplay OPEN
+
+P1host58be0de7/P2guesta4ead5e9, runs043145/043223. Native request admitted
+actor_required=false04:33:14.516. P1уходитYahar04:35:27, возвращается04:36:39;
+map-state owner остаётсяP2. Read-only snapshot после возврата: уP2 11active
+LOCAL/word1;9изних активированы безhost. Из16общихNPC15имеют согласованные
+противоположные LOCAL/word1 и REMOTE/FFFF. Исключение5079LOCAL/FFFF уобоих,
+тип/живость/причина native exclusion не установлены. Снимка grants ДО возврата
+host нет; ранние activationFFFF не доказывают итог выдачи. Поэтому работу ИИ
+безhost и отсутствие movement desync не закрывать. Collect2live snapshots,
+каждый exit0/2files/warnings0; ChangedDuringCopy=true. Новых fatal не найдено.
+Report parent out/coop-dev/runs/npc-room-members-village-20261107/retest-analysis.md.
+Код/DLL/сейвы/settings не менялись, процессы не завершались.
+
+## 07.11.2026 — CLOSED: свечение Горящих трупов у клиента
+
+Пользователь подтвердил «все работает» после установки общей DLL04:31МСК.
+Логи обоих собраны: exit0,2files,warnings0, без Fault/fatal; П2 в Яаар'гуле
+с04:34:46.398. Визуальный результат подтверждён пользователем, SFX не логируется.
+См. fixes/2026-11-07-yahargul-burning-corpses.md и parent evidence
+out/coop-dev/runs/yahargul-glow-confirmed-20261107/analysis.md.
+Предыдущий SOURCE FIXED/OPEN ниже исторический; другие сценарии не закрываются.
+
+## 07.11.2026, 04:32 МСК — NPC room-member admission: BUILT / INSTALLED / P1+P2 STARTED; gameplay OPEN
+
+Общая DLL из согласованного dirty-tree46a4ac2 собрана exit0 (8warnings),
+inputs size/mtime не менялись. Delta5files/deploy exit0; backup
+D:/Games/Bloodborne/coop-dev/backups/npc-room-members-village-20261107-20261107-043121.
+Включены завершённые соседние правки native menu обоих ролей, corpse glow,
+guest echoes, Rom personal effects и boss-before-spectate.
+P1 run043145/PID20148, P2 run043223/PID14612: оба live,35/35hooks и новый
+NPC native member admission ready. Это подтверждает загрузку исправления,
+не выдачу ИИ в игровом сценарии. Cross-map/new NPC/host return/nearby gameplay OPEN.
+По просьбе пользователя текущие сейвы обоих профилей (full savedata + BBSC journals)
+сохранены как D:/Games/Bloodborne/coop-dev/saves/деревня; восстановления не было.
+cheat_no_death=1 у обоих, прежние INI сохранены в snapshot. Игры не завершались.
+Evidence parent out/coop-dev/runs/npc-room-members-village-20261107/run.md.
+
+## 07.11.2026 — выход в меню обоих: SOURCE FIXED / targeted PASS / gameplay OPEN
+
+Удалены оставшийся guest custom save->Stop->late title replay и forced host
+Stop при уходе последнего гостя. Все0..7System Yes теперь продолжают оригинальное
+тело: native save/latches/transition/menu lifetime/Stop, existing observer только
+журналы/persistence/one-shot notification. Убраны pending quit tick/timeout/HTTP
+барьер; новых hooks/опросов/таймеров/пакетов нет. Личный save origin гостя сохранён.
+Production roles/departure+host exit/simultaneous host leave, два negative controls,
+real native Yes/StageFlow, trampoline, native leave и origin serializer PASS;
+MOD syntax exit0. NOT BUILT/NOT INSTALLED; игровой результат OPEN, прежний FAILED
+не закрыт. Детали fixes/2026-11-07-native-menu-both-roles.md. HEAD/pin сохранены.
+## 07.11.2026 — приоритет лампы возрождения: USER CONFIRMED / CLOSED
+
+Пользователь в этом чате подтвердил: «готово, все проверено».
+Закрыт сценарий приоритета лампы: новое общее зажигание задаёт точку группе,
+более поздняя личная поездка выбирает собственную штатную лампу игрока;
+старые доставки не отменяют выбор. Исправление46a4ac2 вошло в общую DLL,
+установленную00:44:56 (map-ai-handover-deploy-20261107); прежний NOT INSTALLED
+ниже исторический. Логи обоих профилей сохранены в parent
+out/coop-dev/runs/personal-respawn-20261107/confirmed-pc: collect exit0,
+17files,warnings0. Логи содержат общие lamp native loads и retained revives;
+точное подтверждение проверенного пользователем сценария — его сообщение,
+а не вывод из одного native checkpoint. Отдельный баг «победа до spectate»
+и другие открытые задачи этим подтверждением не закрываются.
+В этом ходе код/бинарники/сейвы/settings не менялись, процессов не завершали.
+См. fixes/2026-11-07-native-lamp-selection.md.
+
+## 07.11.2026 — выход в меню: gameplay FAILED / diagnosis OPEN
+
+П2 run03375104:13:30.858 confirmed title/Stop6->0, затем home load и
+Byrgenwerth04:13:35.245. П1 run033657 сначала Stop при уходе П2
+04:13:30.879, затем native System exit уже solo04:13:34.094 и снова world
+threads/events/NPC. Пользователь подтверждает возврат обоих в мир.
+П1 использовал прежний исправленный native путь: сценарий не закрыт той
+правкой. Кандидаты: уже начатый departure transition П1 и отдельный ручной
+guest Stop-before-title П2; точный StageFlow writer/order не доказан.
+Сбор exit0/2files/warnings0, обаlive. Поведение/сборка/установка/сейвы не
+менялись. Evidence parent out/coop-dev/runs/menu-return-20261107/analysis.md.
+## 07.11.2026 — native NPC room-member admission: SOURCE FIXED / checks PASS / gameplay OPEN
+
+Исправлены3native actor-dependent границы: channel16 intake018F092C,
+request-list retain018ED1B6 и channel17 recipient018ED470. Внутренний ключ
+привязан к актуальной native room identity/WorldId и не требует PlayerIns.
+Native host/member/authentication/packet-size проверки сохранены. Leave/rejoin/
+identity/room fencing; keys не переиспользуются. Original arbitration/grants,
+EnemyIns и position sender остаются единым авторитетом. Новых циклов/опросов/
+NPC walks/пакетов нет; existing membership lookup<=8members в старых транзакциях,
+2resolve calls на участника независимо от64NPC в packet. One-shot binding log.
+Join legacy alias удаляется в native retain; room-key mode не откатывается
+при временном Loading. Self fast path безC++callback; idle callback count0.
+
+Full original host receive/list/prune/merge/grant/guest apply/brain/XYZ producer
+безremote PlayerIns и безhost NPC table PASS;3gate negative controls ожидаемо
+воспроизводят отказы. Native authority и installer6spans/2000ticks dependencies
+PASS; MOD syntax PASS. NOT BUILT/NOT INSTALLED; gameplay/FPS OPEN. Предыдущий
+cross-map FAILED ниже — результат старой DLL, не закрывать без нового прогона.
+Details fixes/2026-11-07-native-npc-room-members.md. Код/сейвы/settings игр не
+менялись; HEAD/pin и чужие доработки сохранены.
+
+## 07.11.2026 — SOURCE FIXED: свечение Горящих трупов у клиента
+
+CopyHostFlagGroup и additive progress сохраняют локальную инициализацию
+12805920..23; native928020/6032/исчерпание остаются исходными.
+Original+production regression,2negative controls, dependencies/syntax PASS.
+Новых таймеров/опросов нет; сборка/установка/игровой контроль OPEN. См.
+fixes/2026-11-07-yahargul-burning-corpses.md.
+
+## 07.11.2026 — SOURCE FIXED: штраф отголосков independent guest без напарника
+
+В существующую ветку death reload добавлен BbscApplyDeathPenalty до выгрузки
+карты; используется native DropBloodstain, без новых опросов. Production
+controller/accounting/abduction и negative control PASS. Сборка/установка/
+игровой контроль OPEN. См. fixes/2026-11-07-guest-alone-death-echoes.md.
+
+## 07.11.2026 — историческая диагностика штрафа independent guest
+
+П2 Central04:02:22,85345 echoes, reload04:02:26: independent early reload
+не вызывает BbscApplyDeathPenalty, native co-op type1 также не списывает.
+Логи/control flow DIAGNOSED; исправление/игровой контроль OPEN. Использовать
+существующий native drop до reload, сохранить double-drop/special-death guards;
+новые циклы не нужны. Код не менялся. Parent evidence:
+out/coop-dev/runs/p2-central-echoes-20261107/analysis.md.
+
+## 07.11.2026 — discoverer AI retest: cross-map FAILED / native actor gate found
+
+Сбор npc-discoverer-rom-20261107/retest-pc exit0,2files,warnings0,обаlive,
+до03:51:24. П1host0261a503, П2guest3766a551. Rom boss clear у обоих03:42:50,
+guest reward logged; обаYahar03:48:24, П2Central03:50:10 при host на другой карте.
+Read-only snapshot: у П2Central28active REMOTE/FFFF, model bound;3samples
+HP343/150/70 death0. Это неLOD30. Native request/grant не выдаёт ИИ клиенту.
+
+Следующий native допуск:018F0966..09AD host сопоставляет channel16 sender
+через live PlayerIns, отсутствующий на чужой карте. Снимок: room2members,
+5player slots,толькоselfslot0,guest request-list у host отсутствует. Кроме
+intake,grant send018ED470..0524 также требует live target actor. Старый fixture
+покрывал lists/merge/grants/brain/XYZ, но НЕ этот cross-map actor lookup.
+Нужен roster-based native member resolve в обеих границах, без восстановления
+map-only brain/нового periodic repair. UDP delivery отдельно не трассировалась.
+
+Fault/fatal/install/1455 в собранном интервале нет. Смерть П2 перед victory и
+поздний spectate — уже отдельный SOURCE FIXED сценарий boss-before-spectate,
+его новая DLL не установлена. Код/сейвы/settings в этой проверке не менялись.
+Details parent out/coop-dev/runs/npc-discoverer-rom-20261107/retest-analysis.md.
+Discoverer правило в коде есть, cross-map gameplay FAILED/OPEN.
+
+## 07.11.2026 — эффекты прыжка к Ром: SOURCE FIXED / gameplay OPEN
+
+Локализован13204820, закрыты его guest host-bypass и foreign progress в
+существующем native transport. Гость остаётся на13204821; native5секунд,
+cleanup и общий boss-start сохранены. Новых таймеров/опросов нет.
+Targeted production/original проверки и два negative controls PASS.
+DLL/build/install/gameplay OPEN. См. fixes/2026-11-07-rom-shared-jump-effects.md.
+
+## 07.11.2026 — П2 после победы до spectate: SOURCE FIXED / gameplay OPEN
+
+Целевые production Begin+Tick/rearm/boss-lamp проверки и negative control PASS.
+Победа учитывается с начала смерти; новых таймеров/опросов нет.
+Остаются отдельные сборка/установка/игровой контроль.
+См. fixes/2026-11-07-boss-before-spectate-respawn.md.
+
+## 07.11.2026 — NPC discoverer + pre-Rom: BUILT / PC INSTALLED / P1+P2 STARTED
+
+DLL build exit0,8 inherited warnings, inputs unchanged0;5-file delta/deploy exit0.
+Included ready native chalice lamp catalog from related chat. Named snapshot
+before-rom-20261106-064652 restored to BOTH Player1/2 real user dirs while stopped,
+full savedata/sce_sys and related progress journals; existing saves backed up first:
+D:/Games/Bloodborne/coop-dev/saves/before-npc-discoverer-rom-20261107-033610.
+Binary backup npc-discoverer-rom-20261107-20261107-033629. Accounts/settings retained.
+P1 startup03:36:57,run033657,35/35 +discoverer authority/original AI ready;
+P2 startup03:37:51/run033751,35/35 +discoverer/original AI ready.
+P1 Byrgenwerth03:37:46; startup errors absent. Gameplay/FPS OPEN; source tests not repeated for deploy.
+Details parent out/coop-dev/runs/npc-discoverer-rom-20261107/run.md.
+
+## 07.11.2026 — NPC discoverer rule: SOURCE FIXED / checks PASS / gameplay OPEN
+
+По уточнению пользователя общее правило ИИ — обнаруживший активного NPC,
+а не map owner. Свежий distance repro: owner П2 выгрузил201b/2028/205d/206e,
+П1 активировал их4/4, но map-only запрет оставлялREMOTE/FFFF у П1 и0/0 у П2.
+Удалены map AI cache/controller override/table hook и map-commit NPC walk.
+Оригинальный EnemyIns выбирает ИИ по тому же grant, что движение. Native
+request сохраняет допуски/нулевой отказ; действующий holder имеет7FFF,
+новые заявки<=7FFE; original merge выбирает единственного, count0 снимает
+старую заявку. Activation только логирует native_mode/native_local, words
+не меняет. Map owner для состояния/ламп сохранён. Новых циклов/опросов нет.
+
+Четыре живых203e/203f/206f/2076: LOD30 — штатное сокращение обработки,
+не смерть. Original distance LOD5/30 и omission gate корректны; багом был
+отдельный принудительныйLOCAL при отсутствии grant. LOD gate не снят.
+Targeted original LOD/request/merge/brain/XYZ, activation/map-commit/installer
+и negative controls PASS; MOD syntax PASS. SOURCE ONLY, игры со старой DLL.
+Details fixes/2026-11-07-npc-discoverer-authority.md; предыдущие map-only
+AI статусы ниже исторические. Gameplay/FPS новой версии OPEN.
+
+## 07.11.2026 — меню ламп чаш: SOURCE FIXED / checks PASS / gameplay OPEN
+
+Убран Hall-only fallback по отсутствующему discovery-cache. Каталог теперь
+читает исторические lit/unlock флаги каждого слота через оригинальный
+013BC710(1,40+slot,0,7), без взаимодействия хоста.20бит идут в прежнем
+reserved u64, wire size906 и число/частота пакетов не изменились. Гость
+использует штатные меню и проверку флага перехода; отдельный mask admission
+удалён. Новых hooks/таймеров/опросов нет. Native mapper+tables из ELF,
+7slots/10lamps/2forms, negative control, travel/menu/helper и MOD syntax PASS.
+DLL build/install/gameplay не выполнены. Подробности:
+[разбор](fixes/2026-11-07-chalice-native-lamp-catalog.md).
+
+## 07.11.2026 — NPC authority retest: assignment/retention PASS / movement OPEN
+
+Collect native-npc-authority-20261107/retest-pc exit0,3files,warnings0;
+2live ChangedDuringCopy, до03:11:37. П1=guest4ec03841, П2=host9fe0730d.
+П1 Cathedral03:08:55 owner epoch2/role1; host прибывает03:09:25 role2,
+one-shot state applied=true. П1 25combat activations local/applied=true
+(14до/11после прихода host); host26remote/FFFF. В текущем read-only snapshot
+host14REMOTE/FFFF, client12LOCAL (5word1,7FFFF). Конкуренция host устранена
+в этом снимке. Из7FFFF три мертвы, четыре живые stateE4=30 и отсекаются
+native01916A55..74 до request rewrite. Это candidate special-state gap,
+не доказанный новый movement bug; визуальный результат не подтверждён.
+
+Найден startup failure первого П1 run030458: map10176MiB error1455,
+затем write-null00443025/exit3. После restart030657 fatal в интервале нет.
+Shared27perf windows: P1 50.9–57.8FPS, host44.5–56.5 при limit60;
+max96.3/114.8ms, причинность новой правки не установлена. Relay queue/drop0
+не доказывает отсутствие native UDP проблем. Код/сейвы/settings не менялись.
+Parent report out/coop-dev/runs/native-npc-authority-20261107/retest-analysis.md.
+Gameplay movement OPEN; не закрывать только по activation/snapshot.
+
+## 07.11.2026 — NPC movement authority: BUILT / PC INSTALLED / P1+P2 STARTED / gameplay OPEN
+
+Native request01916A82 теперь подаёт только map owner (role2 пропускается;
+role0/1 сохраняют native priority/readiness). Original host request intake
+018F0880/018F09D1 ошибочно сохранял прежние списки при count0. Разрешён
+штатный assignment пустого списка, отрицательные counts отклоняются.
+Native merge/grants/position channel4 сохранены. Без постоянного word repair,
+новых циклов/опросов/обходов/каналов. Original request+list+grant+XYZ codec/
+receiver, negative controls обоих дефектов, early admission, installer и
+MOD syntax PASS. Игровое подтверждение OPEN; предыдущий FAILED не закрыт.
+DLL build/delta/deploy exit0,8 inherited warnings,inputs unchanged0.
+Backup native-npc-authority-20261107-20261107-030429; P1/P2 startup03:04:59MSK,
+run030458,35/35 +native authority/early admission ready; startup errors absent.
+Details fixes/2026-11-07-native-npc-authority.md; parent run native-npc-authority-20261107.
+
+## 07.11.2026 — NPC AI assignment PASS / shared movement FAILED
+
+Run024305 собран до02:51:07МСК, exit0/2files/warnings0, оба live
+ChangedDuringCopy. П1=guest0088f093, П2=host6fb824d7. П1 в Cathedral с
+02:44:18.725, map owner0088f093/role1 с02:44:18.838, host в Dream до02:44:51
+затем в Old Yharnam. У П1 есть61 combat activation в Cathedral, все desired1,
+applied=true (43 beforeFFFF,18 before1). Нулевой cache producer исправлен.
+
+В Old Yharnam вместе с02:46:20: host owner6fb824d7/role1, client role2;
+47 клиентских activation до02:47:30 остаются remote/FFFF, у хоста45 local/1.
+После ухода хоста в Dream02:48:53 клиент получает Old Yharnam и9 local
+activation. П1 возвращается в Cathedral02:49:10, host прибывает туда
+02:49:48.921: owner остаётся0088f093 epoch2, у host role2. Host получает
+16 Cathedral activation remote/FFFF; client cache4 остаётсяrole1.
+
+Пользователь подтвердил НОВЫЙ/оставшийся баг: движение NPC рассинхронизируется,
+когда игроки рядом. Однократный read-only live snapshot обоих процессов:
+в Cathedral11 одинаковых active NPC handles. У П1 все11 controller LOCAL и
+model+80 совпадает; у П2 все11 REMOTE и model+80 совпадает. Cached roles4:
+П1=1,П2=2. Выбор раннего ИИ и сохранение owner работают.
+
+НО native signed ownership words не согласованы с этим выбором: П1 local/FFFF9,
+local/1 всего2; П2 remote/1 у7,remote/FFFF4. Для7 одинаковых handles авторитет
+в native таблице прямо противоположен выбранному контроллеру; ещё2 имеют
+FFFF у обоих. Это не доказательство двух local brains — local/network выбор
+как раз правильный. Доказано несогласование native ownership и map AI owner.
+
+Original018EE829 проверяет signed native word перед формированием position
+corrections018EE8A5..018EE8E4 (дельты XYZ), которые018EEA0C..20 отправляет на
+native channel4. Receiver018EEB34..45 читает этот channel,018EEC43..92 восстанавливает
+позиции. Cache override для EnemyIns не меняет этот native sender gate. При
+снятых words у фактического AI owner и разрешённых words у follower это даёт
+конкретный путь к описанному рассинхрону. Фактический поток пакетов/перезаписей
+за весь интервал не трассировался; автор конкретной поздней записи отдельно
+не установлен. Нельзя считать исправленным только по успешным activation.
+
+В собранном интервале Fault/fatal/CHECK FAIL/install errors не найдено.
+Reunion Old Yharnam: у обоих resident peer bound/draw_admitted=true; Cathedral
+у обоих native recreation requested, у host render hold bypassed. Это допуск
+моделей, не визуальное подтверждение отсутствия любых багов.
+
+Статус: AI assignment/retention CONFIRMED, shared NPC movement FAILED/OPEN.
+Дальше согласовать native authority для передачи позиции с map lease через
+штатные assignment/receive boundaries, без нового периодического repair.
+Код/установка/сейвы в этой проверке не менялись. Evidence parent run:
+retest-pc, shared-npc-controller-snapshot.json, shared-movement-analysis.md.
+
+## 07.11.2026 — native NPC block-ID fix: BUILT / PC INSTALLED / P1+P2 STARTED
+
+DLL build exit0/8 прежних warnings, inputs unchanged0. Five-file delta и
+PC deploy exit0; backup D:/Games/Bloodborne/coop-dev/backups/native-ai-block-id-
+20261107-20261107-024235. Игры были закрыты до установки. П1/П2 запрошены
+02:42:40МСК; оба native startup02:43:06, run_20261107_024305.log,35 of35
+selected и early native admission ready. Startup signature/fault errors нет.
+Связанные чаты прочитаны/повторно проверены: активных доработок нет; общий
+dirty source tree сохранён, pin не менялся. Целевые проверки прошлой доработки
+не повторялись ради деплоя. Gameplay OPEN: host в Dream, client у новых
+боевых NPC, затем host обратно; роли определять по runtime, не Player номеру.
+Details fixes/2026-11-07-native-ai-block-id.md; parent run native-ai-block-id-20261107.
+
+## 07.11.2026 — AI producer: sparse native ID bug CONFIRMED / SOURCE FIXED
+
+Причина предыдущего нулевого early admission найдена. Native block ID
+ошибочно использовался как sorted position в world+280/+290. Original
+01914C70 сначала индексирует world+28 records по ID (stride160), затем
+вставляет list/ID/record в компактный сортированный список; +850+ID*8 —
+прямая таблица list. Число записей sorted list не ограничивает величину ID.
+
+Однократный read-only live snapshot П1 PID33572: NPC records17, sorted count4,
+пары(position→ID/map):0→4/m24_00,1→5/m24_01,2→17/player,3→18/player;
+sync count17. Direct records совпали с оригинальной регистрацией. Все32
+байта установленного early cache равны0. У П2/Dream ID0 на позиции0, поэтому
+ошибка была скрыта Dream-only успешными логами. Старый block>=count-2
+отсекал боевые ID4/5, так как4-2=2. Это подтверждённая ошибка producer;
+исходный controller-selection rewrite сам по себе этого layout не проверял.
+
+В SOURCE общий BbscWorldNpcBlock теперь берёт record по настоящему native ID
+и сверяет keyed list==record+B8 за O(1). Используется в ранней публикации
+и activation callback; player IDs вне NPC record count исключены. Новых
+hooks/циклов/опросов/пакетов нет; native развилка и её стоимость не менялись.
+
+Расширенный test_native_ai_admission выполняет ORIGINAL01914C70 registration,
+живой layout17/4/5/17/18, последующую вставку меньшего ID, production table
+observer, actual owner commit после Loading и ORIGINAL EnemyIns controller
+selection/update. PASS. Negative control старого sorted-position lookup FAIL
+на блоке4 как ожидается. Прежний activation test PASS/26reads, map handover/
+2000idle commits и MOD syntax PASS. Fixture metadata поправлены по original
+registration, прежнее ручное совпадение ID=position больше не доказательство.
+
+Не собрано/не установлено в этом разборе. П1/П2 продолжают работать со старой
+DLL run022634; память игр только читалась, файлов/сейвов не меняли. Gameplay
+по исправленной привязке OPEN. Evidence parent run: live-block-layout.json,
+block-index-analysis.md; details fixes/2026-11-07-native-ai-block-id.md.
+
+## 07.11.2026 — early AI retest: client owns map / positive admission NOT OBSERVED
+
+Свежие П1/П2 run022634 собраны до02:29:19МСК (collect exit0,2files,warnings0;
+оба live ChangedDuringCopy). Роли в ЭТОМ прогоне поменялись: П2=host07764aeb,
+П1=guest9ecf9853. П2 остаётся в Dream с02:27:13.043. П1 прибывает в
+Cathedral Ward02:28:01.367;02:28:01.488 получает owner9ecf9853/role1.
+Дальше до конца снимка роли/карта не меняются. Сценарий клиента без хоста
+на карте присутствует; возвращения хоста в этом интервале нет.
+
+П1: native table-created block4/5 во время load2 дают admission=0. Во всём
+снимке положительных NPC AI native admission/role1/2 записей НЕТ. Activation
+records25, все npc_map15000000/Dream; боевых activation records нет. П2:
+activation/native table records нет. Новый START ready marker есть у обоих;
+ошибок Fault/fatal/install в собранном интервале не найдено.
+
+Логи подтверждают передачу КАРТЫ, но не появление реакций/атак боевых NPC.
+Публикация cached early admission для боевых блоков не наблюдается. Не
+утверждать, что ИИ заработал, либо что выданный owner был отобран хостом.
+Следующее направление — почему реальная привязка native блока к map/scope
+не публикует положительную роль при commit; fixture с готовыми metadata
+не доказывает, что live layout/admission producer корректен. Gameplay OPEN.
+Игровой код/установка/сейвы в этой проверке не менялись.
+Evidence: parent out/coop-dev/runs/native-ai-admission-20261107/retest-pc.
+
+## 07.11.2026 — early NPC AI admission: BUILT / PC INSTALLED / P1+P2 STARTED
+
+DLL build exit0/8 прежних warnings; inputs unchanged0. Delta5files и deploy
+exit0; backup D:/Games/Bloodborne/coop-dev/backups/native-ai-early-admission-
+20261107-20261107-022559. П1/П2 запрошены02:26:07МСК, native startup02:26:34;
+оба run_20261107_022634.log с35 of35 selected и early native admission ready.
+PID П1=33572/П2=29900. В runtime логах при проверке нет signature/install/fault
+ошибок. Старый v1.2 banner исторически описывает baseline; отдельный новый
+START marker подтверждает раннюю owner admission rewrite. Gameplay OPEN:
+П1 в Сон → П2 к новым боевым NPC → П1 обратно; проверить реакции/атаки/HP.
+Details fixes/2026-11-07-native-ai-early-admission.md; parent run native-ai-admission-20261107.
+
+## 07.11.2026 — early combat NPC AI admission: SOURCE / targeted checks PASS
+
+Original EnemyIns018E6540/+128 выбирал network controller при отсутствии
+native host grant. Теперь сам native допуск018E655E читает cached owner своей
+карты; original controller binding/publication/update сохранены. Нет нового
+runtime C++ callback/tick/poll/repair. Cache публикуется в map owner commit,
+реальной смене lease и native table-created018ECCD4. Dream/forced/special и
+unknown/loading fallback сохранены; native ownership/wake hooks OFF.
+Original full selection + actual table trampoline, negative control, map commit,
+installer/2000 idle ticks, prior activation и MOD syntax PASS. Fixture~6.0→4.8ns;
+это не замер игрового FPS. Build/install/start и gameplay пока отдельные статусы.
+Details fixes/2026-11-07-native-ai-early-admission.md; parent run native-ai-admission-20261107.
+
+## 07.11.2026 — AI logging retest FAILED: assignments только в Dream
+
+Пользователь: новые враги без присутствия хоста по-прежнему без ИИ.
+run013524 до01:55:55: П1 в Dream с01:53:01.494; П2 в Cathedral с01:53:38.313,
+owner457f6279/role1 с01:53:38.429 сохраняется. Success assignments во всём
+прогоне П2=105/П1=48, ВСЕ npc_map15000000/Dream; ни одного для боевых карт.
+Skips: П2 loading36/no-owner9, П1 loading27. Ранние no-owner к финальному
+сценарию не относятся. Applied=false нет; поздняя перезапись words не доказана.
+018BD488/ранние guards не дают наблюдения новых боевых NPC; fixture покрывал
+synthetic readiness, а не полный hostless native admission до completion.
+Исследовать ранний native допуск/создание, без постоянного word repair.
+Сбор exit0,2files,warnings0,оба live ChangedDuringCopy. Код/сейвы не менялись.
+Evidence parent out/coop-dev/runs/native-ai-activation-logging-20261107/failed-pc и run.md.
+Gameplay FAILED / OPEN; лампы чаш остаются отдельным CLOSED сценарием.
+## 07.11.2026 — лампы чаш: GAMEPLAY CONFIRMED / CLOSED
+
+Пользователь подтвердил: зажигание и возврат в Сон работают. В run013524
+П1/host зажёг2902952 в01:48:59.667 и2902953 в01:49:31.044; П2/guest
+зажёг2902954 в01:52:48.023, хост принял общий checkpoint в01:52:48.033.
+Возвраты обоих: native stage request queued=false с точкой2102955/2102956
+и последующим AREA Hunter's Dream. Вне сессии П1 обновил native checkpoint
+2902950→2902951 в01:37:08.431 и вернулся в Dream01:37:22.023; П2 также
+имеет solo progression ламп01:41–01:45. Точная старая solo-причина отдельно
+не доказана; это не отменяет подтверждённого исправления сценария.
+Collect exit0,2files,warnings0,оба live ChangedDuringCopy; снимок до01:54:55.
+Fault/fatal в собранном интервале не найден. Код/сейвы/settings не менялись.
+Evidence parent out/coop-dev/runs/chalice-lamps-confirmed-20261107/pc и run.md;
+подробности fixes/2026-11-07-chalice-lamps-native-requests.md. Предыдущие OPEN
+и SOURCE READY ниже исторические; повтор только при новой регрессии.
+
+## 07.11.2026 — AI activation logging + lamps: BUILT / PC INSTALLED / P1+P2 STARTED
+
+Финальная DLL build exit0/8 прежних warnings, inputs stable0; five-file delta
+и деплой exit0. Backup D:/Games/Bloodborne/coop-dev/backups/npc-ai-event-logging-
+20261107-20261107-013459. По подтверждённому закрытию старых игр П1/П2
+запрошены01:35:00МСК; native startup01:35:25, оба run_20261107_013524.log
+с35/35 hooks и diagnostics-ready marker. В общей DLL также
+готовые native lamp requests для чаш; активных связанных доработок нет.
+Новая диагностика existing activation: owner/epoch/maps/visit/load и реальные
+before/desired/after/applied, unchanged и skip reasons; START-ready marker.
+Новых циклов/опросов/hooks нет. Tests actual formatted events, original machine,
+idle0work, diagnostic-OFF26reads и negative control PASS. Gameplay OPEN.
+Details fixes/2026-11-07-native-ai-activation-logging.md; parent run logging-20261107.
+## Исторический статус до игрового подтверждения — лампы чаш: SOURCE READY
+
+По просьбе пользователя возврат72900100..109 больше не поглощается Queue:
+оригинальный12907020 выполняет запрос/анимацию/ожидания/выбор Dream point;
+existing NativeWarpBegin принимает поездку только на реальном stage request.
+Lighting requests теперь допускаются гостевым native range hook и исключены
+из личного quest journal; зажигание остаётся штатным и никогда не queued warp.
+Original-range machine fixture/10 ESD/53 activation calls, production routing,
+shared lamps/snapshot preservation, два negative controls и MOD syntax PASS.
+Причина текущего solo-отказа полностью НЕ доказана; не считать баг закрытым.
+Новых циклов/hooks нет. DLL этой правки не собрана/не установлена; сейвы и
+settings не менялись. См. fixes/2026-11-07-chalice-lamps-native-requests.md.
+
+## 07.11.2026 — event-only NPC AI logging: SOURCE/tests PASS / deployment pending
+
+Existing activation callback пишет actor/handle/maps/world/ritual/owner/epoch,
+реальные before/desired/readback/applied и visit/load, включая unchanged word.
+Причины безопасного отказа логируются отдельно; вывод вне presence lock.
+Нет новых hooks/ticks/опросов/очередей/таймеров/повторов. Diagnostic-OFF прежние
+26reads/event;2000 stable native updates0callback/reads/writes/строк. Original
+machine/trampoline + actual formatted logs и MOD syntax PASS. Первая DLL build
+exit0/8 прежних warnings; delta5files exit0. После добавлена START-ready отметка,
+нужна финальная сборка вместе с завершённым исправлением ламп в чашах.
+Пользователь подтвердил штатное закрытие П1/П2. Установка/запуск ожидают
+связанный активный чат «Исправить взаимодействие с лампами», по барьеру навыка.
+Details fixes/2026-11-07-native-ai-activation-logging.md; parent run logging-20261107.
+## 07.11.2026 — native activation retest: lease RETAINED / actual AI UNVERIFIED
+
+run011256: П2 ownerc305d7f3/role1 в Cathedral Ward с01:14:58.064,
+без новой загрузки/AI commit после ухода П1 в Dream01:15:43.975–01:15:46.524
+и возвращения01:16:09.231. П1 ушёл и вернулся в Old Yharnam0x17000000,
+П2 оставался Cathedral0x18000000: это разные смежные metadata scope.
+BbscWorldNpcActivated не пишет per-NPC результат/счётчик; startup banner
+не доказывает вызовы/word writes. Передачу ИИ новым NPC по логам подтвердить
+нельзя; gameplay OPEN. Loot после возврата не доказывает агро.
+Collect exit0,2files,warnings0,оба ChangedDuringCopy. Evidence parent
+out/coop-dev/runs/native-ai-activation-20261107/retest-pc и run.md.
+## 07.11.2026 — native NPC activation AI: BUILT / PC INSTALLED / P1+P2 STARTED
+
+Назначение word нового/реактивируемого NPC привязано к native completion018BD488
+(current4 после native подготовки), по OwnerBook карты самого NPC. Обычный
+активный кадр callback не вызывает. Player tables, setup wait, loading/offline,
+recycled binding и прежнее личное владение куклой сохранены. Один событийный
+hook; новых ticks/опросов/таймеров/очередей/пакетов/повторов нет.
+Original-machine+production trampoline/negative control и2000idle PASS;
+DLL build exit0/8 прежних warnings, inputs stable0, five-file delta/deploy exit0.
+Backup D:/Games/Bloodborne/coop-dev/backups/native-ai-activation-20261107-20261107-011225.
+П1/П2 стартовали01:12:56МСК, run_20261107_011256.log,35/35 hooks и новая banner.
+Включён finished death checkpoint map fence.
+Во время post-build аудита начался новый разбор heap fault в crash-чате;
+до упаковки входы сборки не менялись. Это снимок готового кода, не результат
+этого нового расследования. Игры/сейвы/settings не трогали. Gameplay OPEN.
+Details fixes/2026-11-07-native-ai-activation.md; parent run native-ai-activation-20261107.
+## 07.11.2026 — П1 death cross-map override SOURCE FIXED / gameplay OPEN
+
+Общая лампа применяется только в текущей карте/ритуале умершего; иначе
+сохраняется штатная личная точка. Reader, native shared load и frozen pending
+target закрывают обход прежнего coordinate guard. Целевые production/original,
+negative control, boss/death и MOD syntax PASS; новых циклов/hooks нет.
+Точный heap writer не установлен, вылет в игре ещё не перепроверен.
+DLL не собиралась/не устанавливалась, параллельная AI работа активна.
+См. fixes/2026-11-07-death-checkpoint-map-fence.md.
+
+## 07.11.2026 — AI handover gameplay FAILED: новые NPC без ИИ до возврата хоста
+
+Пользователь подтвердил: после ухода П1 у новых мобов на удалении от П2 нет ИИ;
+после возврата П1 реагируют. Однократная запись только loaded words недостаточна.
+Новый run004519: П1 вернулся00:48:32.070 в Central Yharnam0x18010000, П2 остался
+Cathedral Ward0x18000000/visit3/ownerf9db4ebf; нового AI commit у П2 нет.
+Это соседние карты, не один metadata scope. Native role3 checks018ED006/018F080C
+не связаны с map owner; прежний predicate test не покрывал future streaming.
+Новых hooks/ticks/опросов не добавлено. Bug OPEN; прежний LOG CONFIRMED ниже
+подтверждает вызов, не исправление игры. Evidence parent run.md и return-streaming-pc/
+в out/coop-dev/runs/map-ai-handover-deploy-20261107.
+## 07.11.2026 — П1 death-load crash OPEN
+
+После смерти00:53:52 run004519 П1 загрузился к общей лампе П2 в Старом Ярнаме
+и упал в native DLRegularHeap free0x208599f (read0x28, next-block0x20).
+Повреждение метаданных локализовано, writer/double free не установлены;
+AI commit/recreation/one-shot причинно не доказаны. Только диагностика,
+без изменений поведения/сборки/деплоя. Evidence parent
+out/coop-dev/runs/p1-death-loading-crash-20261107/run.md. См. HANDOFF.
+
+## 07.11.2026 — AI handover departure LOG CONFIRMED / return gameplay OPEN
+
+run004519: П1 loading00:47:09.884, П2 commit owner=f9db4ebf/role1
+изbb36a89f/role2 в00:47:09.905 (+21ms), без собственной загрузки.
+PERF1 ownership call=8278us, повторов в снимке до00:48:17 нет. Единичный
+пик>8ms записан; это не A/B и не подтверждение отсутствия регрессии.
+П1 прибыл в Dream00:47:12.454; возврата в Соборный округ в логе НЕТ.
+Actual AI/returning-host gameplay OPEN. Loot00:47:28 не доказывает агро.
+Сбор exit0,2files,warnings0,оба live ChangedDuringCopy. Evidence parent
+out/coop-dev/runs/map-ai-handover-deploy-20261107/retest-pc и run.md.
+## 07.11.2026 — map AI handover: BUILT / PC INSTALLED / P1+P2 STARTED
+
+DLL build exit0/8 прежних warnings, входы сборки стабильны. Five-file delta
+и установка на ПК exit0; backup D:/Games/Bloodborne/coop-dev/backups/
+map-ai-handover-20261107-20261107-004456. П1/П2 запрошены через существующие
+профильные CMD00:44:56 МСК. Включена также готовая лампа commit46a4ac2.
+HEAD46a4ac2/parent pin6e7d32f не менялись; dirty source записан в parent
+out/coop-dev/runs/map-ai-handover-deploy-20261107/run.md. Тесты повторно
+ради установки не запускались. Сейвы/settings не менялись, игры не завершались.
+Startup00:45:20МСК: оба run_20261107_004519.log,35/35 hooks и новая AI banner.
+Gameplay OPEN.
+## 07.11.2026 — ИИ вместе с map owner: SOURCE FIXED / tests PASS / gameplay OPEN
+
+В прежней game-thread точке публикации lease owner/role добавлено однократное
+применение существующего BbscWorldOwnership при смене owner/role/visit.
+Сетевой поток остаётся metadata-only; ownership/wake/HP hooks не включались.
+Нет новых циклов/опросов/таймеров/очередей/пакетов. На переход один прежний
+обход загруженных NPC; одинаковый owner не читает actor memory. Player/unload
+и native state сохранены. Production handover/negative control, original0191AAE0,
+2000 idle commits, presence/ownership/native-mode/native authority и MOD syntax PASS.
+Реальная стоимость кадра и полный игровой handover ещё не проверены.
+DLL не собиралась/не устанавливалась, процессы/сейвы/settings не менялись.
+См. fixes/2026-11-07-map-ai-handover.md. Предыдущий code gap ниже исторический.
+## 07.11.2026 — код: map owner не применяется к ИИ в native-NPC режиме
+
+Проверен путь ChooseOwner → Coordinate/OwnerBook → independent_role.
+Он меняет metadata; связи с native NPC authority в активной ветке нет.
+Существующий BbscWorldOwnership читает ту же role, но его hook019173B0
+не устанавливается из-за раннего return NativeNpcSync в InstallIndependentWorld.
+One-shot load snapshot и обычные native packets эту связь не создают.
+Это подтверждение пробела кода, не замер live ownership конкретных врагов.
+Исправление/новые обработки/сборка/деплой не выполнялись. Баг OPEN.
+Подробности: parent out/coop-dev/runs/p2-ai-host-dream-20261107/run.md.
+## 07.11.2026 — ИИ у П2 после ухода хоста в Сон: LOGS COLLECTED / OPEN
+
+Пользователь наблюдает потерю ИИ. В run001041 П2 остаётся в Соборном округе
+с00:28:58, без новой загрузки; П1 после нескольких переходов соседней границы
+уходит в Сон00:30:31.506–00:30:34.000. П2 скрывает absent peer00:30:31.557;
+relay/кадры продолжаются до00:32:51, очередь0/dropped0. Startup native-NPC,
+ownership/wake hooks OFF. Основная гипотеза — native authority handoff,
+но владельцы/AI конкретных NPC не логируются: причинность не доказана.
+One-shot state load-only не является механизмом передачи управления на уходе.
+Сбор exit0,2files,warnings0,оба ChangedDuringCopy. Код/бинарники/сейвы не менялись.
+Evidence: parent out/coop-dev/runs/p2-ai-host-dream-20261107/run.md и pc/.
+## 07.11.2026 — выбор лампы по дате: исторический статус до общей установки
 
 Логи П1 run001041: native arrival2412953 (Гробница Идон)00:15:01.698,
 но revive00:15:27.678 использовал старую shared2412951 (Центральный Ярнам).
@@ -11,8 +850,259 @@ native point-load boundary теперь отмечает время живой �
 не отменяют более позднюю поездку или зажигание. Boss victory priority сохранён.
 Новых ticks/hooks/опросов/таймеров/повторов нет; idle callback не добавлен.
 Targeted production/date replay negative/original native point-load PASS.
-Сборка и установка отдельно; оба экземпляра работают, не завершались.
+DLL build exit0/8 прежних warnings; delta5files exit0, commit46a4ac2.
+Установка отложена: оба экземпляра работают, не завершались.
 Подробности: fixes/2026-11-07-native-lamp-selection.md.
+
+## 07.11.2026 — однократное состояние карты: USER CONFIRMED / сценарий CLOSED
+
+Пользователь после игрового прогона подтвердил: «все работает».
+Свежий run001041: guest00:13:09.484 и returning host00:14:22.399 —
+one-shot native state applied=true. Хост получает состояние от оставшегося
+resident96f74711, а не назначается источником при возврате. У гостя1request/
+1result, у хоста3requests/3results на разных native loads3/5/7; повторов
+внутри этих загрузок нет. В00:15:01.693 и00:18:11.418 host applied=false:
+проверка native initial отклонила снимки, причина детально не логируется.
+Это НЕ доказательство применения каждого ответа или причинности видимого
+результата только этим механизмом. Игровой сценарий сохранения убитых врагов
+подтверждён пользователем; отдельное наблюдение об отказах preflight сохранено.
+Новых проверок/опросов/повторов/исправлений не добавляли. Сбор exit0:8files,
+warnings0,ChangedDuringCopy2; снимки живого прогона. Parent evidence:
+out/coop-dev/runs/map-owner-native-20261106/confirmed-pc-20261107.
+Сейвы/settings/бинарники не менялись, процессы не завершались.
+Подробности: fixes/2026-11-06-native-state-once.md.
+
+## 07.11.2026 — kidnap guard: gameplay PASS / баг обычной смерти CLOSED
+
+Один completion flag9421 больше не блокирует обычную смерть. Pending допускает
+только native9420 или уже подготовленную prison point2802959 вместе с9421,
+при !9423/разрешённом independent travel. Existing native похищение сохранено.
+Без новых опросов/таймеров/hooks/состояния/пакетов; флаги вручную не сбрасываются.
+Captured live flags/checkpoints production regression и historical negative
+control PASS; реальные predicates+Begin+TickSpectate: ordinary curtain/no-load,
+boss hold и настоящее delayed abduction PASS. DLL build/delta/deploy exit0,
+commit e7005ff; copied5, backup kidnap-death-guard-20261107-20261107-000641.
+Первые запуски блокировал MSI.CentralServer(11469 UDP ports); с разрешения
+пользователя MSI Center Service перезапущен00:10:04. Повтор P1/P2 успешен:
+оба native game стартовали00:10:41 МСК, свежие run_20261107_001041.log,
+35/35 selected hooks в обоих, native PIDs34084/6068.
+Retest logs: host revived00:11:55.042, guest00:12:36.169, обаHP594,
+in-place к лампе, map/visit и роли сохранены. Пользователь подтвердил
+затемнение без загрузки: «все работает как нужно». Gameplay PASS/CLOSED
+для обычной смерти с живым напарником. Сбор retest-pc exit0,2files,warnings0;
+живой снимок ChangedDuringCopy, эпизоды завершены. Боссы/реальное похищение
+этим игровым прогоном не проверялись.
+См. fixes/2026-11-07-kidnap-death-guard.md.
+
+## 06.11.2026 — повтор возрождения FAILED; найден kidnap guard
+
+В run235555/235553 оба остаются HP0: восстановленный15s handoff срабатывает
+повторно, но возрождение не завершается. Read-only native flags у обоих:
+9420=0,9421=1,9422=1,9423=0; loading0, точки2412951/2102961 вместо2802959.
+Production KidnapDeathPending считает это pending, а KidnapRespawnReady=false.
+Обычная смерть удерживается ожиданием тюрьмы вместо fade/respawn. Происхождение
+этой комбинации флагов ещё не установлено. Код в этой проверке не менялся.
+Логи/снимок: parent out/coop-dev/runs/death-respawn-20261106/restored-retest-pc-later
+и restored-live-flags.json. Подробности fixes/2026-11-06-death-handoff-restore.md.
+Отсутствие spectate-active само по себе НЕ доказывает отсутствие native final:
+Begin может выйти раньше по kidnap guard. Gameplay FAILED / bug OPEN.
+
+## 06.11.2026 — смерть: восстановлен прежний handoff, PC INSTALLED / tests PASS / gameplay OPEN
+
+Сборка DLL exit0/8 inherited warnings, входы стабильны. Пять файлов delta
+установлены на ПК exit0, backup death-handoff-restored-20261106-20261106-235520.
+HEADf3d37e1; parent pin6e7d32f не обновлён. По просьбе запущены П1/П2 через
+существующие CMD23:55:29. Native startup подтверждён: П2 PID31844/run235553,
+23:55:54.388; П1 PID36956/run235555,23:55:55.732. Оба35/35 trace hooks.
+Предыдущие игры пользователь закрыл сам. Игровое подтверждение OPEN.
+Стоимость модового цикла не увеличена: прежняя HP/15s диагностика заменена
+прежним handoff, дополнительного опроса/таймера нет; foreign-dispatch hook удалён.
+
+Повтор23:39: оба профиля снова зависли; таймеры local/foreign=false.
+Гипотеза foreign timer отвергнута для случая, её guard удалён. По истории
+fb4d600 удалил прежний15s handoff в BeginBbscCoopDeath, оставив вечную диагностику.
+Удалённый вызов восстановлен в существующем tick, native repeat rearm сохранён.
+Обычная смерть с живым партнёром: прежние curtain+retained respawn без загрузки;
+boss death: spectate, не немедленный revive. Production entry/controller/rearm/
+accounting/status tests PASS; исторический negative control ожидаемо FAIL.
+Это восстановление старого алгоритма, не доказательство причины native VM stall.
+См. fixes/2026-11-06-death-handoff-restore.md. Build/deploy/gameplay ниже отдельно.
+
+## 06.11.2026 — death continuation: BUILT / PC INSTALLED / native regression PASS, gameplay OPEN
+
+Сборка DLL exit0/8 inherited warnings; пять файлов delta установлены на ПК
+exit0 с backup D:/Games/Bloodborne/coop-dev/backups/death-continuation-20261106-20261106-233833.
+Изменённые входы сборки стабильны; HEAD36a91be, parent pin6e7d32f не обновлён.
+Старые игры закрыты пользователем, процессы не завершались. По просьбе
+запущены ровно П1/П2 через существующие CMD23:38:41. Native startup:
+П1 PID41460/run233908/23:39:09.142; П2 PID22976/run233909/23:39:09.516.
+Оба с новой DLL; native startup35/35 выбранных trace hooks. Gameplay OPEN.
+
+Свежие P1/P2 run231528/231400: guest23:18:06 и host23:18:54 застыли после
+native death entry; пользователь видел «Вы погибли», затем лежащего персонажа.
+В original0139A9D0 воспроизведено: foreign timer15/16 group4000 потребляет
+local one-shot callback даже с local registration mode. Узкий entry guard
+оставляет его для собственного native timer; другие сообщения/solo неизменны.
+Настоящий native dispatcher + production trampoline negative/positive PASS;
+repeat-death и hook-resume PASS. Без revive watchdog/tick/повторов/новых пакетов.
+Конкретный foreign packet в живом прогоне не записан: причинность live зависания
+и игровой результат OPEN. Детали fixes/2026-11-06-native-death-continuation.md.
+
+## 06.11.2026 — состояние оставшегося владельца: ONE-SHOT PC INSTALLED / USER CONFIRMED 07.11
+
+По уточнению пользователя — только передача состояния один раз на загрузку,
+без опроса, повторных запросов и изменения штатного NPC-владения.
+Существующий ChooseOwner уже сохраняет оставшегося участника при возврате хоста;
+в native-NPC режиме пропускалась передача исторических смертей при retained travel.
+Восстановлен load-only запрос к текущему resident: оригинальный01786360 строит
+пакет, существующий WorldControl8/9 переносит его байты,0190E8B0 применяет CHR.
+Обычные native packets/HP/ownership/wake/block hooks не включаются; нет barrier,
+watchdog, NPC cache или чтения native receive queue. Дубликаты/старый load fenced.
+Целевые production one-shot/capture/fragment/load/host-return/guest tests PASS;
+original1.09 serializer/handler ABI и native-mode/streaming/presence PASS.
+DLL build exit0/8 inherited warnings; PC five-file delta exit0. Backup
+native-state-once-20261106-20261106-231332. P1/P2 requested23:13:40 через
+существующие CMD после закрытия прежних игр. Startup подтверждён: P2 native11164
+23:14:00/run231400; P1 native21880 23:15:28/run231528. Оба с новой DLL;
+P1 потребовал закрытия только failed launcher23536, удерживавшего порт. Игровые
+процессы не завершались. Gameplay OPEN. Логи parent out/coop-dev/runs/map-owner-native-20261106/pc:
+2files,warnings0,ChangedDuringCopy. HEAD/pin не менялись; сейвы/settings не трогали.
+Подробности: fixes/2026-11-06-native-state-once.md.
+
+## 06.11.2026 — player reunion native-mode admission INSTALLED / USER CONFIRMED
+
+Повторная встреча: native-NPC default отключал прежний player lifecycle и
+FirstSync render-hold bypass вместе с NPC hooks. Возвращён только player hook;
+по уточнению пользователя восстановление одно на loading/reunion, без actor/
+model polling после завершения. Existing presence revisions + per-visit completion;
+native task readiness до15s, без watchdog/retry; border walks сохраняют actor.
+Targeted production/original renderer/native-mode/member-binding/border PASS;
+DLL build exit0/8warnings; six-file PC delta exit0, включая ранее готовый
+native GPU admission fix из чата П2. Backup player-reunion-native-20261106-
+20261106-224542. Игры пользователь закрыл сам; оба существующих профильных
+CMD запрошены к запуску22:46 МСК, startup отдельно в parent run.md.
+Сейвы/settings/assets/HEAD/pin не менялись. Пользователь подтвердил видимость
+в обоих направлениях; эта регрессия закрыта. Логи confirmed-pc/:2files,warnings0. Details fixes/2026-11-06-player-reunion-native-mode.md;
+parent out/coop-dev/runs/player-reunion-regression-20261106/.
+
+
+## Игровое подтверждение пользователя — 06.11.2026
+
+Пользователь подтвердил: «Да, видят друг друга в обоих направлениях».
+После сборки/установки и запуска P1/P2 22:46:34 проверено перемещение
+к уже находящемуся в локации участнику со сменой порядка прибывающего.
+Регрессия видимости при повторной встрече ЗАКРЫТА для этого сценария.
+Это не подтверждение исправления вылета П2 или других открытых багов.
+
+Логи обоих участников сохранены в parent
+out/coop-dev/runs/player-reunion-regression-20261106/confirmed-pc/;
+files=2, warnings=0, ChangedDuringCopy=2.
+Это снимки прогона, не доказательство завершения игровых процессов.
+Логи содержат однократные recreation/render-hold bypass при встречах,
+включая P1 22:48:44.981/22:49:43.458/22:51:35.907 и22:52:27.970.
+Видимость подтверждена пользователем, не выведена из наличия actor.
+
+
+## Постоянное правило разработки — 06.11.2026
+
+Для новых доработок сначала пробовать существующие штатные условия и
+обработки; новый механизм требует обоснования отсутствия штатного решения
+и дополнительной стоимости. [Память по оптимизации](OPTIMIZATION.md)
+содержит замеры, подтверждённые причины и ещё открытые проверки.
+
+## 06.11.2026 — П2 Dream crash: GPU admission race fixed, BUILT / NOT INSTALLED
+
+П2 22:10:38 упал в native heap split0x2086c91 с отрицательным bin index;
+original stack ведёт через0x1FC72A0 и0x22FC950 к RendMan update.
+Это повреждённые метаданные памяти, не доказанный GPU device-lost/нехватка RAM.
+В порте найден и воспроизведён отдельный конкретный дефект lifetime:
+запоздалый GpuIdle от batchA открывал submission_lock уже для незавершённогоB.
+ResetSubmissionLock теперь проверяет actual retired state; arming/check/getter
+синхронизированы m_wait_idle, устранены data race и окно потерянного уведомления.
+Original production callback negative FAIL; исправленный actual callback,
+1000interleavings + waiter/current retirement/idle/publication exclusion PASS.
+Native bb-probe и общая DLL (включая готовую chalice admission) build exit0;
+DLL8warnings, inputs stable. Шесть файлов staged; установки/нового запуска нет,
+П1 native35024 и П2 native9548 работали, завершение процессов запрещено.
+Пользователю предложено закрыть оба обычным выходом; затем установить с backup
+и запустить ТОЛЬКО П2 (165FPS,existing decoded GPU write ring2 для повтора).
+Причинность этой гонки именно для22:10 ещё не доказана; crash НЕ ЗАКРЫТ.
+Evidence parent out/coop-dev/runs/p2-crash-fix-20261106/run.md, test
+parent tests/test_gpu_submission_gate.py. Сейвы/settings/game assets не менялись.
+
+## 06.11.2026 — П2 свой Сон: меню установленной чаши предлагает ритуал OPEN
+
+User confirms own Dream; restarted P2 solo after automatic crash recovery.
+Native cup model activation present; exact opened slot/cache state unrecorded.
+Guest-only menu override does not apply to own state0. Cause/fix unproven;
+see fixes/2026-11-06-personal-altar-empty-menu.md and HANDOFF. No runtime changes.
+
+## 06.11.2026 — П2 crash при guest join в Dream: анализ OPEN
+
+Последний запуск21:57:28: П1 host native35024, П2 guest30716.
+22:10:26 join из чаши;22:10:29 state4→6;22:10:36.976 Dream join teleport;
+около22:10:38 read fault0000000fe70b8cd8 в guest0x2086c91,
+stack0x1fc72dd→0x2306ae9→0x23055c2, runner exit3. П1 продолжает работать.
+Непосредственный invalid read подтверждён; источник адреса/native handler
+не установлен. GPU device-lost в этом логе нет; последние personal events
+и teleport не доказаны причиной. NPC v1.2 path/OFF подтверждён.
+Сбор exit0/4files/warnings0: П2 stable, П1 живой ChangedDuringCopy.
+Evidence parent out/coop-dev/runs/p2-crash-20261106-221038/run.md и pc/.
+Код/настройки/сейвы/деплой не менялись; процессы не завершались.
+
+## 06.11.2026 — v1.2 performance regression / deny list: PC INSTALLED, gameplay OPEN
+
+Three full-process Dream tool scans, activated after removal of own-Dream
+mode, removed. Native current f47 result replaces scanning/ESD patching.
+Shared default-allow interaction policy with explicit ending/NG+/host-cup/
+session-owner exceptions; per-event EndIfClient rewrites removed. New NPC
+pipeline OFF by default; all-player lamps retained. Targeted tests/native ABI
+PASS, DLL build/delta exit0 PC, P1/P2 launched21:44:30/165FPS.
+Performance root-cause contribution and corrected paired FPS/memory still OPEN.
+See HANDOFF and fixes/2026-11-06-native-access-v120.md. No save/settings restore.
+
+## 06.11.2026 — native NPC sync test: INSTALLED PC+laptop, gameplay OPEN
+
+По прямой просьбе пользователя новые NPC packet/HP/ownership/wake hooks и
+block/player maintenance отключены в отдельном режиме процесса; лампы всем
+сохранены. LocalEvents50 из1.2, legacy player recovery, travel metadata retained.
+Build/delta exit0 обоих; native30652/8144 start17:13:56/17:14:12, TEST warning
+и PERF/PACING подтверждены. Сейвы повторно не восстанавливались. HANDOFF +
+parent out/coop-dev/runs/native-npc-sync-pc-laptop-20261106/run.md.
+Предыдущий прогон: ноутбук55.03→41.06FPS после входа, позднее53.10; причина
+всех6.18мс потери кадра не локализована. Parent native-execution-results.md.
+
+## 06.11.2026 — host menu reload: SOURCE fixed, gameplay OPEN
+
+Native audit reproduces old custom Stop-before-exit-selector admission window.
+Host/own-world idle now use original System Yes/save/Stop/title; host input/menu
+hold removed. Guest ordering retained. Production/native/negative/trampoline/
+leave checks+MOD syntax PASS; no DLL/build/deploy/gameplay confirmation.
+See fixes/2026-11-06-host-menu-reload.md and HANDOFF.
+
+## 06.11.2026 — host menu exit: world reload, OPEN
+
+PC Stop16:48:18/state3 followed by world recreation/gameplay; laptop Stop16:48:19/
+state6. Detailed exit logs OFF; exact StageFlow/title-request race unproven.
+Own-world creation currently releases quit guard without independent Continue
+evidence. Analysis only; fixes/2026-11-06-host-menu-reload.md, HANDOFF.
+
+## 06.11.2026 — оптимизация установлена ПК+ноут, игровой замер OPEN
+
+DLL/delta exit0 на обоих, сейв before-rom-20261106-064652 восстановлен после
+полного backup каждого профиля. Native ПК37684/ноут17868 запущены16:42:36/52;
+BBSC PERF + кадровой PERF/PACING подтверждены в свежих логах, прочие подробные
+наблюдения OFF. Сравнение FPS ещё не выполнено. Parent run:
+out/coop-dev/runs/native-execution-pc-laptop-20261106/run.md; HANDOFF содержит пути.
+
+## 06.11.2026 — уменьшение повторной работы: SOURCE, gameplay OPEN
+
+Descriptor dispatch, revision-certified block admission, удаление временных
+membership/report copies, неизменённых ownership writes и OFF lifecycle work.
+Целевые production/original fixtures PASS, MOD syntax exit0. DLL/деплоя/нового
+игрового замера нет. Открыты native HP rounds, capture dirty/streaming signals,
+scaling hit/miss/validation и редкие stalls. Оба прохода личных флагов сохранены.
+Карточки и границы: [fixes/2026-11-06-native-execution-hotpath.md](fixes/2026-11-06-native-execution-hotpath.md).
 
 ## 06.11.2026 — boss victory respawn восстановлен: SOURCE, gameplay OPEN
 
@@ -5129,6 +6219,11 @@ T22: новый остаток боевого урона; измерительн
 через лифт. Причины невидимости и лифта не доказаны; изменения в эти пути не внесены.
 
 ## Ближайшая работа
+
+Двойная предметная награда при совместной победе над Кормилицей Мерго —
+игровая проверка пройдена, одна штатная выдача мёртвому гостю. В игре
+остаётся проверить компенсацию пропущенной награды при переносе победы.
+[Разбор](fixes/2026-11-07-duplicate-boss-rewards.md).
 
 T24: повтор PT-2/PT-9 — после смерти хоста первым клиент загрузился живым,
 но остался наблюдателем. По логам исправлен пропуск загрузки между игровыми

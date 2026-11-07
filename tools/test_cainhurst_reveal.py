@@ -38,7 +38,8 @@ u32 bbsc_cainhurst_scene_generation=~u32{0},bbsc_cainhurst_scene_sequence=0;
 s64 bbsc_cainhurst_scene_request_ms=0,now=100;
 std::optional<bool> playing=false;bool host_ready=true,live_flag=true,snapshot_ok=true,writable=true;
 alignas(16) unsigned char global_data[0x20]={};
-struct Packet{u32 map;int cutscene;};std::deque<Packet> bbsc_cutscene_queue;std::mutex bbsc_cutscene_mutex;
+struct Packet{u32 map;int cutscene;};struct Queued{Packet packet;};
+std::deque<Queued> bbsc_cutscene_queue;std::mutex bbsc_cutscene_mutex;
 struct BbscWorldSnapshot{u64 present=1;std::array<std::array<u8,125>,40> groups{};} snapshot;
 int GetSessionState(){return state;}int GetLocalPlayerType(){return type;}
 u64 GetLocalPlayerCharacter(){return actor;}u32 GetCurrentPackedMap(){return map;}
@@ -63,10 +64,12 @@ code += 'struct BbscScriptedPickup { u32 map; s64 event; bool client_gate; };\n'
 code += re.search(r'constexpr std::array<BbscScriptedPickup, \d+> BbscScriptedPickups\{\{.*?\}\};',s,re.S).group()+'\n'
 code += re.search(r'constexpr std::array<[^;]+ BbscNpcQuestFlags\{.*?\};',s,re.S).group()+'\n'
 code += 'bool bbsc_npc_own_active=true;std::mutex bbsc_npc_own_mutex;std::map<u32,u8> bbsc_npc_own;\n'
-for signature in ['bool IsBbscNpcQuestFlag(u32 flag)',
+for signature in ['bool IsBbscScriptedPickupFlag(u32 flag)',
+                  'bool IsBbscKidnapFlag(u32 flag)',
+                  'bool IsBbscNativeItemStateFlag(u32 flag)',
+                  'bool IsBbscNpcQuestFlag(u32 flag)',
                   'void NoteBbscNpcOwnFlag(u32 flag, u8 value)',
                   'void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live)',
-                  'void EnableBbscScriptedPickupEvent(u64 instance)',
                   'void ArmBbscCainhurstReveal(s32 scene)',
                   'void ApplyBbscCainhurstReveal()',
                   'void TickBbscCainhurstReveal()']:
@@ -85,7 +88,7 @@ int main(){
  live_flag=true;TickBbscCainhurstReveal();assert(calls.size()==82);
  auto count=calls.size();TickBbscCainhurstReveal();assert(calls.size()==count);
  // Rejoin/load into an already revealed host world; no movie packet is needed.
- ++bbsc_load_generation;bbsc_cutscene_queue.push_back({map,25000010});TickBbscCainhurstReveal();assert(calls.size()==count);
+ ++bbsc_load_generation;bbsc_cutscene_queue.push_back({{map,25000010}});TickBbscCainhurstReveal();assert(calls.size()==count);
  bbsc_cutscene_queue.clear();global_data[8]=1;TickBbscCainhurstReveal();assert(calls.size()==count);
  global_data[8]=0;TickBbscCainhurstReveal();assert(calls.size()==count*2);
  // Neither own prior progress nor an incomplete/stale/closed host snapshot opens it.
@@ -98,18 +101,9 @@ int main(){
  std::array<u8,125> before{},live{};live[803/8]=0x80u>>(803%8);
  KeepBbscNpcOwnBits(12501,before.data(),live.data());assert(live[803/8]==0);
  NoteBbscNpcOwnFlag(12501803,1);live.fill(0);
+ before[803/8]=0x80u>>(803%8); // actual native receipt before incoming host projection
  KeepBbscNpcOwnBits(12501,before.data(),live.data());assert(live[803/8]==(0x80u>>(803%8)));
- // Crown's native action-button/award tail stays intact; only EndIfClient is removed.
- alignas(16) unsigned char instance[0xc0]={},file[0x90]={},ref[0x10]={};
- alignas(16) u64 instruction[4]={1003ull|(6ull<<32),4,0,0};
- u32 args=256;
- WriteValue<u64>((u64)instance,0xb0,(u64)instruction);WriteValue<u64>((u64)instance,0xa8,(u64)ref);
- WriteValue<u64>((u64)ref,8,(u64)file);WriteValue<u64>((u64)file,0x78,(u64)&args-(u64)file);
- event_id=12500601;EnableBbscScriptedPickupEvent((u64)instance);assert(args==256);
- event_id=12501803;writable=false;EnableBbscScriptedPickupEvent((u64)instance);assert(args==256);
- writable=true;EnableBbscScriptedPickupEvent((u64)instance);
- assert(args==0&&instruction[0]==(1001ull|(1ull<<32))&&instruction[1]==4&&instance[0x78]==0);
- EnableBbscScriptedPickupEvent((u64)instance);assert(args==0);
+ // Shared native End/Jump host predicate is covered for12501803 by test_guest_access.
  VirtualFree((void*)image_base,0,MEM_RELEASE);
 }
 '''

@@ -9,6 +9,37 @@ struct BbscNativeInitialAdmission {
 BbscNativeInitialAdmission bbsc_world_initial;
 u64 bbsc_world_initial_sequence=0;
 
+// Native mode: one transaction per destination load. These are only temporary
+// native packet bytes, never an enemy cache or a simulation/watchdog loop.
+struct BbscNativeInitialOnce {
+    World::Scope scope{};u64 load=~u64{0},request=0,epoch=0;
+    u32 owner=0,received=0;u16 parts=0;bool consumed=false;
+    std::array<std::vector<u8>,13> packets;
+};
+BbscNativeInitialOnce bbsc_world_initial_once;
+
+void BbscWorldNativeInitialOnce(const World::Scope& scope) {
+    auto& once=bbsc_world_initial_once;
+    const u64 load=bbsc_world_native_load.load();
+    if(once.scope==scope && once.load==load)return;
+    once={};once.scope=scope;once.load=load;
+    if(!World::Valid(scope) || !BbscIndependentActive())return;
+    {std::scoped_lock lock{bbsc_world_presence_mutex};
+        const auto* lease=bbsc_independent_owners.Find(scope);
+        if(!lease || !lease->owner || lease->owner==BbscMod::RegisterOwnId())return;
+        const auto* resident=bbsc_world_presence_book.Resident(lease->owner);
+        if(!resident || resident->presence.phase!=World::Phase::Playing ||
+           World::ScopeOf(resident->presence)!=scope)return;
+        once.owner=lease->owner;once.epoch=lease->epoch;
+    }
+    once.request=++bbsc_world_initial_sequence;
+    World::Control c;c.kind=World::ControlKind::NativeInitialRequest;c.scope=scope;
+    c.owner=BbscMod::RegisterOwnId();c.epoch=once.epoch;c.sequence=once.request;
+    BbscWorldSend(c); // once; no timer, retry, task scan or event barrier
+    BBSC_TIMELINE("WORLD","one-shot native state requested owner={:08x} map={:#x} load={} request={}",
+        once.owner,scope.map,load,once.request);
+}
+
 bool BbscWorldApplyNativeInitial(std::span<const u8> bytes) {
     const auto records=World::NativeInitialCharacters(bytes);if(!records)return false;
     const u64 world=ReadValue<u64>(image_base+CandidateLocalStatePointerOffset,0);
@@ -48,12 +79,37 @@ bool BbscWorldApplyNativeInitial(std::span<const u8> bytes) {
 
 void BbscWorldNativeInitialControl(const BbscWorldIncoming& message) {
     const auto& c=message.control;
-    if(!BbscIndependentActive() || c.parts!=1 || c.part || !c.sequence)return;
+    const bool once_only=SessionTest::NativeNpcSync();
+    if(!BbscIndependentActive() || !c.sequence || (!once_only && (c.parts!=1 || c.part)))return;
     World::Presence local,peer;World::OwnerLease lease;bool known=false;
     {std::scoped_lock lock{bbsc_world_presence_mutex};local=bbsc_world_presence_local;
         if(const auto* p=bbsc_independent_owners.Find(c.scope))lease=*p;
         if(const auto* p=bbsc_world_presence_book.Resident(message.sender)){peer=p->presence;known=true;}}
     if(!known || peer.world!=local.world || !lease.owner || lease.epoch!=c.epoch)return;
+    if(once_only && c.kind==World::ControlKind::NativeInitialReady){
+        auto& once=bbsc_world_initial_once;
+        if(once.consumed || !once.request || once.load!=bbsc_world_native_load.load() ||
+           once.scope!=c.scope || once.epoch!=c.epoch || once.owner!=message.sender ||
+           c.owner!=lease.owner || message.sender!=lease.owner || once.request!=c.sequence ||
+           peer.phase!=World::Phase::Playing || World::ScopeOf(peer)!=c.scope ||
+           World::ScopeForMap(World::ScopeOf(local),GetCurrentPackedMap(),bbsc_world_requested_scope)!=c.scope ||
+           !c.parts || c.parts>once.packets.size() || c.part>=c.parts ||
+           message.payload.empty() || message.payload.size()>2048 ||
+           (c.part+1<c.parts && message.payload.size()!=2048) ||
+           (once.parts && once.parts!=c.parts))return;
+        once.parts=c.parts;
+        if(once.received&(1u<<c.part))return;
+        once.packets[c.part]=message.payload;once.received|=1u<<c.part;
+        if(once.received!=((1u<<once.parts)-1))return;
+        std::vector<u8> packet;
+        for(unsigned i=0;i<once.parts;++i)packet.insert(packet.end(),once.packets[i].begin(),once.packets[i].end());
+        once.consumed=true;
+        const bool applied=BbscWorldApplyNativeInitial(packet);
+        for(auto& part:once.packets)part.clear();
+        BBSC_TIMELINE("WORLD","one-shot native state result applied={} owner={:08x} map={:#x} load={} request={}",
+            applied,once.owner,c.scope.map,once.load,once.request);
+        return;
+    }
     if(c.kind==World::ControlKind::NativeInitialReady){
         auto& admission=bbsc_world_initial;
         if(peer.phase!=World::Phase::Playing || World::ScopeOf(peer)!=c.scope ||
@@ -70,10 +126,34 @@ void BbscWorldNativeInitialControl(const BbscWorldIncoming& message) {
        (peer.phase!=World::Phase::Loading && !World::SamePlace(local,peer)) ||
        lease.owner!=BbscMod::RegisterOwnId() || c.owner!=message.sender || !message.payload.empty() ||
        !BbscWorldSceneReady())return;
+    if(c.kind!=World::ControlKind::NativeInitialRequest || c.parts!=1 || c.part)return;
     const u64 member=BbscWorldNativeMember(message.sender);if(!member)return;
     // Native serializer ignores RDI, takes the recipient member in RSI, frees
     // its temporary buffer and returns whether the native reliable send worked.
     using Send=bool PS4_SYSV_ABI (*)(u64,u64);
+    if(once_only){
+        // Existing control fragmentation carries the ORIGINAL serializer's
+        // bytes. A ready notification on another transport cannot guarantee
+        // its native queue is populated yet; carrying the bytes here removes
+        // that race without a receive poll or resend.
+        static std::map<u32,std::tuple<World::WorldId,u64,u64>> served;
+        const auto key=std::make_tuple(local.world,peer.visit,c.sequence);
+        if(const auto it=served.find(message.sender);it!=served.end() &&
+           std::get<0>(it->second)==local.world && std::get<1>(it->second)==peer.visit &&
+           std::get<2>(it->second)>=c.sequence)return;
+        served[message.sender]=key;
+        std::vector<u8> packet;bbsc_world_initial_capture=&packet;
+        const bool sent=reinterpret_cast<Send>(image_base+0x01786360)(0,member);
+        bbsc_world_initial_capture=nullptr;
+        if(!sent || packet.empty() || packet.size()>0x6400)return;
+        auto reply=c;reply.kind=World::ControlKind::NativeInitialReady;reply.owner=lease.owner;
+        reply.parts=static_cast<u16>((packet.size()+2047)/2048);
+        for(reply.part=0;reply.part<reply.parts;++reply.part){
+            const size_t at=reply.part*2048;
+            BbscWorldSend(reply,{packet.data()+at,std::min<size_t>(2048,packet.size()-at)});
+        }
+        return;
+    }
     bbsc_world_initial_sending=message.sender;bbsc_world_initial_fingerprint=0;
     const bool sent=reinterpret_cast<Send>(image_base+0x01786360)(0,member);
     bbsc_world_initial_sending=0;

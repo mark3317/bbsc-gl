@@ -1,7 +1,8 @@
 # Обычная смерть не ждёт тюрьму — 07.11.2026
 
-Статус: SOURCE FIX, production regression PASS. Build/deploy/start и gameplay
-фиксируются отдельно в HANDOFF и parent run.md. Новых опросов нет.
+Статус: PC INSTALLED, production regression PASS, gameplay PASS. Блокировка
+обычной смерти с живым напарником исправлена и подтверждена обоими профилями
+и пользователем. Новых опросов нет.
 
 ## Доказательство
 
@@ -44,3 +45,25 @@ Idle path не меняется: TickSpectate вызывает guard тольк�
 Остальные dirty-правки сохранены. Код в коммитах ограничен этим predicate,
 связанными тестами и новым отчётом; HEAD исходноf3d37e1, parent pin6e7d32f.
 Игры не завершались; реальные сейвы/settings/assets вручную не менялись.
+
+## Игровое подтверждение — 07.11.2026
+
+Статус: gameplay PASS, баг блокировки обычной смерти закрыт для проверенного
+сценария свободного мира с живым напарником. Пользователь: «все работает как нужно».
+
+Сбор retest-pc exit0,2files,warnings0; оба run_20261107_001041.log:
+- Player1/game-7, host: SoloPlayDeath00:11:51.768 -> revived00:11:55.042,
+  HP594,type0, возврат к лампе(-193.40,-28.65,68.50). PLACE alive1,
+  та же Central Yharnam/map0x18010000/visit1, роль host сохранена.
+- Player2/game-14, guest: PartyGhostDeath00:12:31.910 -> revived00:12:36.169,
+  HP594,type1, та же лампа; PLACE alive1,map0x18010000/visit2,
+  роль guest сохранена. Штраф21779 echoes применён, stain21779, now0.
+
+Оба возрождения явно logged как respawn in place(no boss fight); смены visit,
+выхода из комнаты и повторов watchdog/kidnap-wait между смертью и revival нет.
+Затемнение без экрана загрузки подтверждено пользователем; лог подтверждает
+in-place path. Настоящее похищение/боссы этим игровым прогоном не проверялись
+(их прежние целевые production tests PASS).
+Сбор снят во время работы игр: ChangedDuringCopy отмечен у двух файлов;
+это живой снимок с завершёнными эпизодами смерти, не финальные логи выхода.
+Артефакты: parent out/coop-dev/runs/kidnap-death-guard-20261107/retest-pc.

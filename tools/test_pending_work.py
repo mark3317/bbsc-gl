@@ -36,6 +36,11 @@ prefix = r"""
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "core/bbsc_world_presence.h"
+#include "core/bbsc_lamp_travel_data.h"
+namespace World=Core::Bloodborne::World;
+namespace Bbsc=Core::Bbsc;
+namespace LampTravel=Core::Bloodborne::LampTravel;
 using u8=uint8_t; using u16=uint16_t; using u32=uint32_t; using u64=uint64_t;
 using s16=int16_t; using s32=int32_t; using s64=int64_t;
 #define PS4_SYSV_ABI
@@ -76,7 +81,10 @@ std::vector<BbscScaledNpc> bbsc_scaled_npcs{{3,100,false}};
 constexpr s64 BbscScaleFreshMs=15000;
 """
 
-work = SOURCE[SOURCE.index("enum class BbscWork"):SOURCE.index("// ---- BBSC perf")]
+work = SOURCE[SOURCE.index("enum class BbscWork"):SOURCE.index("// Network readers only touch metadata")]
+work += function("void QueueBbscWork(BbscWork work)")
+work += function("u32 TakeBbscWork()")
+work += function("bool HasBbscWork(u32 pending, BbscWork work)")
 scaling = SOURCE[SOURCE.index("struct BbscScaleNumbers"):SOURCE.index("const BbscScaleNumbers& BbscOwnScaleNumbers()")]
 scaling = scaling.replace("std::mutex bbsc_scale_host_mutex;", "CountingMutex bbsc_scale_host_mutex;")
 scaling += r"""
@@ -90,27 +98,45 @@ scaling += function("void OnBbscScalePacket(const std::uint16_t (&percent)[5])")
 
 packet_start = SOURCE.index("struct BbscCutscenePacket")
 packet = SOURCE[packet_start:SOURCE.index("\n};", packet_start) + 3]
+queued_start = SOURCE.index("struct BbscQueuedCutscene")
+queued = SOURCE[queued_start:SOURCE.index("\n};", queued_start) + 3]
 cutscenes = "constexpr u8 BbscCutsceneType=0x28;\n#pragma pack(push, 1)\n" + packet + "\n#pragma pack(pop)\n"
-cutscenes += r"""
+cutscenes += queued + r"""
 std::mutex bbsc_cutscene_mutex;
-std::deque<BbscCutscenePacket> bbsc_cutscene_queue;
+std::deque<BbscQueuedCutscene> bbsc_cutscene_queue;
 std::unordered_map<s32,u32> bbsc_cutscene_seen;
+std::mutex bbsc_world_presence_mutex;
+World::Presence bbsc_world_presence_local;
+World::PresenceBook bbsc_world_presence_book;
 bool bbsc_cutscene_replaying=false;
+bool BbscIndependentActive(){return false;}
+bool BbscIndependentTravelAllowed(){return false;}
+bool BbscGroupStoryMovie(u32,s32){return false;}
+bool BbscWorldPeerHere(u32){return true;}
+bool BbscEventFlag(u32){return false;}
+std::optional<bool> BbscRemoPlaying(){return false;}
+void ArmBbscCainhurstReveal(s32){}
+bool PrepareBbscSharedFinaleActor(){return false;}
+Bbsc::DreamFinale::Playback bbsc_dream_finale;
+struct { int phase=0; } bbsc_finale_record;
+std::atomic<u32> bbsc_remo_started_sequence{0};
+u32 bbsc_dream_finale_start_sequence=0;
+u8 bbsc_dream_ng_target=0;
 size_t replays=0;
 void Replay(u64,u32,u32,u64,u32,u32,u64,u64,u64) { ++replays; }
 const std::array<u64,1> BbscCutsceneRequestOffsets{reinterpret_cast<u64>(&Replay)-1};
 bool BbscCutscenesEnabled() { return true; }
 bool QueueBbscRomNativeTransition(s32) { return false; }
 """
-cutscenes += function("void OnBbscCutscenePacket(const void* data, std::size_t size)")
+cutscenes += function("void OnBbscCutscenePacket(u32 sender, bool from_host, const void* data, std::size_t size)")
 cutscenes += function("void TickBbscCutsceneReplay()")
 
 main = r"""
 int main() {
     assert(TakeBbscWork()==0);
-    QueueBbscWork(BbscWork::BossReward); QueueBbscWork(BbscWork::GuestDrop);
+    QueueBbscWork(BbscWork::RewardCheck); QueueBbscWork(BbscWork::GuestDrop);
     auto mask=TakeBbscWork();
-    assert(HasBbscWork(mask,BbscWork::BossReward));
+    assert(HasBbscWork(mask,BbscWork::RewardCheck));
     assert(HasBbscWork(mask,BbscWork::GuestDrop));
     assert(!HasBbscWork(mask,BbscWork::Cutscene));
     assert(TakeBbscWork()==0);
@@ -141,8 +167,8 @@ int main() {
     BbscCutscenePacket packet{}; packet.map=24;
     for (u32 i=1;i<=3;++i) {
         packet.sequence=i; packet.cutscene=static_cast<s32>(i);
-        OnBbscCutscenePacket(&packet,sizeof(packet));
-        OnBbscCutscenePacket(&packet,sizeof(packet)); // duplicate relay/P2P
+        OnBbscCutscenePacket(1,true,&packet,sizeof(packet));
+        OnBbscCutscenePacket(1,true,&packet,sizeof(packet)); // duplicate relay/P2P
     }
     assert(bbsc_cutscene_queue.size()==3);
     for (int i=0;i<3;++i) {
@@ -196,13 +222,12 @@ for name in ("GateWatch", "ItemSurvey", "StateDiff"):
     assert body.splitlines()[1].strip() == "if (!BbscResearchEnabled()) return;"
 exit_handler = function("void TickBbscSessionExit(bool peer_work)")
 assert "if (peer_work) QueueBbscWork(BbscWork::PeerLeft)" in exit_handler
-for queue, kind in (("bbsc_boss_reward_queue.push_back(event);", "BossReward"),
-                    ("bbsc_peer_left_pending[player] = host;", "PeerLeft")):
-    assert SOURCE.split(queue, 1)[1].lstrip().startswith("QueueBbscWork(BbscWork::" + kind + ");")
+assert "QueueBbscWork(BbscWork::RewardCheck);" in function("void RequestBbscRewardCheck()")
+assert SOURCE.split("bbsc_peer_left_pending[player] = host;", 1)[1].lstrip().startswith("QueueBbscWork(BbscWork::PeerLeft);")
 
 with tempfile.TemporaryDirectory(prefix="bbsc-work-test-") as tmp:
     cpp, exe = Path(tmp) / "test.cpp", Path(tmp) / "test.exe"
     cpp.write_text(prefix + work + scaling + cutscenes + main, encoding="utf-8")
-    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++20", "-O2", "-pthread", str(cpp), "-o", str(exe)], check=True)
+    subprocess.run([os.environ.get("CXX", "g++"), "-std=c++20", "-O2", "-pthread", "-I", str(ROOT / 'emulator/src'), str(cpp), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=30)
 print("diagnostic gating and departure retry integration: PASS")

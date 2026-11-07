@@ -28,6 +28,7 @@ using namespace Core::Bloodborne;
 void TraceBbscCombatActor(std::string_view,uint64_t,int32_t,bool){}
 struct GuestRegisterSnapshot {u64 rax{},rbx{},rcx{},rdx{},rsi{},rdi{},rbp{},rsp{},r8{},r9{},r10{},r11{},r12{},r13{},r14{},r15{},rflags{};};
 bool active=false,here=true;
+thread_local std::vector<u8>* bbsc_world_initial_capture=nullptr;
 bool BbscWorldBlocksActive(){return false;}
 bool BbscWorldBlockSimulation(){return false;}
 bool BbscWorldBlockPacketSend(GuestRegisterSnapshot*){return false;}
@@ -213,7 +214,7 @@ def main():
         cpp.write_text(PREFIX+''.join(function(s) for s in signatures)+MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
-        subprocess.run([str(exe)],check=True,env=env)
+        subprocess.run([str(exe)],check=True,env=dict(env,BBSC_NATIVE_NPC_SYNC_TEST='0'))
     print('PASS production native authority callbacks, direct hit routing, HP role/source, owner epochs')
     if os.environ.get('BBSC_TEST_EBOOT'):check_original_sites(Path(os.environ['BBSC_TEST_EBOOT']))
 

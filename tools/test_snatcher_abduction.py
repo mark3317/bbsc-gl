@@ -82,7 +82,7 @@ int main(){
   allowed=true;writable=false;EnableBbscKidnapEvent(p);assert(ReadValue<s32>(i,0)==1003);
   writable=true;EnableBbscKidnapEvent(p);
   assert(ReadValue<u8>(p,0x78)==(e==9400?1:0));
-  assert(ReadValue<s32>(i,0)==((e==9421||e==9422)?1001:1003));
+  assert(ReadValue<s32>(i,0)==1003);
   assert(ReadValue<u64>(i,8)==4); // next instruction/extent preserved
  }
 }
