@@ -25,6 +25,18 @@ CPP = ROOT / 'emulator/src/core/bloodborne_re.cpp'
 HEADER = ROOT / 'emulator/src/core/bbsc_quest_event_rules.h'
 bbfiles.GAME = os.environ.get('BB_GAME', r'D:\Games\Bloodborne\game\dvdroot_ps4')
 
+# These original events can also issue character commands. Their location
+# checks, NPC state changes and follow-up dispatchers belong to the local quest.
+LOCAL_NPC_PROGRESSION = {
+    12300700, 12300701, 12300702, 12300704,  # Djura's approach and personal reward
+    12400650, 12400651, 12400652,  # Eileen's chapel and staircase stages
+    12400904,                     # local encounter activation
+    12410653, 12410654, 12410655, 12410659,  # local approach and NPC response
+    12410809, 12410810, 12410811,  # Henryk's encounter and Eileen joining the fight
+    12600029,                     # local attack prerequisite for a personal reward
+    13600955,                     # local quest marker consumed on entering its region
+}
+
 
 def numbers(source, name):
     block = source.split(name + '{', 1)[1].split('};', 1)[0]
@@ -80,7 +92,7 @@ def generate():
     ranges = []
     for file in sorted((Path(bbfiles.GAME) / 'event').glob('*.emevd.dcx')):
         for eid, instructions in emevd.Emevd(file).events:
-            if eid in controllers:
+            if eid in controllers or eid in LOCAL_NPC_PROGRESSION:
                 # An explicit later SetNetworkSyncState(true) would undo the
                 # existing pre-step localization and needs a separate review.
                 assert not any(b == 2000 and n == 2 and any(a)
@@ -96,7 +108,8 @@ def generate():
             # Already guest-enabled workers also need local network authority.
             # Otherwise a host's synchronized action can bypass the guest's
             # own condition evaluator (including the NPC-death prerequisite).
-            if host_gate(instructions) and personal_writes(instructions, npc):
+            # The native abduction path already classifies both workers.
+            if eid not in (12400780, 12700500) and host_gate(instructions) and personal_writes(instructions, npc):
                 events[eid] = file.name
             if eid == 12410702:
                 # Sister's window proxies and quest corpse, not a shared door/enemy.
@@ -108,7 +121,7 @@ def generate():
                            for b, n, a in instructions)
                 events[eid] = file.name
     assert {12410702, 12410713, 12410748, 12410761, 12410803, 12410804} <= events.keys()
-    assert controllers <= events.keys()
+    assert (controllers | LOCAL_NPC_PROGRESSION) <= events.keys()
     layout, _, data, rows = param.load('ItemLotParam')
     get_flags = set()
     for offset in rows.values():
@@ -125,7 +138,27 @@ def generate():
     lines.append('};')
     lines.append(f'inline constexpr std::array<std::uint32_t, {len(gates)}> ScriptedLotFlags{{')
     lines.extend(f'    {f},' for f in gates)
-    lines.extend(['};', '} // namespace Core::Bloodborne::QuestRules', ''])
+    lines.extend([
+        '};',
+        '',
+        '// Preserve the native completion bits of local NPC events on incoming map snapshots.',
+        'inline void KeepLocalNpcCompletion(std::uint32_t key, const std::uint8_t* before,',
+        '                                   std::uint8_t* live) {',
+        '    const auto keep = [&](unsigned byte, std::uint8_t mask) {',
+        '        live[byte] = (live[byte] & ~mask) | (before[byte] & mask);',
+        '    };',
+        '    switch (key) {',
+    ])
+    completion = {}
+    for eid in sorted(events):
+        group = completion.setdefault(eid // 1000, {})
+        byte, bit = divmod(eid % 1000, 8)
+        group[byte] = group.get(byte, 0) | (0x80 >> bit)
+    for key, group in completion.items():
+        lines.append(f'    case {key}:')
+        lines.extend(f'        keep({byte}, 0x{mask:02X});' for byte, mask in group.items())
+        lines.append('        break;')
+    lines.extend(['    }', '}', '} // namespace Core::Bloodborne::QuestRules', ''])
     return '\n'.join(lines), events, gates
 
 

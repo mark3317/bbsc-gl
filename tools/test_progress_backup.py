@@ -61,6 +61,7 @@ u64 image_base=0;
 std::array<u8,125> live{};
 u64 BbscFlagGroupStorage(u32){return reinterpret_cast<u64>(live.data());}
 bool BbscSharedMapProgressAllowed(u32){return true;}
+bool IsBbscNpcQuestFlag(u32){return false;}
 void env(const char* key,const fs::path& value) {
 #ifdef _WIN32
     _putenv_s(key,value.string().c_str());

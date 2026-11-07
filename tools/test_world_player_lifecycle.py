@@ -3,10 +3,11 @@ from pathlib import Path
 import os,shutil,struct,subprocess,tempfile
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=(ROOT/'emulator/src/core/bbsc_independent_world.inc').read_text(encoding='utf-8')
-def function(signature):
-    start=SOURCE.index(signature+' {');p=SOURCE.index('{',start)+1;depth=1
-    while depth:depth+=(SOURCE[p]=='{')-(SOURCE[p]=='}');p+=1
-    return SOURCE[start:p]+'\n'
+def function(signature, source=None):
+    source=SOURCE if source is None else source
+    start=source.index(signature+' {');p=source.index('{',start)+1;depth=1
+    while depth:depth+=(source[p]=='{')-(source[p]=='}');p+=1
+    return source[start:p]+'\n'
 PREFIX=r'''
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -25,10 +26,12 @@ using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using 
 std::atomic<u64> bbsc_world_player_revision{1};
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 #define BBSC_TIMELINE(...)
-constexpr u64 CandidateLocalStatePointerOffset=0x553e878,MultiPlayerInsSetStateOffset=0x1e52560;
+constexpr u64 CandidateLocalStatePointerOffset=0x553e878,MultiPlayerInsSetStateOffset=0x1e52560,MemberIdEqualsOffset=0xca1c70;
 u64 image_base=0,remote=0; s64 now=10000;bool active=true,loading=false,missing_model=false,task_present=true;
+bool relay_member_known=true;
 std::array<u8,0x500> actor1{},actor2{},local{},task{},control{},flags{};
-std::array<u8,0x20> draw{};std::array<u8,0xe0> child{},vtable{};
+std::array<u8,0x20> draw{},receiver{};std::array<u8,0xe0> child{},vtable{};
+std::array<u8,0x70> player_entries{};
 std::array<u8,0x6000> world_data{};std::array<u8,0x1700> global_data{};
 std::array<u8,0x100> modules{},model{},parts{},part{},node{},scene{},arrival{};
 std::array<u8,0x100> scene_root{},scene_vtable{};
@@ -45,18 +48,35 @@ bool BbscIndependentActive(){return active;}bool BbscCurtainActive(){return load
 s64 SteadyNowMs(){return now;}
 std::vector<u64> GetMultiPlayerInsTasks(){return task_present?std::vector<u64>{reinterpret_cast<u64>(task.data())}:std::vector<u64>{};}
 std::set<u64> BbscWorldPlayers(u64){return {GetLocalPlayerCharacter(),remote};}
-u32 BbscWorldPeer(u64 member){return member==remote+0x3d8 || member==reinterpret_cast<u64>(task.data())+0xc8?22:0;}
+u32 BbscWorldPeer(u64 member){return (relay_member_known && member==remote+0x3d8) || member==reinterpret_cast<u64>(task.data())+0xc8?22:0;}
 s32 GetSessionState(){return 3;}u32 GetBbscRelayHost(){return 22;}
 s32 hp=594;s32 GetCharacterHp(u64){return hp;}
 u64 BbscCharacterDrawState(u64 ch){return ch && !missing_model?reinterpret_cast<u64>(draw.data()):0;}
 bool IsValidMemberId(u64){return true;}
 bool IsEbootCodeAddress(u64 p){return p==image_base+0x18f27c0;}
-int binds=0,inserts=0,resets=0,removals=0,attachments=0,clears=0;
-void PS4_SYSV_ABI Bind(u64 ch,u64 member){assert(ch==remote&&member==reinterpret_cast<u64>(task.data())+0xc8);++binds;}
-void PS4_SYSV_ABI Insert(u64 member,s32 state){assert(member==reinterpret_cast<u64>(task.data())&&state==4);++inserts;}
+int binds=0,inserts=0,resets=0,removals=0,attachments=0,clears=0,detaches=0;
+void PS4_SYSV_ABI ConstructEmptyMember(u64 member){WriteValue(member,0,u64{0});}
+void PS4_SYSV_ABI DestroyEmptyMember(u64 member){assert(ReadValue<u64>(member,0)==0);++detaches;}
+bool PS4_SYSV_ABI EqualMembers(u64 a,u64 b){return ReadValue<u64>(a,0)!=0&&ReadValue<u64>(a,0)==ReadValue<u64>(b,0);}
+void PS4_SYSV_ABI Bind(u64 ch,u64 member){
+ assert(ch==remote);
+ const u64 id=ReadValue<u64>(member,0);
+ WriteValue(ch,0x3d8,id);WriteValue(reinterpret_cast<u64>(receiver.data()),0,id);
+ if(id){assert(member==reinterpret_cast<u64>(task.data())+0xc8);++binds;}
+}
+void PS4_SYSV_ABI Insert(u64 member,s32 state){
+ assert(member==reinterpret_cast<u64>(task.data())&&state==4);
+ assert(!ReadValue<u64>(reinterpret_cast<u64>(receiver.data()),0));
+ ++inserts;
+}
 void PS4_SYSV_ABI Reset(u64 ch,u8 value){assert(ch==remote&&value==1);++resets;}
 void PS4_SYSV_ABI ClearArrival(u64 manager,u32 handle){assert(manager==reinterpret_cast<u64>(arrival.data())&&handle==77);++clears;}
-void PS4_SYSV_ABI Remove(u64 world,u64 ch){assert(world==reinterpret_cast<u64>(world_data.data())&&ch==remote&&ch!=GetLocalPlayerCharacter());assert(clears==removals+1);++removals;remote=0;}
+void PS4_SYSV_ABI Remove(u64 world,u64 ch){
+ assert(world==reinterpret_cast<u64>(world_data.data())&&ch==remote&&ch!=GetLocalPlayerCharacter());
+ assert(clears==removals+1&&detaches==removals+1);
+ assert(!ReadValue<u64>(ch,0x3d8)&&!ReadValue<u64>(reinterpret_cast<u64>(receiver.data()),0));
+ ++removals;remote=0;
+}
 void PS4_SYSV_ABI RootAdd(u64 root,u64 n){assert(root==reinterpret_cast<u64>(scene_root.data())&&n==reinterpret_cast<u64>(node.data()));++attachments;WriteValue(n,0x18,root);}
 void PS4_SYSV_ABI RootRemove(u64,u64){assert(false);}
 void PS4_SYSV_ABI Attach(u64 ch){assert(ch==remote&&ch!=GetLocalPlayerCharacter());++attachments;WriteValue(reinterpret_cast<u64>(parts.data()),0x10,reinterpret_cast<u64>(scene.data()));WriteValue(reinterpret_cast<u64>(node.data()),0x70,reinterpret_cast<u64>(scene.data()));WriteValue(reinterpret_cast<u64>(node.data()),0x18,reinterpret_cast<u64>(scene_root.data()));}
@@ -66,7 +86,16 @@ bool RepairBbscLocalMemberBinding(s32,const std::vector<u64>&,bool){return true;
 void Link(u64 offset,void* target){auto* p=reinterpret_cast<u8*>(image_base+offset);p[0]=0x48;p[1]=0xb8;const u64 a=reinterpret_cast<u64>(target);std::memcpy(p+2,&a,8);p[10]=0xff;p[11]=0xe0;}
 void Actor(u64 p){WriteValue(p,8,u32{77});WriteValue(p,0x18,reinterpret_cast<u64>(control.data()));WriteValue(p,0x58,reinterpret_cast<u64>(control.data()));WriteValue(p,0x60,reinterpret_cast<u64>(child.data()));WriteValue(p,0x3b0,reinterpret_cast<u64>(modules.data()));WriteValue(p,0x4d0,reinterpret_cast<u64>(parts.data()));WriteValue(p,0x208,0.0f);WriteValue(p,0x20c,0.0f);}
 World::Presence peer;
-void Hear(){peer.sequence++;assert(bbsc_world_presence_book.Hear(22,peer.world,peer,now));}
+void UpdateNativePlayers(){
+ const u64 entries=reinterpret_cast<u64>(player_entries.data());
+ const u64 world=reinterpret_cast<u64>(world_data.data());
+ WriteValue(world,0x30,s32{2});WriteValue(world,0x38,entries);
+ WriteValue(world,0x60,GetLocalPlayerCharacter());
+ WriteValue(entries,0,GetLocalPlayerCharacter());WriteValue(entries,0x38,remote);
+ if(remote)WriteValue(remote,0x3d8,u64{22});
+ WriteValue(reinterpret_cast<u64>(receiver.data()),0,remote?u64{22}:u64{0});
+}
+void Hear(){UpdateNativePlayers();peer.sequence++;assert(bbsc_world_presence_book.Hear(22,peer.world,peer,now));}
 '''
 MAIN=r'''
 int main(){
@@ -75,6 +104,9 @@ int main(){
  Link(0x18f27c0,reinterpret_cast<void*>(&Bind));Link(0x18c6390,reinterpret_cast<void*>(&Disable));
  Link(MultiPlayerInsSetStateOffset,reinterpret_cast<void*>(&Insert));Link(0x19186e0,reinterpret_cast<void*>(&Remove));
  Link(0x18f4a50,reinterpret_cast<void*>(&Attach));Link(0x15bc080,reinterpret_cast<void*>(&ClearArrival));
+ Link(0xca1440,reinterpret_cast<void*>(&ConstructEmptyMember));
+ Link(0xca1570,reinterpret_cast<void*>(&DestroyEmptyMember));
+ Link(MemberIdEqualsOffset,reinterpret_cast<void*>(&EqualMembers));
  #ifdef ORIGINAL_ATTACH
  std::memcpy(reinterpret_cast<void*>(image_base+0x18f4a50),original_attach,sizeof(original_attach));
  #endif
@@ -89,11 +121,12 @@ int main(){
  WriteValue(reinterpret_cast<u64>(parts.data()),0x28,reinterpret_cast<u64>(part.data()));
  WriteValue(reinterpret_cast<u64>(part.data()),0x18,reinterpret_cast<u64>(node.data()));
  WriteValue(reinterpret_cast<u64>(task.data()),0xe8,s32{1});WriteValue(reinterpret_cast<u64>(task.data()),0x50,s32{6});WriteValue(reinterpret_cast<u64>(task.data()),0x54,s32{6});
+ WriteValue(reinterpret_cast<u64>(task.data()),0xc8,u64{22});
  WriteValue(reinterpret_cast<u64>(child.data()),0,reinterpret_cast<u64>(vtable.data()));WriteValue(reinterpret_cast<u64>(vtable.data()),0xd0,image_base+0x18f27c0);
  WriteValue(reinterpret_cast<u64>(control.data()),0x10,s32{4});WriteValue(reinterpret_cast<u64>(control.data()),0x14,s32{4});
  bbsc_world_presence_local.world={11,99};bbsc_world_presence_local.map=0x15000000;bbsc_world_presence_local.visit=1;bbsc_world_presence_local.sequence=1;bbsc_world_presence_local.phase=World::Phase::Playing;bbsc_world_presence_local.alive=1;
  peer=bbsc_world_presence_local;bbsc_world_presence_book.Bind(peer.world,11);Hear();
- remote=reinterpret_cast<u64>(actor1.data());Actor(remote);
+ remote=reinterpret_cast<u64>(actor1.data());Actor(remote);UpdateNativePlayers();
  // A valid DrawModule exists, but assembled meshes are detached from the new
  // scene. Native attachment must precede declaring the resident bound.
  TickBbscWorldPlayers();assert(binds==1&&inserts==0&&attachments==1);
@@ -106,7 +139,11 @@ int main(){
  assert(BbscWorldPlayerMesh(w,remote,detached)&&!detached);
  now+=1000;Hear();TickBbscWorldPlayers();assert(draw[0xc]==0&&ReadValue<float>(remote,0x208)==0&&resets==0); // no manual visibility/opacity writes
  peer.map=0x18000000;now++;Hear();TickBbscWorldPlayers();assert(ReadValue<u8>(reinterpret_cast<u64>(control.data()),0x20)==1);
+ // The relay mapping can be unavailable during reunion. Native identity
+ // still finds and detaches the old receiver before it can share the queue.
+ relay_member_known=false;
  peer.map=0x15000000;peer.visit++;now++;Hear();TickBbscWorldPlayers();assert(removals==1&&inserts==1&&remote==0);
+ relay_member_known=true;
  assert(bbsc_world_player_admissions.contains(reinterpret_cast<u64>(task.data())));
  // Native creation supplies a NEW actor; subsequent observations must not recreate it again.
  remote=reinterpret_cast<u64>(actor2.data());Actor(remote);now++;Hear();TickBbscWorldPlayers();assert(inserts==1&&binds==2);
@@ -216,6 +253,12 @@ int main(){
 
 def admission_source():
     return SOURCE[SOURCE.index('struct BbscWorldPlayerAdmission {'):SOURCE.index('// DrawModule+28')]
+def player_functions():
+    core=(ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+    return (function('u64 FindBbscRemotePlayer(u64 world_chr, u64 task)',core)+
+            function('u64 BbscWorldPlayerMesh(u64 world,u64 chr,bool& detached)')+
+            function('bool DetachBbscWorldPlayerMember(u64 chr)')+
+            function('void TickBbscWorldPlayers()'))
 def main():
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     original=''
@@ -238,7 +281,7 @@ def main():
             header=header.replace('if(in.alive && in.actor_alive && in.actor_dead){', 'if(false){')
             (Path(tmp)/'core').mkdir()
             (Path(tmp)/'core/bbsc_world_players.h').write_text(header,encoding='utf-8')
-        cpp.write_text(original+PREFIX+admission_source()+function('u64 BbscWorldPlayerMesh(u64 world,u64 chr,bool& detached)')+function('void TickBbscWorldPlayers()')+MAIN,encoding='utf-8')
+        cpp.write_text(original+PREFIX+admission_source()+player_functions()+MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-O2','-I',tmp,'-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         result=subprocess.run([str(exe)],env=env)

@@ -109,8 +109,21 @@ int main(){
  World::Control lease;lease.scope=cup;lease.owner=22;lease.epoch=2;
  assert(bbsc_independent_owners.Take(11,lease,now));
  const auto untouched=lamp_backing;groups[12900].fill(0xA5);const auto alias=groups[12900];
+ // Simulate an older owner sending an unfiltered private bit and unused bytes.
+ BbscWorldFlagPart older{};
+ std::memcpy(&older,updates.front().payload.data(),sizeof(older));
+ flag(older.groups[0].data(),999);
+ std::memcpy(updates.front().payload.data(),&older,sizeof(older));
+ std::memcpy(&older,updates.back().payload.data(),sizeof(older));
+ older.groups.back().fill(0xFF);
+ std::memcpy(updates.back().payload.data(),&older,sizeof(older));
  for(const auto& update:updates)bbsc_independent_incoming.push_back(update);
  TickBbscWorldSnapshots();assert(has((const u8*)live(1,0),94));
+ assert(packets.size()==4);
+ std::memcpy(&older,packets.front().payload.data(),sizeof(older));
+ assert(has(older.groups[0].data(),94)&&!has(older.groups[0].data(),999));
+ std::memcpy(&older,packets.back().payload.data(),sizeof(older));
+ assert(older.groups.back()==(std::array<u8,125>{}));
  assert(has((const u8*)live(1,1),800)&&groups[12900]==alias);
  for(int slot=0;slot<7;++slot)if(slot!=1)for(u32 kind:{1u,6u,7u})for(u32 group=0;group<10;++group){
   const u64 ptr=BbscWorldNativeAltarGroup(slot,kind,group);const auto off=ptr-addr(lamp_backing);
@@ -150,6 +163,8 @@ def run(negative=None):
                           'int sends=0;void BbscWorldSend(const World::Control&,std::span<const u8>);')
     prefix=prefix.replace('return static_cast<u32>((Chalice::IsMap(map)?12900:20000)+i);',
                           'return Chalice::IsMap(map)?std::array<u32,3>{1,6,7}[i/10]*10000+2900+i%10:20000+i;')
+    prefix+='\nbool BbscNativeFinaleCommitted(){return false;}\n'
+    prefix+='void MaskBbscSharedFlagGroup(u32 key,u8* flags){if(key==12900)flags[124]&=0xFE;}\n'
     code=prefix+PREFIX+SOURCE[SOURCE.index('struct BbscWorldAltar {'):SOURCE.index('void BbscWorldRememberProgress(')]
     for sig in ('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)',
                 'void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)',

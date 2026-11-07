@@ -26,6 +26,8 @@ code=r'''
 #include <vector>
 #include <tuple>
 #include <map>
+#include "core/bbsc_quest_event_rules.h"
+namespace QuestRules=Core::Bloodborne::QuestRules;
 using u64=uint64_t;using u32=uint32_t;using s32=int32_t;using s64=int64_t;using u8=uint8_t;
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 #define LOG_INFO(...)
@@ -63,7 +65,8 @@ void stub(u64 off,u64 target){unsigned char bytes[12]={0x48,0xb8};memcpy(bytes+2
 code += 'struct BbscScriptedPickup { u32 map; s64 event; bool client_gate; };\n'
 code += re.search(r'constexpr std::array<BbscScriptedPickup, \d+> BbscScriptedPickups\{\{.*?\}\};',s,re.S).group()+'\n'
 code += re.search(r'constexpr std::array<[^;]+ BbscNpcQuestFlags\{.*?\};',s,re.S).group()+'\n'
-code += 'bool bbsc_npc_own_active=true;std::mutex bbsc_npc_own_mutex;std::map<u32,u8> bbsc_npc_own;\n'
+code += ('bool bbsc_npc_own_active=true;std::mutex bbsc_npc_own_mutex;std::map<u32,u8> bbsc_npc_own;\n'
+         'std::map<u32,std::array<u8,125>> bbsc_npc_checked_groups;\n')
 for signature in ['bool IsBbscScriptedPickupFlag(u32 flag)',
                   'bool IsBbscKidnapFlag(u32 flag)',
                   'bool IsBbscNativeItemStateFlag(u32 flag)',
@@ -110,7 +113,7 @@ int main(){
 with tempfile.TemporaryDirectory(prefix='bbsc-cainhurst-') as tmp:
     cpp,exe=Path(tmp)/'test.cpp',Path(tmp)/'test.exe';cpp.write_text(code,encoding='utf-8')
     compiler=os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
-    subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
+    subprocess.run([compiler,'-std=c++20','-I',str(root/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
     env=dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     subprocess.run([str(exe)],check=True,env=env,timeout=10)
 flags=s.split('BbscNpcQuestFlags{',1)[1].split('};',1)[0]

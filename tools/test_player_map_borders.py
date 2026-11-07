@@ -110,8 +110,7 @@ def main():
             cpp, exe = Path(tmp)/'border.cpp', Path(tmp)/'border.exe'
             cpp.write_text(life.PREFIX + life.admission_source() +
                            life.function('bool BbscWorldTaskHere(u64 task)') +
-                           life.function('u64 BbscWorldPlayerMesh(u64 world,u64 chr,bool& detached)') +
-                           life.function('void TickBbscWorldPlayers()') + MAIN, encoding='utf-8')
+                           life.player_functions() + MAIN, encoding='utf-8')
             subprocess.run([compiler, '-std=c++20', '-O2', '-I', tmp, '-I', str(ROOT/'emulator/src'), str(cpp), '-o', str(exe)], check=True)
             result = subprocess.run([str(exe)], env=env)
             assert (result.returncode != 0) if old else (result.returncode == 0)

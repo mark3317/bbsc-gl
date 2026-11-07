@@ -59,7 +59,8 @@ u8 bbsc_transition_event_skip=0;bool bbsc_npc_pass_due=false,bbsc_npc_own_active
 int other_passes=0;
 void EnableBbscScriptedPickupEvent(u64){++other_passes;}
 void HideBbscNativeKitGift(u64){}
-void LocalizeBbscQuestEvent(u64){}
+struct BbscQuestRange;
+void LocalizeBbscQuestEvent(u64,const BbscQuestRange*){}
 void RevertBbscNpcOwnFlags(){}
 bool GuardBbscSharedFinaleEvent(u64){return false;}
 bool GuardBbscWorldBootstrap(u64){return false;}
@@ -73,7 +74,7 @@ bool BbscGuestInHostWorld(){return false;}
 bool IsBbscPersonalMapEvent(s64){return false;}
 bool IsBbscChaliceBossRewardEvent(s64){return false;}
 namespace Chalice{bool IsMap(u32){return false;}}
-''' + source[source.index('struct BbscQuestRange {'):source.index('void LocalizeBbscQuestEvent(u64 instance) {', source.index('struct BbscQuestRange {'))] + function('s64 BbscEventIdOf(u64 instance)') + function('void PS4_SYSV_ABI BbscLocalTransitionActionHook(u64, const GuestRegisterSnapshot* registers)') + function('bool GuardBbscLocalTransitionTrigger(u64 instance)') + '\n' + '\n' + function(
+''' + source[source.index('struct BbscQuestRange {'):source.index('void LocalizeBbscQuestEvent(u64 instance, const BbscQuestRange* range) {', source.index('struct BbscQuestRange {'))] + function('s64 BbscEventIdOf(u64 instance)') + function('void PS4_SYSV_ABI BbscLocalTransitionActionHook(u64, const GuestRegisterSnapshot* registers)') + function('bool GuardBbscLocalTransitionTrigger(u64 instance)') + '\n' + '\n' + function(
     'void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)') + r'''
 int main(){
  alignas(8) u8 inst[0xC0]{},ref[0x10]{};

@@ -51,7 +51,9 @@ code = r'''
 #include <cstring>
 #include <vector>
 #include "core/bbsc_chalice.h"
+#include "core/bbsc_quest_event_rules.h"
 namespace Chalice=Core::Bloodborne::Chalice;
+namespace QuestRules=Core::Bloodborne::QuestRules;
 using u8=uint8_t;using u32=uint32_t;
 constexpr size_t BbscWorldGroupBytes=125;
 constexpr std::array<u32,1> BbscEncounterProgressFlags{12804800};

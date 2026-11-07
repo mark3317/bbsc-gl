@@ -20,6 +20,7 @@ code=r'''
 #include <bit>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -27,6 +28,8 @@ code=r'''
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "core/bbsc_quest_event_rules.h"
+namespace QuestRules=Core::Bloodborne::QuestRules;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s64=int64_t;
 #define LOG_INFO(...)
 #define BBSC_TIMELINE(...)
@@ -38,9 +41,11 @@ struct Loot{std::array<u8,125> taken{},written{};};
 std::map<u32,Loot> bbsc_loot_groups;
 std::string bbsc_loot_dungeon;
 std::mutex bbsc_npc_own_mutex;std::unordered_map<u32,u8> bbsc_npc_own;
+std::unordered_map<u32,std::array<u8,BbscWorldGroupBytes>> bbsc_npc_checked_groups;
 std::unordered_map<u32,bool> bbsc_action_owner;
 int own_writes=0,loot_writes=0;
 int read_checks=0,group_resolves=0;
+int checked_flags=0;
 bool readable_groups=true;
 void WriteBbscOwnWorldFile(){++own_writes;}
 void WriteBbscGuestLootFile(){++loot_writes;}
@@ -61,12 +66,17 @@ for signature in ['bool IsBbscGlobalLootReceipt(u32 flag)',
                   'bool IsBbscScriptedPickupFlag(u32 flag)',
                   'bool IsBbscKidnapFlag(u32 flag)',
                   'bool IsBbscNativeItemStateFlag(u32 flag)',
+                  'bool IsBbscNpcQuestFlag(u32 flag)',
+                  'void NoteBbscNpcOwnFlag(u32 flag, u8 value)',
                   'void SetBbscNpcFlagBit(u64 storage, u32 flag, bool on)',
                   'void MarkBbscTakenInOwnWorld(u32 key, size_t byte, u8 bits)',
                   'void RecordBbscNativeItemFlag(u32 flag, u8 value)',
                   'void RevertBbscNpcOwnFlags()',
                   'void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live)']:
-    code+=fun(signature)
+    source=fun(signature)
+    if signature.startswith('bool IsBbscNativeItemStateFlag('):
+        source=source.replace('{', '{\n    ++checked_flags;', 1)
+    code+=source
 code+=r'''
 enum class BbscLedgerSource{Pickup,Award,Boss};
 struct BbscLedgerContext{BbscLedgerSource source;s64 lot;u32 flag,gives;bool check;};
@@ -90,6 +100,19 @@ bool bit(const std::map<u32,std::array<u8,125>>& table,u32 f){
  auto p=table.find(f/1000);return p!=table.end()&&(p->second[f%1000/8]&(0x80u>>(f%8)));
 }
 int main(){
+ // Incoming snapshots can neither grant nor clear a local Eileen completion,
+ // including the initial snapshot before the quest guard is active.
+ for(bool active:{false,true}){
+  bbsc_npc_own_active=active;
+  for(u32 event:{12400651u,12400652u,12410809u}){
+   std::array<u8,125> local{},incoming{};
+   const u32 byte=(event%1000)/8;const u8 mask=0x80u>>(event%8);
+   incoming[byte]=mask;
+   KeepBbscNpcOwnBits(event/1000,local.data(),incoming.data());assert(!(incoming[byte]&mask));
+   local[byte]=mask;
+   KeepBbscNpcOwnBits(event/1000,local.data(),incoming.data());assert(incoming[byte]&mask);
+  }
+ }
  // Abduction progress is native and personal, including event-completion writes
  // outside SetFlag. A host snapshot cannot grant or erase the visitor's first trip.
  for(u32 f=9420;f<=9423;++f){
@@ -115,6 +138,7 @@ int main(){
  std::array<u8,125> before{};incoming.fill(0xff);
  KeepBbscNpcOwnBits(ritual/1000,before.data(),incoming.data());
  assert(!(incoming[ritual%1000/8]&(0x80u>>(ritual%8))));
+ bbsc_npc_own[ritual]=1; // restore the observed value after the stale-cache test
  // Other personal NPC states still reject a remote change.
  u32 npc=1325;
  assert(npc);bbsc_npc_own[npc]=0;set(live,npc,true);RevertBbscNpcOwnFlags();assert(!bit(live,npc));
@@ -144,19 +168,40 @@ int main(){
  RecordBbscNativeItemFlag(foreign,1);assert(!bit(bbsc_own_world,foreign));bbsc_loot_dungeon.clear();
  guest=false;RecordBbscNativeItemFlag(foreign,1);assert(!bit(bbsc_own_world,foreign));guest=true;
  RecordBbscNativeItemFlag(foreign,0);assert(!bit(bbsc_own_world,foreign));
- // Warm unchanged passes retain protection but do not validate every bit again.
- RevertBbscNpcOwnFlags();read_checks=group_resolves=0;RevertBbscNpcOwnFlags();
- assert(read_checks==0 && group_resolves>0 && group_resolves<BbscNpcQuestFlags.size());
- bbsc_npc_own[npc]=0;set(live,npc,true);readable_groups=false;
+ // Fully loaded synthetic table, including groups absent from the above cases.
+ for(u32 flag:BbscNpcQuestFlags)if(flag>=1000)live.try_emplace(flag/1000);
+ checked_flags=0;RevertBbscNpcOwnFlags();assert(checked_flags>0);
+ const auto all_flags=std::ranges::count_if(BbscNpcQuestFlags,[](u32 flag){return flag>=1000;});
+ checked_flags=read_checks=group_resolves=0;RevertBbscNpcOwnFlags();
+ const auto groups=group_resolves;
+ assert(read_checks==0&&checked_flags==0&&groups==(int)bbsc_npc_checked_groups.size());
+ // A native write that bypasses SetFlag, between tick and EMEVD, touches one group.
+ set(live,npc,true);checked_flags=0;RevertBbscNpcOwnFlags();assert(!bit(live,npc));
+ const auto group_flags=std::ranges::count_if(BbscNpcQuestFlags,[&](u32 flag){return flag/1000==npc/1000;});
+ assert(checked_flags==group_flags);
+ checked_flags=0;RevertBbscNpcOwnFlags();assert(checked_flags==0);
+ // SetFlag can update the desired value even if a native write restores the old byte
+ // before the next pass. Its notification must invalidate an otherwise warm group.
+ set(live,npc,true);NoteBbscNpcOwnFlag(npc,1);set(live,npc,false);
+ RevertBbscNpcOwnFlags();assert(bit(live,npc));
+ // A direct native completion must also become visible with the group warmed.
+ set(live,ritual,false);RevertBbscNpcOwnFlags();assert(journal.back()==std::pair(ritual,u8(0)));
+ set(live,ritual,true);RevertBbscNpcOwnFlags();assert(journal.back()==std::pair(ritual,u8(1)));
+ // Memory can become inaccessible or be replaced on reload.
+ NoteBbscNpcOwnFlag(npc,0);set(live,npc,true);readable_groups=false;
  RevertBbscNpcOwnFlags();assert(bit(live,npc)&&bbsc_npc_own[npc]==0);
  readable_groups=true;RevertBbscNpcOwnFlags();assert(!bit(live,npc));
+ auto previous=live.extract(npc/1000);set(live,npc,true);
+ RevertBbscNpcOwnFlags();assert(!bit(live,npc));
+ printf("PASS personal flags: %td protected flags in %d groups, 0 rechecked unchanged, %td on one changed group\n",
+        all_flags,groups,group_flags);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-native-pickup-state-') as folder:
     path=Path(folder);cpp=path/'fixture.cpp';exe=path/'fixture.exe'
     cpp.write_text(code,encoding='utf-8')
     compiler='C:/msys64/clang64/bin/clang++.exe'
-    subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
+    subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
     env=dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     subprocess.run([str(exe)],env=env,check=True)
 print('PASS: native completion not rolled back, remote NPC isolation, immediate exact pickup '

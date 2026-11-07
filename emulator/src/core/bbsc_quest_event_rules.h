@@ -3,10 +3,14 @@
 #include <array>
 #include <cstdint>
 namespace Core::Bloodborne::QuestRules {
-inline constexpr std::array<std::int64_t, 69> LocalEvents{
+inline constexpr std::array<std::int64_t, 84> LocalEvents{
     9722, // common.emevd.dcx
     9723, // common.emevd.dcx
     9781, // common.emevd.dcx
+    12300700, // m23_00_00_00.emevd.dcx
+    12300701, // m23_00_00_00.emevd.dcx
+    12300702, // m23_00_00_00.emevd.dcx
+    12300704, // m23_00_00_00.emevd.dcx
     12400500, // m24_00_00_00.emevd.dcx
     12400501, // m24_00_00_00.emevd.dcx
     12400520, // m24_00_00_00.emevd.dcx
@@ -24,11 +28,18 @@ inline constexpr std::array<std::int64_t, 69> LocalEvents{
     12400624, // m24_00_00_00.emevd.dcx
     12400630, // m24_00_00_00.emevd.dcx
     12400650, // m24_00_00_00.emevd.dcx
+    12400651, // m24_00_00_00.emevd.dcx
+    12400652, // m24_00_00_00.emevd.dcx
     12400655, // m24_00_00_00.emevd.dcx
     12400800, // m24_00_00_00.emevd.dcx
     12400900, // m24_00_00_00.emevd.dcx
     12400903, // m24_00_00_00.emevd.dcx
+    12400904, // m24_00_00_00.emevd.dcx
     12400954, // m24_00_00_00.emevd.dcx
+    12410653, // m24_01_00_00.emevd.dcx
+    12410654, // m24_01_00_00.emevd.dcx
+    12410655, // m24_01_00_00.emevd.dcx
+    12410659, // m24_01_00_00.emevd.dcx
     12410676, // m24_01_00_00.emevd.dcx
     12410701, // m24_01_00_00.emevd.dcx
     12410702, // m24_01_00_00.emevd.dcx
@@ -51,12 +62,15 @@ inline constexpr std::array<std::int64_t, 69> LocalEvents{
     12410803, // m24_01_00_00.emevd.dcx
     12410804, // m24_01_00_00.emevd.dcx
     12410809, // m24_01_00_00.emevd.dcx
+    12410810, // m24_01_00_00.emevd.dcx
+    12410811, // m24_01_00_00.emevd.dcx
     12410812, // m24_01_00_00.emevd.dcx
     12410813, // m24_01_00_00.emevd.dcx
     12410814, // m24_01_00_00.emevd.dcx
     12410830, // m24_01_00_00.emevd.dcx
     12410831, // m24_01_00_00.emevd.dcx
     12500050, // m25_00_00_00.emevd.dcx
+    12600029, // m26_00_00_00.emevd.dcx
     12700700, // m27_00_00_00.emevd.dcx
     12700701, // m27_00_00_00.emevd.dcx
     12700720, // m27_00_00_00.emevd.dcx
@@ -73,6 +87,7 @@ inline constexpr std::array<std::int64_t, 69> LocalEvents{
     13500998, // m35_00_00_00.emevd.dcx
     13600942, // m36_00_00_00.emevd.dcx
     13600944, // m36_00_00_00.emevd.dcx
+    13600955, // m36_00_00_00.emevd.dcx
 };
 inline constexpr std::array<std::uint32_t, 40> ScriptedLotFlags{
     5051,
@@ -116,4 +131,83 @@ inline constexpr std::array<std::uint32_t, 40> ScriptedLotFlags{
     50003505,
     72410410,
 };
+
+// Preserve the native completion bits of local NPC events on incoming map snapshots.
+inline void KeepLocalNpcCompletion(std::uint32_t key, const std::uint8_t* before,
+                                   std::uint8_t* live) {
+    const auto keep = [&](unsigned byte, std::uint8_t mask) {
+        live[byte] = (live[byte] & ~mask) | (before[byte] & mask);
+    };
+    switch (key) {
+    case 9:
+        keep(90, 0x30);
+        keep(97, 0x04);
+        break;
+    case 12300:
+        keep(87, 0x0E);
+        keep(88, 0x80);
+        break;
+    case 12400:
+        keep(62, 0x0C);
+        keep(65, 0xC0);
+        keep(66, 0x10);
+        keep(70, 0xDC);
+        keep(73, 0x02);
+        keep(76, 0x30);
+        keep(77, 0x02);
+        keep(78, 0x82);
+        keep(81, 0x39);
+        keep(100, 0x80);
+        keep(112, 0x09);
+        keep(113, 0x80);
+        keep(119, 0x20);
+        break;
+    case 12410:
+        keep(81, 0x07);
+        keep(82, 0x10);
+        keep(84, 0x08);
+        keep(87, 0x07);
+        keep(89, 0x40);
+        keep(91, 0x02);
+        keep(92, 0xA0);
+        keep(93, 0xC8);
+        keep(95, 0xF0);
+        keep(98, 0x60);
+        keep(100, 0xD8);
+        keep(101, 0x7E);
+        keep(103, 0x03);
+        break;
+    case 12500:
+        keep(6, 0x20);
+        break;
+    case 12600:
+        keep(3, 0x04);
+        break;
+    case 12700:
+        keep(87, 0x0C);
+        keep(90, 0x80);
+        keep(112, 0x04);
+        break;
+    case 12701:
+        keep(0, 0xE0);
+        break;
+    case 12800:
+        keep(112, 0x04);
+        keep(113, 0x21);
+        break;
+    case 13400:
+        keep(118, 0x02);
+        break;
+    case 13500:
+        keep(118, 0x02);
+        keep(120, 0x80);
+        keep(124, 0x02);
+        break;
+    case 13600:
+        keep(117, 0x02);
+        keep(118, 0x80);
+        keep(119, 0x10);
+        break;
+    }
+}
 } // namespace Core::Bloodborne::QuestRules

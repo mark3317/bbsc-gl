@@ -17,6 +17,8 @@ from emevd import Emevd
 evd=Emevd(Path(os.environ['BB_GAME'])/'event/m32_00_00_00.emevd.dcx')
 original=dict(evd.events)[13201803]
 assert original[40:42]==[(2003,2,struct.pack('<2I',9180,1)),(1001,1,struct.pack('<I',1))]
+assert original[39]==(0,0,bytes.fromhex('00 01 08 00'))
+assert original[49]==(3,0,struct.pack('<II',256,6001))
 assert original[42:47]==[
     (2002,7,struct.pack('<4I',32000000,0,10000,3)),
     (1001,1,struct.pack('<I',1)),
@@ -90,11 +92,13 @@ alignas(8) std::array<u8,0x30> cond{},node{};
 alignas(8) std::array<u8,0x10> ref{};
 alignas(8) u8 file[]={ROM_EVD}, cathedral[]={AMELIA_EVD};
 u64 active_file=0;
-bool playing=false;int movies=0,warps=0,clears=0;u32 destination=0;
+bool playing=false,trigger_waiting=false;int movies=0,warps=0,clears=0;u32 destination=0;
 std::vector<std::pair<u32,u32>> flags;
-void PS4_SYSV_ABI Clear(u64 tree){++clears;WriteValue<u64>(tree-0x30,0x40,0);}
+void PS4_SYSV_ABI Clear(u64 tree){
+ ++clears;trigger_waiting=false;WriteValue<u64>(tree,0,0);WriteValue<u64>(tree,0x10,0);
+}
 void PS4_SYSV_ABI Update(u64,u64,u64){
- if(!playing && ReadValue<u64>((u64)inst.data(),0x40))WriteValue<u8>((u64)cond.data(),0x10,1);
+ if(!playing && !trigger_waiting && ReadValue<u64>((u64)inst.data(),0x40))WriteValue<u8>((u64)cond.data(),0x10,1);
 }
 void PS4_SYSV_ABI Send(u64){}
 void PS4_SYSV_ABI Finish(u64,u32){}
@@ -114,12 +118,17 @@ void PS4_SYSV_ABI Insert(u64 tree,u64,u64 c){
 void PS4_SYSV_ABI Dispatch(u64 manager,u64 p){
  const u64 instruction=ReadValue<u64>(p,0xB0),f=active_file;
  s32 bank=ReadValue<s32>(instruction,0),cmd=ReadValue<s32>(instruction,4);
+ const s32 step=ReadValue<s32>(p,0xA0);
  const u64 args=f+ReadValue<u64>(f,0x78)+ReadValue<u64>(instruction,0x10);
  if(bank==2002&&(cmd==6||cmd==7)){using Bank=u8 PS4_SYSV_ABI (*)(u64,u64);((Bank)(image_base+0x17C53B0))(manager,p);}
  else if(bank==1001&&cmd==1){assert(!playing&&ReadValue<u32>(args,0)==1);WriteValue<u8>(p,0xC4,0);}
  else if(bank==2003&&cmd==2){assert(!playing);flags.emplace_back(ReadValue<u32>(args,0),ReadValue<u32>(args,4));}
  else if(bank==2003&&cmd==49){assert(!playing);++warps;destination=ReadValue<u32>(args,0);WriteValue<u8>(p,0xC4,0);}
  else if(bank==2006&&cmd==1){assert(!playing&&ReadValue<u32>(args,0)==2403413&&ReadValue<u32>(args,4)==1);}
+ else if(cmd==0&&((bank==0&&(step==9||step==39))||(bank==3&&step==49))){
+  cond.fill(0);Insert(p+0x30,0,(u64)cond.data());WriteValue<u64>(p,0x30,(u64)node.data());
+  trigger_waiting=true;WriteValue<u8>(p,0xC4,0);
+ }
  else assert(false);
 }
 ''' + production + phase_data + r'''
@@ -133,13 +142,13 @@ u64 BbscFlagGroupStorage(u32 key){assert(key==9);return (u64)time_group.data();}
 void KeepBbscOwnTimeBits(){}
 void WriteBbscOwnWorldFile(){++time_journal_writes;}
 ''' + apply_time + r'''
-void Reset(bool amelia=false){
+void Reset(bool amelia=false,int participant=6){
  inst.fill(0);cond.fill(0);node.fill(0);ref.fill(0);++bbsc_load_generation;
  bbsc_rom_transition={};bbsc_world_presence_local.world={11,99};
  bbsc_rom_movie_visit={};bbsc_amelia_movie_world={};time_journal_writes=0;
- role=6;map=amelia?0x18000000:0x20000000;allowed=true;writable=true;
+ role=participant;map=amelia?0x18000000:0x20000000;allowed=true;writable=true;
  event_id=amelia?12401803:13201803;
- playing=false;movies=warps=clears=0;flags.clear();now=1000;
+ playing=trigger_waiting=false;movies=warps=clears=0;flags.clear();now=1000;
  bbsc_host_time_bits=0xC0;bbsc_host_time_ms=now;
  active_file=amelia?(u64)cathedral:(u64)file;
  const u64 f=active_file,p=(u64)inst.data();u64 row=0;
@@ -148,7 +157,8 @@ void Reset(bool amelia=false){
   if(ReadValue<s64>(r,0)==event_id){row=r;break;}}
  assert(row);WriteValue<s32>(p,0x60,20000);WriteValue<u64>((u64)ref.data(),8,f);
  WriteValue<u64>(p,0x80,(u64)ref.data());WriteValue<u64>(p,0x88,row);
- const s32 waiting=amelia?9:49;
+ const s32 waiting=amelia?9:(role==3?39:49);
+ WriteValue<s32>(p,0x48,waiting);WriteValue<s32>(p,0xC0,1);
  WriteValue<u64>(p,0xA8,(u64)ref.data());WriteValue<s32>(p,0xA0,waiting);
  WriteValue<u64>(p,0xB0,f+ReadValue<u64>(f,0x28)+ReadValue<u64>(row,0x10)+waiting*0x20);
 }
@@ -166,19 +176,27 @@ int main(){
  Jump(0x12EBFF0,(void*)&Clear);Jump(0x12EC380,(void*)&Update);Jump(0x12EC4A0,(void*)&Update);
  Jump(0x12EE540,(void*)&Send);Jump(0x17B93A0,(void*)&Dispatch);
  Jump(0x131C170,(void*)&Movie);Jump(0x131BC10,(void*)&AmeliaMovie);Jump(0x12EC230,(void*)&Insert);
- Reset();u64 p=(u64)inst.data();assert(QueueBbscRomNativeTransition(32000000));
- EnableBbscRomNativeTransition(p);assert(!bbsc_rom_transition.pending&&clears==1);
- assert(ReadValue<s32>(p,0xA0)==40&&ReadValue<u8>(p,0x78)==0);
+ const u64 p=(u64)inst.data();
  using Tick=void PS4_SYSV_ABI (*)(u64,u64);auto tick=(Tick)(image_base+0x12ECDC0);
  std::array<u8,16> frame{};
- tick(p,(u64)frame.data());assert(movies==0);
- tick(p,(u64)frame.data());assert(movies==1&&playing&&warps==0&&flags.size()==1);
- assert(bbsc_rom_transition.delegated);assert(QueueBbscRomNativeTransition(32000000));
- EnableBbscRomNativeTransition(p);assert(ReadValue<s32>(p,0xA0)==43&&movies==1);
- for(int i=0;i<10;++i){tick(p,(u64)frame.data());assert(warps==0&&flags.size()==1);}
- playing=false;tick(p,(u64)frame.data());assert(warps==0); // original WaitFrames(1)
- tick(p,(u64)frame.data());assert(warps==1&&destination==2802958);
- assert((flags==std::vector<std::pair<u32,u32>>{{9180,1},{9180,0},{70002802,1}}));
+ for (int participant:{3,6}) {
+  Reset(false,participant);
+  tick(p,(u64)frame.data()); // Host region wait or the guest's original flag wait.
+  assert(trigger_waiting&&ReadValue<s32>(p,0xA0)==(role==3?40:50)&&flags.empty());
+  const int before_delegation=clears;
+  assert(QueueBbscRomNativeTransition(32000000));
+  EnableBbscRomNativeTransition(p);
+  assert(!trigger_waiting&&!bbsc_rom_transition.pending&&clears==before_delegation+1);
+  assert(ReadValue<s32>(p,0xA0)==40&&ReadValue<u8>(p,0x78)==0);
+  tick(p,(u64)frame.data());assert(movies==0);
+  tick(p,(u64)frame.data());assert(movies==1&&playing&&warps==0&&flags.size()==1);
+  assert(bbsc_rom_transition.delegated);assert(QueueBbscRomNativeTransition(32000000));
+  EnableBbscRomNativeTransition(p);assert(ReadValue<s32>(p,0xA0)==43&&movies==1);
+  for(int i=0;i<10;++i){tick(p,(u64)frame.data());assert(warps==0&&flags.size()==1);}
+  playing=false;tick(p,(u64)frame.data());assert(warps==0); // original WaitFrames(1)
+  tick(p,(u64)frame.data());assert(warps==1&&destination==2802958);
+  assert((flags==std::vector<std::pair<u32,u32>>{{9180,1},{9180,0},{70002802,1}}));
+ }
  // Feature/role/map/scene/world fences never create an unsolicited group trip.
  for(int what=0;what<5;++what){Reset();
   if(what==0)allowed=false;if(what==1)role=0;if(what==2)map=0x18000000;
@@ -195,13 +213,15 @@ int main(){
  writable=true;event_id=13200310;EnableBbscRomNativeTransition(p);assert(ReadValue<s32>(p,0xA0)==49);
  event_id=13201803;EnableBbscRomNativeTransition(p);assert(ReadValue<s32>(p,0xA0)==40);
 
- // Guest can initiate either scene; the host takes the same native path.
- Reset();role=3;assert(QueueBbscRomNativeTransition(32000000));
- EnableBbscRomNativeTransition(p);assert(ReadValue<s32>(p,0xA0)==40);
  for (int participant:{3,6}) {
-  Reset(true);role=participant;assert(QueueBbscRomNativeTransition(24000030));
+  Reset(true,participant);
+  tick(p,(u64)frame.data()); // Native scheduler advances past the unsatisfied skull action.
+  assert(trigger_waiting&&ReadValue<s32>(p,0xA0)==10&&flags.empty());
+  tick(p,(u64)frame.data());assert(trigger_waiting&&movies==0&&flags.empty());
+  const int before_delegation=clears;
+  assert(QueueBbscRomNativeTransition(24000030));
   EnableBbscRomNativeTransition(p);
-  assert(clears==1&&ReadValue<s32>(p,0xA0)==10);
+  assert(!trigger_waiting&&clears==before_delegation+1&&ReadValue<s32>(p,0xA0)==10);
   tick(p,(u64)frame.data());assert(movies==0);
   tick(p,(u64)frame.data());assert(movies==1&&playing&&warps==0);
   for(int i=0;i<3;++i)tick(p,(u64)frame.data());
@@ -209,6 +229,16 @@ int main(){
   playing=false;tick(p,(u64)frame.data());tick(p,(u64)frame.data());
   assert((flags==std::vector<std::pair<u32,u32>>{{9180,1},{9180,0}}));
  }
+ Reset(true);assert(QueueBbscRomNativeTransition(24000030));
+ EnableBbscRomNativeTransition(p); // Packet arrives before the action wait is registered.
+ assert(!bbsc_rom_transition.pending&&ReadValue<s32>(p,0xA0)==10);
+ Reset(true);tick(p,(u64)frame.data());trigger_waiting=false; // Local player interacts first.
+ tick(p,(u64)frame.data());tick(p,(u64)frame.data());assert(movies==1&&playing);
+ const auto remo_condition=ReadValue<u64>(p,0x40);
+ const int before_late_packet=clears;
+ assert(remo_condition&&QueueBbscRomNativeTransition(24000030));
+ EnableBbscRomNativeTransition(p);
+ assert(bbsc_rom_transition.delegated&&clears==before_late_packet&&ReadValue<u64>(p,0x40)==remo_condition);
 
  // The original movie can change phase before the group packet is handled.
  // Model that native write, then run the real synchronization at each boundary.
@@ -259,8 +289,8 @@ int main(){
 }
 '''
 if negative:
-    code=code.replace('Reset();u64 p=(u64)inst.data();assert(QueueBbscRomNativeTransition(32000000));',
-        'Reset();u64 p=(u64)inst.data();Movie(0,32000000,0,0,0,10000,3);playing=false;assert(warps==1);')
+    code=code.replace('  assert(QueueBbscRomNativeTransition(32000000));\n  EnableBbscRomNativeTransition(p);',
+        '  Movie(0,32000000,0,0,0,10000,3);playing=false;assert(warps==1);')
 for key,data in [('ROM_EVD',evd.data),('AMELIA_EVD',cathedral.data),('ITERATOR',elf[0x12EF2E0:0x12EF50B]),
                  ('EVENT',elf[0x12ECDC0:0x12ECFD2]),('BANK',elf[0x17C53B0:0x17C5B70])]:
     code=code.replace(key,','.join(str(b) for b in data))

@@ -746,6 +746,28 @@ u64 BbscWorldPlayerMesh(u64 world,u64 chr,bool& detached) {
     return detached?0:parts;
 }
 
+bool DetachBbscWorldPlayerMember(u64 chr) {
+    const u64 child = ReadValue<u64>(chr, 0x60);
+    const u64 table = ReadablePointer(child, 8) ? ReadValue<u64>(child, 0) : 0;
+    if (!IsValidMemberId(chr + 0x3D8) || !ReadablePointer(table, 0xD8) ||
+        !IsEbootCodeAddress(ReadValue<u64>(table, 0xD0))) {
+        return false;
+    }
+
+    // Use the native empty MemberId as CSMultiPlayerIns.Delete does for a
+    // retained actor. SetMemberId forwards it to the movement receiver too.
+    // WorldChrMan.Remove defers destruction, so removal alone leaves the old
+    // actor able to consume the new actor's endpoint queue.
+    alignas(8) std::array<u8, 0x20> empty_member;
+    const u64 member = reinterpret_cast<u64>(empty_member.data());
+    using MemberLifetime = void PS4_SYSV_ABI (*)(u64);
+    using SetMember = void PS4_SYSV_ABI (*)(u64, u64);
+    reinterpret_cast<MemberLifetime>(image_base + 0x00CA1440)(member);
+    reinterpret_cast<SetMember>(image_base + 0x018F27C0)(chr, member);
+    reinterpret_cast<MemberLifetime>(image_base + 0x00CA1570)(member);
+    return true;
+}
+
 // Native character presence is paired with native member binding/recreation.
 // Reconcile all resident actors, including copies whose insert task is absent.
 void TickBbscWorldPlayers() {
@@ -861,23 +883,29 @@ void TickBbscWorldPlayers() {
             }
         }
         if(action.insert){
-            if(HasMemoryAccess(task+0xED,1,MemoryProt::CpuWrite)){
+            if(HasMemoryAccess(task+0xED,1,MemoryProt::CpuWrite) &&
+               ReadablePointer(world,0x68) && IsValidMemberId(task+0xC8) &&
+               ReadValue<u64>(task,0xC8)){
+                const u64 retiring = FindBbscRemotePlayer(world, task);
+                // The relay may temporarily lack a registration for an actor
+                // that still owns this native member's movement queue.
+                if (chr && chr != retiring) continue;
                 // Same per-character removal used by native CSMultiPlayerIns.Delete
                 // at01E50C54. Keep the session/member task; never run bulk cleanup.
-                if(chr && chr!=GetLocalPlayerCharacter()){
+                if(retiring){
                     const u64 arrivals=ReadablePointer(global,0x1700)?ReadValue<u64>(global,0x16F8):0;
-                    if(!ReadablePointer(arrivals,0x18))continue;
+                    if(!ReadablePointer(arrivals,0x18) || !DetachBbscWorldPlayerMember(retiring))continue;
                     // Native Delete clears the per-handle arrival before freeing
                     // PlayerIns (01E50C19 -> 01E50C54). Handles are reused.
                     using ClearArrival=void PS4_SYSV_ABI (*)(u64,u32);
-                    reinterpret_cast<ClearArrival>(image_base+0x015BC080)(arrivals,ReadValue<u32>(chr,8));
+                    reinterpret_cast<ClearArrival>(image_base+0x015BC080)(arrivals,ReadValue<u32>(retiring,8));
                     using Remove=void PS4_SYSV_ABI (*)(u64,u64);
-                    reinterpret_cast<Remove>(image_base+0x019186E0)(world,chr);
+                    reinterpret_cast<Remove>(image_base+0x019186E0)(world,retiring);
                 }
                 ArmBbscWorldPlayerAdmission(task,peer,local,in.peer_visit);
                 WriteValue<u8>(task,0xED,ReadValue<u8>(task,0xED)|1);MarkBbscRecreatedMember(task);
                 using Set=void PS4_SYSV_ABI (*)(u64,s32);reinterpret_cast<Set>(image_base+MultiPlayerInsSetStateOffset)(task,4);
-                BBSC_TIMELINE("MODEL","native peer recreation requested peer={:08x} previous_actor={:#x} local_visit={} peer_visit={}",peer,chr,local.visit,in.peer_visit);
+                BBSC_TIMELINE("MODEL","native peer recreation requested peer={:08x} previous_actor={:#x} local_visit={} peer_visit={}",peer,retiring,local.visit,in.peer_visit);
             }
             continue; // native removal invalidated this actor and its render graph
         }

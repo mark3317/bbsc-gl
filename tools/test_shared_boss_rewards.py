@@ -177,18 +177,21 @@ void QueueBbscWork(BbscWork w){bbsc_pending_work.fetch_or((u32)w);}
 std::atomic<bool> bbsc_reward_check_pending{true};bool bbsc_reward_check_complete=false;
 void RequestBbscRewardCheck();
 bool BbscOwnOpeningDone(){return true;}
+bool BbscNativeFinaleCommitted(){return false;}
 bool BackupBbscSaves(){return backup_ok;}
 u64 BbscFlagGroupStorage(u32 key){return (u64)bbsc_progress_groups[key].data();}
 u8 BbscSharedProgressByte(u32,size_t,u8 incoming){return incoming;}
 constexpr u64 EventFlagManPointerOffset=0x553b100;
 '''
-code += decl(r'constexpr std::array<u32, 49> BbscProgressFlags\{.*?\};')
+code += decl(r'constexpr std::array<u32, \d+> BbscProgressFlags\{.*?\};')
 code += decl(r'constexpr std::array<u32, 8> BbscProgressFlagsMore\{.*?\};')
 code += 'std::atomic<int> bbsc_relay_session_state{6};int bbsc_host_time_bits=-1;s64 bbsc_host_time_ms=0;\n'
 code += fun('void RequestBbscRewardCheck()')
 code += fun('void OnBbscProgressPacket(const std::uint32_t* flags, std::size_t count)')
 code += fun('void ProcessBbscRewardCheck()')
 code += fun('bool BbscBossCompletionBitsAdded(u32 key, size_t byte, u8 added)')
+code += decl(r'constexpr std::array<u32, \d+> BbscNpcQuestFlags\{.*?\};')
+code += fun('bool IsBbscNpcQuestFlag(u32 flag)')
 code += fun('std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when)')
 code += r'''
 void PS4_SYSV_ABI NativeAward(u64,s32 lot,u32 host_only){
@@ -214,6 +217,8 @@ void reset(){bbsc_progress_slot.reset();guest=false;bbsc_reward_check_pending=tr
 using Groups=std::map<u32,std::array<u8,125>>;
 void bit(Groups& groups,u32 f){groups[f/1000][f%1000/8]|=0x80u>>(f%8);}
 int main(){
+ for(u32 flag:{5912u,5913u,5914u})
+  assert(std::ranges::find(BbscProgressFlags,flag)==BbscProgressFlags.end());
  image_base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);assert(image_base);
  u64 manager=1;memcpy((void*)(image_base+ItemManPointerOffset),&manager,8);
  u8 jump[]={0x48,0xb8,0,0,0,0,0,0,0,0,0xff,0xe0};u64 fn=(u64)NativeAward;
@@ -289,7 +294,9 @@ code += r'''
  // Shared stage flags cannot confuse Laurence with Ludwig.
  assert(ReconcileBbscSharedBossRewards({3400,3401,3402,3403},{}));assert(calls==0);
  // Ordinary consumables stay excluded even for a new shared victory.
- reset();bbsc_progress_host_flags={9452};assert(MergeBbscSharedProgress("consumable").first==1&&calls==0);
+ reset();bbsc_progress_host_flags={9452,5912,5913,5914};
+ assert(MergeBbscSharedProgress("consumable").first==1&&calls==0);
+ for(u32 flag:{5912u,5913u,5914u}) assert(!flags.contains(flag));
  // Lost shop unlock with an already owned cup in the player's world.
  // Native PARAM ties Ritual Blood1 at2500/unlimited to the cup's get flag5000.
  for(int proof=0;proof<3;++proof){

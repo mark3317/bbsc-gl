@@ -31,6 +31,9 @@ bool HasMemoryAccess(u64 p,size_t,MemoryProt){++queries;return p>0x10000;}
 template<class T>T ReadValue(u64 p,size_t off){T v{};memcpy(&v,(void*)(p+off),sizeof(v));return v;}
 template<class T>bool WriteValue(u64 p,size_t off,T v){memcpy((void*)(p+off),&v,sizeof(v));return true;}
 bool IsBbscPersonalMapEvent(s64 e){return e==7;}
+bool IsBbscNpcQuestFlag(u32){return false;}
+bool IsBbscUniqueChaliceRewardFlag(u32){return false;}
+void RequestBbscRewardCheck(){}
 bool IsBbscChaliceBossRewardEvent(s64){return false;}
 constexpr size_t BbscWorldGroupBytes=125;
 std::mutex bbsc_progress_mutex;
@@ -69,22 +72,22 @@ int main(){
  // Two event ranges: [0,64) personal, [128,192) remote.
  WriteValue<s64>(ev,0,7);WriteValue<u64>(ev,8,2);WriteValue<u64>(ev,0x10,0);
  WriteValue<s64>(ev,0x30,9);WriteValue<u64>(ev,0x38,2);WriteValue<u64>(ev,0x40,128);
- WriteValue<u8>(instance,0x78,1);LocalizeBbscQuestEvent(instance);
+ WriteValue<u8>(instance,0x78,1);LocalizeBbscQuestEvent(instance,LookupBbscQuestRange(instance));
  assert(ReadValue<u8>(instance,0x78)==0&&bbsc_quest_indexes.size()==1);
  WriteValue(instance,0xB0,instructions+128);WriteValue<u8>(instance,0x78,1);
- LocalizeBbscQuestEvent(instance);assert(ReadValue<u8>(instance,0x78)==1);
+ LocalizeBbscQuestEvent(instance,LookupBbscQuestRange(instance));assert(ReadValue<u8>(instance,0x78)==1);
  WriteValue(instance,0xB0,instructions+96);const int before=queries;
- for(int i=0;i<1000;++i)LocalizeBbscQuestEvent(instance);
+ for(int i=0;i<1000;++i)LocalizeBbscQuestEvent(instance,LookupBbscQuestRange(instance));
  assert(queries-before==0); // no full-directory or write validation on a negative hit
  WriteValue(instance,0xB0,instructions+32);WriteValue<s64>(ev,0,9);
- LocalizeBbscQuestEvent(instance);assert(!bbsc_quest_indexes.empty());
- LocalizeBbscQuestEvent(instance);assert(ReadValue<u8>(instance,0x78)==1); // reused event no stale permission
+ LocalizeBbscQuestEvent(instance,LookupBbscQuestRange(instance));assert(!bbsc_quest_indexes.empty());
+ LocalizeBbscQuestEvent(instance,LookupBbscQuestRange(instance));assert(ReadValue<u8>(instance,0x78)==1); // reused event no stale permission
  // Reload / same address, changed table: clear before new map events.
  bbsc_quest_indexes.clear();bbsc_quest_instances.clear();WriteValue<s64>(ev,0,7);
  // Overlap: original first directory row wins, regardless of sorted start.
  WriteValue<u64>(ev,0x10,32);WriteValue<u64>(ev,8,4);
  WriteValue<u64>(ev,0x40,0);WriteValue<u64>(ev,0x38,8);
- WriteValue(instance,0xB0,instructions+64);LocalizeBbscQuestEvent(instance);
+ WriteValue(instance,0xB0,instructions+64);LocalizeBbscQuestEvent(instance,LookupBbscQuestRange(instance));
  assert(ReadValue<u8>(instance,0x78)==0);
 }
 '''

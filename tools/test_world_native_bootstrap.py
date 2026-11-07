@@ -22,6 +22,7 @@ PREFIX=r'''
 #include "core/bbsc_world_control.h"
 #include "core/bbsc_lamp_travel_data.h"
 #include "core/bbsc_world_altars.h"
+#include "core/bbsc_native_sync_test.h"
 using namespace Core::Bloodborne;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define BBSC_TIMELINE(...)
@@ -43,19 +44,21 @@ bool intro_live=false,door_live=false;
 bool ReadablePointer(u64 p,size_t){return p!=0;}
 s64 native_event=12300000;s64 BbscEventIdOf(u64){return native_event;}
 bool BbscIndependentActive(){return active;}bool BbscIndependentTravelAllowed(){return active;}
+bool finale=false;bool BbscNativeFinaleCommitted(){return finale;}
 bool npc_ready=true;
+int native_once_calls=0,map_queries=0;
 bool blocks_active=false,blocks_ready=false;
 bool BbscWorldBlocksActive(){return blocks_active;}
 bool BbscWorldAdmitBlocks(const World::Scope&){return blocks_ready;}
 bool BbscWorldNativeInitialReady(const World::Scope&,u32,u64){return npc_ready;}
-void BbscWorldNativeInitialOnce(const World::Scope&){}
+void BbscWorldNativeInitialOnce(const World::Scope&){++native_once_calls;}
 // NPC initial-state admission is a separate production dependency; this fixture
 // exercises the Dream/flag barrier after that dependency grants admission.
 std::atomic<bool> bbsc_world_catalog_ready{true};
 bool dream_ready=true;bool BbscHostDreamStateReady(){return dream_ready;}bool BbscHostWorldFlagsReady(u32){return dream_ready;}
 bool altar_ready=false;int session=3,altar_calls=0;
 bool BbscWorldApplyAltars(u32){++altar_calls;return session==3||altar_ready;}
-u32 GetCurrentPackedMap(){return map;}int GetSessionState(){return session;}
+u32 GetCurrentPackedMap(){++map_queries;return map;}int GetSessionState(){return session;}
 s64 SteadyNowMs(){return 10000;}
 std::vector<u64> GetMultiPlayerInsTasks(){return {100};}
 u32 GetBbscRelayHost(){return 22;}u32 BbscWorldPeer(u64){return 22;}
@@ -69,6 +72,17 @@ MAIN=r'''
 int main(){
  World::Presence p;p.world={11,99};p.map=map;p.phase=World::Phase::Playing;p.visit=1;p.sequence=1;
  bbsc_world_presence_local=p;const auto scope=World::ScopeOf(p);
+ if(SessionTest::NativeNpcSync()){
+  // Stock NPC synchronization on ordinary maps is once per load and role.
+  assert(!GuardBbscWorldBootstrap(1)&&native_once_calls==1);
+  map_queries=0;
+  for(int step=0;step<2000;++step)assert(!GuardBbscWorldBootstrap(1));
+  assert(map_queries==0&&native_once_calls==1);
+  session=6;assert(!GuardBbscWorldBootstrap(1)&&native_once_calls==2);
+  ++bbsc_world_native_load;assert(!GuardBbscWorldBootstrap(1)&&native_once_calls==3);
+  finale=true;++bbsc_world_native_load;assert(!GuardBbscWorldBootstrap(1)&&native_once_calls==3);
+  return 0;
+ }
  bbsc_independent_owners.Bind(p.world);
  bbsc_world_presence_book.Bind(p.world,11);
  auto resident=p;assert(bbsc_world_presence_book.Hear(22,p.world,resident,100));
@@ -170,7 +184,8 @@ def main():
         cpp.write_text(PREFIX+globals_+''.join(function(s) for s in signatures)+MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
-        subprocess.run([str(exe)],check=True,env=env)
-    print('PASS production pre-event native bootstrap: FirstSync wait, story before events, no rewind, owner epoch, m29 mount namespace')
+        for native_npc in ('1','0'):
+            subprocess.run([str(exe)],check=True,env=dict(env,BBSC_NATIVE_NPC_SYNC_TEST=native_npc))
+    print('PASS production pre-event bootstrap: native once per load/role and 2000 admitted steps without map queries, legacy FirstSync, Dream and m29')
 
 if __name__=='__main__':main()

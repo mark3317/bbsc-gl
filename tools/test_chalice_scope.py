@@ -4,6 +4,7 @@ The memory fixture verifies recovered native loader input and borrowed-context l
 Actual resource loading and session continuity still require the documented two-PC test.
 """
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -133,6 +134,7 @@ u32 SendBbscWorldFlagsToPeers(const void* p,u32 size) {
 std::array<u8,125> group{};
 u64 BbscFlagGroupStorage(u32) { return reinterpret_cast<u64>(group.data()); }
 u32 key_of(u32,size_t n) { return static_cast<u32>(12900+n); }
+u32 privacy_key(u32,size_t n) { return n<30?12410:52410; }
 '''
 
 start = SOURCE.index("struct BbscWorldSnapshot {")
@@ -214,6 +216,16 @@ int main() {
     assert(!BbscChaliceLoadReady(current));
     OnBbscWorldFlagsPacket(sent[0].data(),sent[0].size());
     assert(BbscChaliceLoadReady(current));
+
+    // Legacy format stays readable but does not carry loot receipts or
+    // personal NPC bits alongside shared world data.
+    group[330/8]=0x80u>>(330%8);group[809/8]=0x80u>>(809%8);
+    sent.clear();present=0;
+    SendBbscFlagSnapshot(1,0x18010000,76,40,privacy_key,present);
+    assert(sent.size()==5&&present==((u64{1}<<30)-1));
+    Packet wire{};std::memcpy(&wire,sent[0].data(),sizeof(wire));
+    assert(wire.groups[0][330/8]==group[330/8]&&wire.groups[0][809/8]==0);
+    group[330/8]=0;group[809/8]=0;
 
     // Production compact sender and receiver: keep all30 gameplay groups,
     // no diagnostic kind5, and don't declare completion before the final part.
@@ -488,7 +500,12 @@ code += function("void OnBbscChaliceMountPacket(const void* data, std::size_t si
 code += function("void OnBbscHostFollowPacket(std::uint32_t packed_map, float x, float y, float z, float heading,\n"
                  "                            std::uint32_t sequence, std::int32_t lamp_point,\n"
                  "                            const Chalice::Key& dungeon, const Follow::Arrival& arrival)").replace("const Follow::Arrival& arrival)", "const Follow::Arrival& arrival = {})")
+code += '#include "core/bbsc_quest_event_rules.h"\nnamespace QuestRules=Core::Bloodborne::QuestRules;\n'
+for name in ('BbscNpcQuestFlags', 'BbscDreamShopUnlockFlags'):
+    code += re.search(r'constexpr std::array<[^;]+ '+name+r'\{.*?\};', SOURCE, re.S).group()+'\n'
+code += 'constexpr u32 BbscDreamSoldGroup=70009;\nbool BbscNativeFinaleCommitted(){return false;}\n'
 for signature in (
+    "void MaskBbscSharedFlagGroup(u32 key, u8* outgoing)",
     "u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,\n"
     "                         u32 (*key_of)(u32 map, size_t index), u64& present)",
     "bool BbscHostBlockSnapshot(u32 packed_map, BbscWorldSnapshot& out)",

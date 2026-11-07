@@ -131,26 +131,29 @@ void EnableBbscRomNativeTransition(u64 instance) {
             std::memcmp(reinterpret_cast<const void*>(args),step.args.begin(),size)!=0) return;
     }
     const s32 current=ReadValue<s32>(instance,0xA0);
-    if(current<0 || current>=instructions ||
-       !HasMemoryAccess(instance+0xC0,4,MemoryProt::CpuWrite) ||
-       !HasMemoryAccess(instance+0x48,4,MemoryProt::CpuWrite))return;
-    if (current >= start && current <= start + static_cast<s32>(tail.size())) {
+    if(current<0 || current>=instructions)return;
+    if (current > start && current <= start + static_cast<s32>(tail.size())) {
         // A simultaneous local interaction has already reached the original
         // tail. Leave its Remo condition and cleanup intact.
         bbsc_rom_transition.pending = false;
         bbsc_rom_transition.delegated = true;
         return;
     }
-    // Same condition-tree cleanup and iterator advance used by12ECDC0 and
-    // native control flow. Advance owns PC, argument allocation/substitution
-    // and next-step state; no borrowed argument pointers or PC-only rewrite.
+    if (current != start &&
+        (!HasMemoryAccess(instance+0xC0,4,MemoryProt::CpuWrite) ||
+         !HasMemoryAccess(instance+0x48,4,MemoryProt::CpuWrite))) return;
+    // The native scheduler advances to start before the action condition is
+    // satisfied. At that point releasing the wait is enough to run the tail.
     using Clear=void PS4_SYSV_ABI (*)(u64);
-    using Advance=u8 PS4_SYSV_ABI (*)(u64,u8*);
     reinterpret_cast<Clear>(image_base+0x012EBFF0)(instance+0x30);
-    WriteValue<s32>(instance,0xC0,start-current);
-    u8 continue_frame=1;
-    if(!reinterpret_cast<Advance>(image_base+0x012EF2E0)(instance+0x80,&continue_frame))return;
-    WriteValue<s32>(instance,0x48,ReadValue<s32>(instance,0xA0));
+    if (current != start) {
+        // For other entry positions, the native iterator owns the PC and arguments.
+        using Advance=u8 PS4_SYSV_ABI (*)(u64,u8*);
+        WriteValue<s32>(instance,0xC0,start-current);
+        u8 continue_frame=1;
+        if(!reinterpret_cast<Advance>(image_base+0x012EF2E0)(instance+0x80,&continue_frame))return;
+        WriteValue<s32>(instance,0x48,ReadValue<s32>(instance,0xA0));
+    }
     // Native12ECEF8 binds10000 on a satisfied local condition. We replaced
     // the guest-only wait, so retain that same local executor for Remo.
     WriteValue<s32>(instance,0x60,10000);

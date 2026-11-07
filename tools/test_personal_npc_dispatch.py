@@ -17,6 +17,30 @@ source = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-
 header = (ROOT / 'emulator/src/core/bbsc_quest_reward_rules.h').read_text(encoding='utf-8')
 controllers = sorted(set(map(int, re.findall(r'Native state dispatcher (\d+),', header))))
 assert len(controllers) == 19 and 12410760 in controllers
+local_progression = (
+    12300700, 12300701, 12300702, 12300704, 12400650, 12400651, 12400652, 12400904,
+    12410653, 12410654, 12410655, 12410659, 12410809, 12410810, 12410811, 12600029, 13600955,
+)
+
+if game := os.environ.get('BB_GAME'):
+    sys.path.insert(0, str(ROOT / 'tools/gamedata'))
+    from emevd import Emevd
+    cathedral = dict(Emevd(Path(game) / 'event/m24_00_00_00.emevd.dcx').events)
+    for event, before, after in ((12400651, 1360, 1362), (12400652, 1361, 1363)):
+        commands = cathedral[event]
+        assert commands[:6] == [
+            (3, 0, struct.pack('<II', 257, before)),
+            (4, 3, struct.pack('<III', 1, 10000, 0)),
+            (3, 2, struct.pack('<III', 257, 10000, 2404390)),
+            (0, 0, struct.pack('<I', 65792)),
+            (2003, 22, struct.pack('<III', 1360, 1379, 0)),
+            (2003, 2, struct.pack('<II', after, 1)),
+        ]
+    yharnam = dict(Emevd(Path(game) / 'event/m24_01_00_00.emevd.dcx').events)
+    henryk = yharnam[12410809]
+    assert henryk[0] == (2004, 29, struct.pack('<II', 2410901, 1))
+    assert (3, 0, struct.pack('<II', 511, 1363)) in henryk
+    assert henryk[-1] == (2004, 29, struct.pack('<II', 2410901, 0))
 
 def function(signature):
     begin = source.index(signature + ' {')
@@ -57,9 +81,11 @@ code = r'''
 #include <cstring>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <vector>
 #include "core/bbsc_quest_event_rules.h"
 #include "core/bbsc_event_steps.h"
+#include "core/bbsc_native_sync_test.h"
 namespace QuestRules=Core::Bloodborne::QuestRules;
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using s64=int64_t;
 #define BBSC_PERF_NESTED(...)
@@ -82,6 +108,10 @@ code += 'bool IsBbscPersonalMapEvent(s64 e){return IsBbscLocalQuestEvent(e);}\n'
 code += 'bool IsBbscChaliceBossRewardEvent(s64){return false;}\n'
 start = source.index('struct BbscQuestRange {')
 code += source[start:source.index('\nbool BbscTalkEventIsOurs', start)]
+start = source.index('struct BbscTalkEventTrigger {')
+code += source[start:source.index('\nstruct BbscEventRun', start)]
+code += 'std::mutex bbsc_npc_own_mutex; std::map<u32,bool> bbsc_action_owner;\n'
+code += function('bool BbscTalkEventIsOurs(s64 event)')
 code += 'int main(){\n'
 code += 'u64 base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);assert(base);\n'
 code += 'const u8 original[]={' + ','.join(map(str, native)) + '};\n'
@@ -111,24 +141,31 @@ WriteValue<u64>(f,0xA8,3);WriteValue<u64>(f,0xB0,0);
 using NativeSend=void __attribute__((sysv_abi)) (*)(u64);
 auto send=(NativeSend)(base+0x12EE540);
 '''
-code += 'for(s64 event:{' + ','.join(map(str, controllers)) + '}){\n'
+code += 'for(s64 event:{' + ','.join(map(str, local_progression)) + '}) assert(IsBbscLocalQuestEvent(event));\n'
+code += 'for(s64 event:{' + ','.join(map(str, sorted(set(controllers) | set(local_progression)))) + '}){\n'
 code += r'''
- assert(IsBbscLocalQuestEvent(event)); // FAILS old production catalogue
+ if(!IsBbscLocalQuestEvent(event)){
+  assert(Core::Bloodborne::SessionTest::NativeNpcSync());
+  continue;
+ }
  bbsc_quest_indexes.clear();bbsc_quest_instances.clear();WriteValue<s64>(f,0xA0,event);
  WriteValue<u32>(inst,0x28,(u32)event);
  // Same event before localization broadcasts native progress to the peer.
  instance[0x78]=1;int before=sends;send(inst);assert(sends==before+1&&sent_event==event);
  for(u64 offset:{0x100ull,0x120ull,0x140ull}){
   WriteValue<u64>(inst,0xB0,f+offset);instance[0x78]=1;auto unchanged=instance;
-  LocalizeBbscQuestEvent(inst);assert(instance[0x78]==0);unchanged[0x78]=0;
+  LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==0);unchanged[0x78]=0;
   assert(instance==unchanged);send(inst);assert(sends==before+1);
  }
 }
+bbsc_action_owner={{1360,false},{1361,false},{1143,false},{1320,false},{1723,false},{72410310,false}};
+for(s64 event:{12400651,12400652,12410654,12300701,13600955}) assert(BbscTalkEventIsOurs(event));
+assert(!BbscTalkEventIsOurs(9100)); // a real remote talk still cannot give a local item
 // Shared boss/ordinary enemy events must retain their original networking;
 // a reused instance may not inherit the last personal dispatcher's permission.
 for(s64 event:{12401800,12415200,12500810}){
  assert(!IsBbscLocalQuestEvent(event));WriteValue<s64>(f,0xA0,event);instance[0x78]=1;
- LocalizeBbscQuestEvent(inst);assert(instance[0x78]==1);
+ LocalizeBbscQuestEvent(inst,LookupBbscQuestRange(inst));assert(instance[0x78]==1);
  int before=sends;send(inst);assert(sends==before+1);
 }
 VirtualFree((void*)base,0,MEM_RELEASE);
@@ -142,5 +179,6 @@ with tempfile.TemporaryDirectory(prefix='bbsc-personal-npc-dispatch-') as tempor
     subprocess.run([compiler, '-std=c++20', '-I', str(ROOT / 'emulator/src'), str(cpp), '-o', str(exe)], check=True)
     env = dict(os.environ)
     env['PATH'] = str(Path(compiler).parent) + os.pathsep + env.get('PATH', '')
-    subprocess.run([str(exe)], env=env, check=True, timeout=10)
-print('PASS: 19 personal NPC dispatchers, production localization, original native channel31 sender, shared-event exclusions')
+    for mode in ('0', '1'):
+        subprocess.run([str(exe)], env=dict(env, BBSC_NATIVE_NPC_SYNC_TEST=mode), check=True, timeout=10)
+print('PASS: personal NPC dispatchers and quest triggers, local provenance, original channel31 sender, both modes')
