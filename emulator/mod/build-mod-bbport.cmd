@@ -1,6 +1,6 @@
 @echo off
 rem Builds the BBSC mod (bbsc.dll + bbsc-launch.exe) on a PC with Visual Studio 2022/2026 (or
-rem its Build Tools) - the same compile as build-mod.cmd, without its fixed paths:
+rem its Build Tools):
 rem   - the MSVC environment from vswhere (any edition, any version with the C++ tools)
 rem   - clang-cl from Visual Studio's "C++ Clang tools", else from MSYS2 (C:\msys64\clang64\bin)
 rem   - output in <repo>\build\mod\, log in <repo>\build\mod-build.log (ends with exit=N)

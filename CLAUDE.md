@@ -99,7 +99,7 @@ VPS `remote_server` (77.73.67.175, Ubuntu 24, ssh `root`) — там игров�
 - `emulator/src/core/bloodborne_re.cpp` — основная игровая логика кооператива (~19k строк; ищи grep'ом, не читай целиком).
 - `emulator/mod/` — мод-DLL для bbport: `bbsc_mod.cpp`, `bbsc_hooks.cpp`, `bbsc_relay.cpp`, `bbsc_channel.cpp`, `bbsc_http.cpp`, `bbsc_launch.cpp`, `mod.json` (версия).
 - `server/gameserver/bbsc_gameserver.py` — игровой сервер (Python 3, без зависимостей), `bbhost_service.py`.
-- `bbport/bbport-1.7.2-bbsc.patch` — патч к bbport (relay, np_signaling, np_utility).
+- Интеграция с портом находится в `gpu/bbnet` репозитория BBGL. Патч для BBport 1.7.2 сохранился в истории BBSC-GL на коммите `4f11faf`.
 - `docs/` — ARCHITECTURE, WORLD-SYNC, NETWORK, SESSION-LIFECYCLE, KNOWN-LIMITATIONS, TESTING, CHANGELOG. Читай нужный doc перед правками в соответствующей подсистеме.
 - `tools/` — читалки игровых данных (gamedata, souls, find-fog-walls и т.д.). `build/*.txt` — выгрузки флагов/событий.
 

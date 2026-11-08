@@ -11,8 +11,6 @@ path = [
     "CMakePresets.json",
     ".github/FUNDING.yml",
     ".github/shadps4.png",
-    ".github/workflows/scripts/update_translation.sh",
-    ".github/workflows/update_translation.yml",
     ".gitmodules",
     "dist/MacOSBundleInfo.plist.in",
     "dist/net.shadps4.shadps4-qtlauncher.desktop",
