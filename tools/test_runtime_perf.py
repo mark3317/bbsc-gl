@@ -19,6 +19,8 @@ prefix=r'''
 #include <mutex>
 #include <string_view>
 #include <vector>
+#include "core/bbsc_lift_flags.h"
+namespace World=Core::Bloodborne::World;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s64=int64_t;
 #define PS4_SYSV_ABI
 #define LOG_INFO(...) ((void)0)
@@ -97,7 +99,8 @@ if npc_only:
 with tempfile.TemporaryDirectory(prefix='bbsc-runtime-perf-') as d:
  p=Path(d);cpp=p/'t.cpp';exe=p/'t.exe'
  cpp.write_text(prefix+(fun('u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)')+fun('std::pair<s64, size_t> MergeBbscSharedProgress(std::string_view when)') if not npc_only else '')+index+main,encoding='utf-8')
- subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-O2',str(cpp),'-o',str(exe)],check=True)
+ subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-O2','-I',
+                 str(Path(__file__).resolve().parents[1]/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True,timeout=15)
 if not npc_only:
  assert 'if (bosses == -2) return;' in fun('void TickBbscSharedProgress()')

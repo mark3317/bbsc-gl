@@ -1,8 +1,8 @@
 # BBSC-GL — Bloodborne Seamless Co-op Game Launcher
 
-**English** · [Русский](README.ru.md) · [Download BBGL 1.3.2](https://github.com/mark3317/bbgl/releases/tag/v1.3.2)
+**English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. Latest release [**BBSC-GL 1.3.2**](https://github.com/mark3317/bbsc-gl/releases/tag/v1.3.2).
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. Version **1.3.3**, bundled with BBGL 1.3.3. This release fixes guest boss reward confirmation, both Lecture Building exits and guest lamp prompts before victory. [Release notes and gameplay coverage](docs/release-1.3.3.md).
 
 Hunters can travel independently within a party, use their own Dream and meet again on another map. The host’s Chalice lamp list and progress are synchronized with guests.
 

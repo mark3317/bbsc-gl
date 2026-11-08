@@ -54,7 +54,8 @@ for name,ids in [('m32_00_00_00',[13200310,13200311]),('m28_00_00_00',[12800430,
    const u64 args=f+ReadValue<u64>(f,0x78)+ReadValue<u64>(i,0x10);
    bool client=bank==1003&&cmd==6&&ReadValue<u32>(args,0)==256;
    allowed=false;EnableBbscNativeTravelEvent(p);assert(ReadValue<u8>(p,0x78)==1);
-   allowed=true;EnableBbscNativeTravelEvent(p);assert(ReadValue<u8>(p,0x78)==0);
+   allowed=true;EnableBbscNativeTravelEvent(p);
+   assert(ReadValue<u8>(p,0x78)==LampTravel::IsLectureExitEvent(native_event));
    assert(ReadValue<s32>(i,0)==bank);
    assert(ReadValue<s32>(i,4)==cmd);
    if(client)assert(ReadValue<u32>(args,0)==256);

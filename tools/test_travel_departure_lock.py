@@ -12,8 +12,10 @@ def main():
         s=next(s for s in segments if s[0]==1 and s[3]<=a and a+n<=s[3]+s[5])
         return elf[s[2]+a-s[3]:s[2]+a-s[3]+n]
     bank=read(0x17ba6a0,0x2a00);action=read(0x1cd91f0,0x7a);tail=read(0x1cd97d6,0x25)
+    esd_call=read(0x203f10c,5)
     assert bank[:8]==bytes.fromhex('554889e541574156')
     assert action[:6]==bytes.fromhex('554889e54157')
+    assert esd_call[0]==0xe8 and 0x203f111+struct.unpack_from('<i',esd_call,1)[0]==0x1cd91f0
     source=(travel.ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
     callback=source[source.index('void PS4_SYSV_ABI BbscBellRefundHook('):source.index('\nvoid InstallBbscBellRefundHook()')]
     prefix=re.sub(r'struct GuestRegisterSnapshot\{[^\n]+\};',
@@ -56,6 +58,11 @@ int main(){
  using Accept=int PS4_SYSV_ABI (*)(u64,u64,u64,u64,u64,u64);
  using Bank=bool PS4_SYSV_ABI (*)(u64,u64);
  auto accept=(Accept)(image_base+0x1cd91f0);auto execute=(Bank)(image_base+0x17ba6a0);
+ // Execute the original f56 call at its real return address. Surround only
+ // that call with a test prologue/epilogue; native registration makes the veto.
+ const u8 esd_call[]={0x48,0x83,0xec,8,ESD_CALL,0x48,0x83,0xc4,8,0xc3};
+ memcpy((void*)(image_base+0x203f108),esd_call,sizeof(esd_call));
+ auto esd_accept=(Accept)(image_base+0x203f108);
  std::array<u8,128> context{};Set(context,0,image_base+TalkConditionVtableOffset);Set(context,0x18,u64{0x40000});
  GuestRegisterSnapshot r{};r.r14=0x50000;
  std::array<u8,0xd0> instance{};std::array<u8,0x20> instruction{};
@@ -63,6 +70,14 @@ int main(){
  Set(instance,0xb0,(u64)instruction.data());Set(instance,0xb8,(u64)args.data());
  Set(instruction,0,s32{2004});Set(instruction,4,s32{14});
  bbsc_world_presence_local.world={11,99};
+ Set(context,0x10,u32{241002});r.rax=56;r.r15=(u64)context.data();
+ BbscWorldEsdFunction(0,&r);state=6;
+ assert(esd_accept(0,13,6000,0,0,0)==0);
+ assert(accept(0,13,6000,0,0,0)==1); // unrelated caller, same button ID
+ native_flags.insert(12411700);
+ assert(esd_accept(0,13,6000,0,0,0)==1);
+ native_flags.erase(12411700);state=3;
+ assert(esd_accept(0,13,6000,0,0,0)==1); // host native path
  auto command=[&](u32 talk){Set(context,0x10,talk);NoteBbscWorldTalkRecord((u64)context.data(),r.r14);r.rax=11;BbscWorldAltarCommand(0,&r);};
  auto buttons=[&](bool blocked){for(u32 id:{7030u,6030u,3200000u,3200001u,1000u}){
   assert(accept(0,0,id,0,0,0)==(blocked?0:1));assert(bbsc_world_travel_action_skip==0);
@@ -120,7 +135,7 @@ int main(){
  VirtualFree((void*)image_base,0,MEM_RELEASE);
 }
 '''
-    for key,data in [('BANK',bank),('ACTION',action),('TAIL',tail)]:body=body.replace(key,','.join(str(v) for v in data))
+    for key,data in [('BANK',bank),('ACTION',action),('TAIL',tail),('ESD_CALL',esd_call)]:body=body.replace(key,','.join(str(v) for v in data))
     compiler='C:/msys64/clang64/bin/clang++.exe'
     env=dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     with tempfile.TemporaryDirectory(prefix='bbsc-departure-lock-') as tmp:
@@ -130,6 +145,7 @@ int main(){
             ('eager-animation-negative',production.replace('    bbsc_world_travel_departure_load=bbsc_load_generation.load();',
                 '    NativeAnimation(10000,101164,0,0);\n    bbsc_world_travel_departure_load=bbsc_load_generation.load();'),False),
             ('no-input-gate-negative',production.replace('if(!regs || !BbscWorldTravelInteractionBlocked())return;','if(true)return;'),False),
+            ('no-lamp-gate-negative',production.replace('        BbscGuestLampLocked(bbsc_world_esd_talk)) {','        false) {'),False),
         ]:
             cpp.write_text(prefix+changed+body,encoding='utf-8')
             subprocess.run([compiler,'-std=c++20','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-I',str(travel.ROOT/'emulator/src'),'-I',str(travel.ROOT/'emulator/externals/xbyak'),

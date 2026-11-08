@@ -29,6 +29,39 @@ UNLOCKS=[(0x16000000,12200121,12200121),(0x18010000,12410330,12410330),
          (0x23000000,13501108,13501105),(0x23000000,13501118,13501115),
          (0x23000000,13501128,13501125),(0x24000000,13601108,13601105)]
 
+# Map, movement events, position, busy, optional native lever interlock.
+MOVEMENT = [
+    (0x16000000, (12200122, 12200123), 12200125, 12200126, 0),
+    (0x18010000, (12410322, 12410323), 12410350, 12415350, 12410351),
+    (0x18020000, (12420151, 12420152), 12420154, 12420155, 0),
+    (0x1B000000, (12700131, 12700132), 12700134, 12700135, 0),
+    (0x1B000000, (12700141, 12700142), 12700144, 12700145, 0),
+    (0x1C000000, (12800602, 12800604), 12800610, 12804700, 12800611),
+    (0x21000000, (13300112, 13300113), 13300115, 13300116, 0),
+    (0x23000000, (13501102, 13501103), 13501106, 13504100, 0),
+    (0x23000000, (13501112, 13501113), 13501116, 13504110, 0),
+    (0x23000000, (13501122, 13501123), 13501126, 13504120, 0),
+    (0x24000000, (13601102, 13601103), 13601106, 13604100, 0),
+]
+
+def resolved_instructions(emevd, event):
+    events = dict(emevd.events)
+    instructions = [(b, i, bytearray(args)) for b, i, args in events[event]]
+    count, table = emevd.header[:2]
+    records = (struct.unpack_from('<qqqqq', emevd.data, table + 0x30 * row)
+               for row in range(count))
+    _, _, _, params, offset = next(record for record in records if record[0] == event)
+    if params:
+        (args,) = [a[8:] for b, i, a in events[0]
+                   if (b, i) == (2000, 0) and len(a) >= 8
+                   and struct.unpack_from('<I', a, 4)[0] == event]
+        for row in range(params):
+            ins, target, source, length, _ = struct.unpack_from(
+                '<qqqii', emevd.data, emevd.header[9] + offset + 0x20 * row)
+            assert target + length <= len(instructions[ins][2]) and source + length <= len(args)
+            instructions[ins][2][target:target+length] = args[source:source+length]
+    return instructions
+
 def original(game):
     sys.path.insert(0,str(ROOT/'tools/gamedata'))
     from emevd import Emevd
@@ -49,6 +82,19 @@ def original(game):
         else:
             assert any(b==2003 and i==2 and a==struct.pack('<II',flag,1) for b,i,a in ins)
     print('PASS original 1.09: 10 permanent unlock flags, region/lever paths, implicit completion, parameter substitutions, no NoNetSync')
+    for packed, events, position, busy, interlock in MOVEMENT:
+        name = f'm{packed>>24:02d}_{packed>>16&255:02d}_00_00'
+        evd = Emevd(game/'event'/(name+'.emevd.dcx'))
+        for event, value in zip(events, (1, 0)):
+            ins = resolved_instructions(evd, event)
+            writes = [struct.unpack('<II', a) for b, i, a in ins if (b, i) == (2003, 2)]
+            assert writes.index((busy, 1)) < writes.index((busy, 0))
+            assert (position, value) in writes
+            assert any((b, i) == (2003, 18) for b, i, _ in ins)
+        if interlock:
+            init = {12410351: 12410321, 12800611: 12800600}[interlock]
+            assert (2003, 2, struct.pack('<II', interlock, 0)) in resolved_instructions(evd, init)
+    print('PASS original 1.09: movement and temporary flags for 11 lifts, including parameterized events')
 
 PREFIX=r'''
 #include <algorithm>
@@ -58,6 +104,7 @@ PREFIX=r'''
 #include <map>
 #include <mutex>
 #include "core/bbsc_world_control.h"
+#include "core/bbsc_lift_flags.h"
 #include "core/bbsc_quest_event_rules.h"
 #include "core/bbsc_lamp_travel_data.h"
 using namespace Core::Bloodborne;
@@ -72,6 +119,14 @@ bool BbscIndependentTravelAllowed(){return independent;}
 bool BbscOwnNpcQuestsEnabled(){return own_npc;}
 int GetSessionState(){return session;}
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
+World::OwnerBook bbsc_independent_owners;
+std::optional<World::Scope> bbsc_world_requested_scope;
+struct TestAltar {
+    struct { bool occupied = false; u64 ritual = 0; } entry;
+    struct { Chalice::Key key; } mount;
+};
+std::array<TestAltar, 0> bbsc_world_altars;
+namespace BbscMod { u32 RegisterOwnId() { return 11; } }
 std::map<u32,std::array<u8,125>> groups,own;
 u64 BbscFlagGroupStorage(u32 k){return reinterpret_cast<u64>(groups[k].data());}
 s32 BbscWorldHostAltarSlot(const World::Scope&){return -1;}
@@ -98,6 +153,7 @@ def production():
     code+=re.search(r'struct BbscWorldFlagPart \{.*?\n\};',STATE,re.S).group()+'\n'
     code+=r'''
 BbscWorldFlagPart first_part{};
+std::map<World::Scope, BbscWorldState> bbsc_independent_states;
 void BbscWorldSend(const World::Control& c,std::span<const u8> body){
  if(c.part==0) std::memcpy(&first_part,body.data(),sizeof(first_part));
 }
@@ -105,6 +161,8 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
     code+=function('BbscWorldState BbscWorldCaptureFlags(const World::Scope& scope)',STATE)
     code+=function('void BbscWorldPublishFlags(const World::Scope& scope,const BbscWorldState& state,u32 owner,u64 epoch,u64 seq)',STATE)
     code+=function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)',STATE)
+    code+=function('bool BbscWorldFlagsReady(const World::Scope& scope)',STATE)
+    code+=function('void BbscWorldSeedLiftFlags(u32 map)',STATE)
     code+=r'''int main(){
  const auto scope=World::Scope{.map=0x18010000};
  auto& live=groups[12410];
@@ -145,6 +203,84 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
  assert(!World::ShouldApplyFlags(c,scope,22,22,false,true));
  assert(!World::ShouldApplyFlags(c,scope,33,22,false,false));
  }}\n'''
+    code+=r'''
+ const auto write = [](auto& group, u32 flag, bool set) {
+    const u8 mask = 0x80u >> (flag % 8);
+    auto& value = group[flag % 1000 / 8];
+    value = set ? value | mask : value & ~mask;
+ };
+ const auto read = [](const auto& group, u32 flag) {
+    return (group[flag % 1000 / 8] & (0x80u >> (flag % 8))) != 0;
+ };
+ '''
+    for packed, _, position, busy, interlock in MOVEMENT:
+        code+=f'''
+ {{
+    const u32 position = {position}, busy = {busy}, interlock = {interlock};
+    const World::Scope destination{{.world = {{11,99}}, .map = {packed}}};
+    bbsc_world_presence_local.world = destination.world;
+    bbsc_world_presence_local.map = 0x15000000; // native spawn knows the target first
+    bbsc_independent_owners.Bind({{}});
+    bbsc_independent_owners.Bind(destination.world);
+    World::Control owner;
+    owner.kind = World::ControlKind::Owner;
+    owner.scope = destination;
+    owner.owner = 22;
+    owner.epoch = 7;
+    assert(bbsc_independent_owners.Take(11, owner, 1));
+    for (int role : {{3,6}}) {{
+        session = role;
+        groups.clear(); own.clear();
+        auto& snapshot = bbsc_independent_states[destination];
+        snapshot = {{}};
+        snapshot.flags_ready = true;
+        snapshot.epoch = owner.epoch;
+        snapshot.present = 1; // required main bank
+        const auto index = [&](u32 flag) {{return flag / 1000 - BbscWorldGroupKey(destination.map, 0);}};
+        const auto flag = [&](u32 id) {{return read(groups[id / 1000], id);}};
+        for (bool desired : {{false,true}}) {{
+            for (u32 id : {{position,busy,interlock}}) {{
+                if (!id) continue;
+                const bool incoming = id != position || desired;
+                snapshot.present |= u64{{1}} << index(id);
+                write(snapshot.groups[index(id)], id, incoming);
+                write(groups[id / 1000], id, !incoming);
+                const u8 mask = 0x80u >> (id % 8);
+                assert(BbscSharedProgressByte(id / 1000, id % 1000 / 8, mask) == 0);
+            }}
+            BbscWorldApplyFlags(destination, snapshot);
+            assert(flag(position) != desired && !flag(busy));
+            if (interlock) assert(!flag(interlock));
+            write(groups[busy / 1000], busy, true);
+            if (interlock) write(groups[interlock / 1000], interlock, true);
+            BbscWorldSeedLiftFlags(destination.map);
+            assert(flag(position) == desired && !flag(busy));
+            if (interlock) assert(!flag(interlock));
+            write(groups[position / 1000], position, !desired);
+            write(snapshot.groups[index(busy)], busy, false);
+            write(groups[busy / 1000], busy, true);
+            BbscWorldApplyFlags(destination, snapshot);
+            assert(flag(position) != desired && flag(busy));
+        }}
+        snapshot.flags_ready = false;
+        BbscWorldSeedLiftFlags(destination.map);
+        assert(!flag(position) && !flag(busy));
+        snapshot.flags_ready = true;
+        snapshot.epoch = owner.epoch - 1;
+        BbscWorldSeedLiftFlags(destination.map);
+        assert(!flag(position));
+        snapshot.epoch = owner.epoch;
+        snapshot.present &= ~(u64{{1}} << index(position));
+        BbscWorldSeedLiftFlags(destination.map);
+        assert(!flag(position));
+    }}
+    owner.epoch++;
+    owner.owner = 11;
+    assert(bbsc_independent_owners.Take(11, owner, 2));
+    BbscWorldSeedLiftFlags(destination.map);
+    assert(!read(groups[position / 1000], position));
+ }}
+'''
     code+='}\n'
     compiler=shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-elevator-native-') as tmp:
@@ -153,6 +289,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
     print('PASS production: all 10 events shared, channel31 same-place policy, capture/apply host+guest, late-arrival snapshot, additive unlock/no rollback, incomplete/owner/off-map fences')
+    print('PASS production: 11 lifts, native live bits preserved, exact arrival position, no additive replay')
 
 if __name__=='__main__':
     original(Path(sys.argv[1]))

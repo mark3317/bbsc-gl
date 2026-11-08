@@ -195,6 +195,14 @@ bool BbscWorldPeerHere(u32 peer) {
     const auto* m=bbsc_world_presence_book.Resident(peer);
     return m && World::SamePlace(bbsc_world_presence_local,m->presence);
 }
+bool BbscLectureExitRecipient(u64 member) {
+    const s32 state=GetSessionState();
+    if(state!=3 && state!=6)return false;
+    // Both areas use m32_00. Their playable geometry is separated along Z
+    // in the original MapStudio data. Both Lecture floors are north of 480.
+    const auto here=ReadCharacterTransform(GetLocalPlayerCharacter());
+    return here && here->position[2]>=480.0f && BbscWorldPeerHere(BbscWorldPeer(member));
+}
 bool BbscWorldActorHere(u64 chr) {
     return !BbscIndependentActive() || BbscWorldPeerHere(BbscWorldPeer(chr+0x3D8));
 }
@@ -1131,6 +1139,7 @@ bool BbscWorldTaskHere(u64){return true;}
 u32 BbscWorldLivingHere(){return 0;}
 u32 BbscWorldParticipantsHere(){return 0;}
 bool BbscWorldPeerHere(u32){return true;}
+bool BbscLectureExitRecipient(u64){return false;}
 bool BbscWorldActorHere(u64){return true;}
 u32 BbscIndependentCapabilities(){return World::PresenceCapability;}
 u64 BbscIndependentRitual(const Chalice::Key&){return 0;}

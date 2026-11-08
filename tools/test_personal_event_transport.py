@@ -43,6 +43,7 @@ namespace LampTravel=Core::Bloodborne::LampTravel;
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -52,11 +53,13 @@ namespace LampTravel=Core::Bloodborne::LampTravel;
 #include <vector>
 #include "core/cpu_patches.h"
 #include "core/bbsc_quest_event_rules.h"
+#include "core/bbsc_native_sync_test.h"
 #include "core/bbsc_dream_finale.h"
 using Core::GuestRegisterSnapshot;
 namespace Bbsc=Core::Bbsc;
 namespace QuestRules=Core::Bloodborne::QuestRules;
-bool independent=false;bool BbscIndependentTravelAllowed(){return independent;}
+namespace SessionTest=Core::Bloodborne::SessionTest;
+bool independent=false,native_npc=true;bool BbscIndependentTravelAllowed(){return independent;}
 u64 image_base=0;bool own=true,timeline=true;int state=3,logs=0,sends=0;
 std::atomic<u32> bbsc_load_generation{1};
 namespace BbscMod {u64 EbootAddress(){return image_base;}void LogPlain(const char* s){puts(s);}}
@@ -65,8 +68,17 @@ bool BbscTimelineEnabled(){return timeline;}
 s64 SteadyNowMs(){return 1000;}
 bool BbscOwnNpcQuestsEnabled(){return own;}
 s32 GetSessionState(){return state;}
-u32 GetCurrentPackedMap(){return 0x18010000;}
-bool IsBbscLocalQuestEvent(s64 e){return std::binary_search(QuestRules::LocalEvents.begin(),QuestRules::LocalEvents.end(),e);}
+u32 map=0x18010000;u32 GetCurrentPackedMap(){return map;}
+bool same_place=true;
+bool positioned=true;
+float z=594.9f;
+struct Transform{std::array<float,3> position;};
+u64 GetLocalPlayerCharacter(){return 1;}
+std::optional<Transform> ReadCharacterTransform(u64){return positioned?std::optional{Transform{{0,0,z}}}:std::nullopt;}
+u32 BbscWorldPeer(u64 member){return member==22?1:0;}
+bool BbscWorldPeerHere(u32 peer){return same_place&&peer==1;}
+bool IsBbscLocalQuestEvent(s64 e){return native_npc?SessionTest::LocalQuest(e):
+    std::ranges::binary_search(QuestRules::LocalEvents,e);}
 bool IsBbscKidnapEvent(s64 e){return e==9421||e==9422||e==12400780||e==12700500;}
 bool IsBbscPersonalMapEvent(s64 e){return IsBbscLocalQuestEvent(e);}
 bool BbscEventFlag(u32){return false;}
@@ -76,7 +88,9 @@ template<class T>T ReadValue(u64 p,size_t off){T v;memcpy(&v,(void*)(p+off),size
 template<class T>void put(auto& a,size_t off,T v){memcpy(a.data()+off,&v,sizeof(v));}
 void Jump(u64 at,u64 target){const u8 j[]={0xff,0x25,0,0,0,0};memcpy((void*)at,j,6);memcpy((void*)(at+6),&target,8);}
 bool PS4_SYSV_ABI Self(u64){return false;}
-int PS4_SYSV_ABI Send(u64,u64,u32 channel,const u8* p,u32 n){assert(channel==0x31&&(n==0x18||n==0x1c));assert(ReadValue<u16>((u64)p,2)==(n==0x18?1:2));++sends;return 1;}
+std::vector<u8> sent;
+int PS4_SYSV_ABI Send(u64,u64,u32 channel,const u8* p,u32 n){assert(channel==0x31&&(n==0x18||n==0x1c));assert(ReadValue<u16>((u64)p,2)==(n==0x18?1:2));sent.assign(p,p+n);++sends;return 1;}
+bool PS4_SYSV_ABI SameMember(u64,u64 member){return member==22;}
 std::deque<std::vector<u8>> queued;int reads=0;
 s32 PS4_SYSV_ABI Receive(u64,u64,u32,u8* p,u32 cap){++reads;if(queued.empty())return 0;
  auto v=queued.front();queued.pop_front();assert(v.size()<=cap);memcpy(p,v.data(),v.size());return v.size();}
@@ -87,6 +101,9 @@ std::vector<u8> packet(u32 event,u16 kind){std::vector<u8> b(kind==1?0x18:0x1c);
 prefix=prefix.replace('s64 BbscEventIdOf(u64 p){return ReadValue<u32>(p,0x28);}\n','')
 prefix+='s64 BbscEventIdOf(u64 p){return ReadValue<u32>(p,0x28);}\n'
 source=(ROOT/'emulator/src/core/bbsc_personal_events.inc').read_text(encoding='utf-8')
+world_source=(ROOT/'emulator/src/core/bbsc_independent_world.inc').read_text(encoding='utf-8')
+scope_start=world_source.index('bool BbscLectureExitRecipient(u64 member) {')
+source=world_source[scope_start:world_source.index('\n}',scope_start)+2]+'\n'+source
 main='int main(){\nimage_base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);assert(image_base);\n'
 main+='const u8 original[]={'+','.join(map(str,native))+'};memcpy((void*)(image_base+0x12EE660),original,sizeof(original));\n'
 main+='const u8 original_receiver[]={'+','.join(map(str,receiver))+'};memcpy((void*)(image_base+0x12EE420),original_receiver,sizeof(original_receiver));\n'
@@ -156,7 +173,25 @@ for(u16 kind:{1,2}){
  assert(run(11,22,0x31,output.data(),output.size())==(s32)shared.size());
  assert(std::equal(shared.begin(),shared.end(),output.begin()));
 }
-for(s64 e:QuestRules::LocalEvents){queued.push_back(packet((u32)e,2));assert(run(11,22,0x31,output.data(),output.size())==0);}
+unsigned native_transport_only=0;
+for(s64 event:QuestRules::LocalEvents)native_transport_only+=!IsBbscLocalQuestEvent(event);
+assert(native_transport_only==17);
+for(bool native_mode:{true,false}){
+ native_npc=native_mode;
+ for(int role:{3,4,6}){
+  state=role;
+  for(s64 event:QuestRules::LocalEvents){
+   put(instance,0x28,u32(event));instance[0x78]=1;
+   const int before=sends;
+   emit((u64)instance.data());emit_first((u64)instance.data());assert(sends==before);
+   for(u16 kind:{1,2}){
+    queued.push_back(packet((u32)event,kind));
+    assert(run(11,22,0x31,output.data(),output.size())==0);
+   }
+  }
+ }
+}
+state=3;native_npc=true;
 for(bool enabled:{false,true}){own=enabled;state=enabled?0:3;
  queued.push_back(packet(12410760,2));assert(run(11,22,0x31,output.data(),output.size())==0x1c);}
 state=3;own=true;queued.push_back(packet(12410760,2));assert(run(11,22,0x30,output.data(),output.size())==0x1c);
@@ -192,6 +227,58 @@ for(int role:{3,6})for(bool npc:{false,true}){
  assert(run(11,22,0x31,output.data(),output.size())==(npc?0:0x1c));
  queued.push_back(packet(12410100,2));assert(run(11,22,0x31,output.data(),output.size())==0x1c);
 }
+// Lecture exits use the original sender and receiver for condition step 1.
+// The native receiver needs the opener in the live PlayerIns table.
+std::array<u8,0x40> actors{};
+std::array<u8,0x420> opener{};
+put(actors,0,u64(opener.data()));
+put(opener,0x3b8,u32(1));
+*reinterpret_cast<u64*>(image_base+0x553e878)=image_base+0x5000;
+*reinterpret_cast<u32*>(image_base+0x5030)=1;
+*reinterpret_cast<u64*>(image_base+0x5038)=u64(actors.data());
+Jump(image_base+0xca1c70,(u64)&SameMember);
+map=0x20000000;independent=true;
+for(int role:{3,6})for(u32 event:{13200310u,13200311u}){
+ state=role;put(instance,0x28,event);instance[0x78]=1;
+ put(instance,0x48,u32(1));put(instance,0x4c,u32(0));bits=0;
+ const int previous=sends;
+ emit_first((u64)instance.data());emit((u64)instance.data());
+ assert(sends==previous+1&&ReadValue<u32>((u64)sent.data(),0x10)==1);
+ const auto signal=sent;
+ for(int target:{3,6}){
+  state=target;
+  for(bool here:{false,true}){
+   same_place=here;queued.push_back(signal);
+   assert(run(11,22,0x31,output.data(),output.size())==(here?0x18:0));
+  }
+  z=414.6f;queued.push_back(signal);
+  assert(run(11,22,0x31,output.data(),output.size())==0); // Byrgenwerth shares m32_00
+  for(float floor:{514.19f,594.9f}){
+   z=floor;queued.push_back(signal);
+   assert(run(11,22,0x31,output.data(),output.size())==0x18);
+  }
+  positioned=false;queued.push_back(signal);
+  assert(run(11,22,0x31,output.data(),output.size())==0);positioned=true;
+  queued.push_back(signal);
+  assert(run(11,33,0x31,output.data(),output.size())==0);
+  put(instance,0x48,u32(1));put(instance,0x4c,u32(0));
+  assert(decision((u64)instance.data())==0);
+  apply((u64)instance.data(),22,1,output.data()+0x10,8);
+  assert(decision((u64)instance.data())==2); // the native wait releases
+  put(instance,0x48,u32(2)); // later stages are never released by the first packet
+  apply((u64)instance.data(),22,1,output.data()+0x10,8);
+  assert(decision((u64)instance.data())==0);
+  emit_first((u64)instance.data());
+  assert(sends==previous+1);
+  auto later=signal;put(later,0x10,u32(2));queued.push_back(later);
+  assert(run(11,22,0x31,output.data(),output.size())==0);
+  queued.push_back(packet(event,2));
+  assert(run(11,22,0x31,output.data(),output.size())==0);
+  map=0x18000000;queued.push_back(signal);
+  assert(run(11,22,0x31,output.data(),output.size())==0);map=0x20000000;
+ }
+}
+map=0x18010000;
 independent=false;own=true;state=3;
 for(u32 event:{7100u,12907010u,7200u,12107000u,12107100u,12107200u,12907020u,13201803u,12401803u,13200310u,13200311u,12800430u,12800431u,12405263u,12200131u}){
  put(instance,0x28,event);instance[0x78]=1;const int previous=sends;

@@ -63,6 +63,9 @@ std::atomic<bool> bbsc_reload_finish_pending{false};
 std::atomic<u64> bbsc_world_load_pending{0};
 bool BbscReturningToTitle() { return false; }
 void ReleaseBbscQuitTitleAtLoad(bool, u64) {}
+void FinishBbscNativeFinaleLoad() {}
+int item_seed_calls=0;
+void SeedBbscNativeItemStateAtLoad() { ++item_seed_calls; }
 bool BbscQuitInProgress() { return false; }
 bool bbsc_spectate_active=false, bbsc_spectate_releasing=false;
 std::atomic<bool> bbsc_recover_session_cleanup{false};
@@ -110,7 +113,14 @@ int main(int argc,char**argv) {
         TickBbscLoadState(); assert(bbsc_load_generation==1);
         bbsc_reload_finish_pending=true; TickBbscLoadState();
         assert(bbsc_load_generation==2); TickBbscLoadState();
-        assert(bbsc_load_generation==2); return 0;
+        assert(bbsc_load_generation==2 && item_seed_calls==2); return 0;
+    }
+    if(test=="delayed_guest_role") {
+        state=4; bbsc_reload_finish_pending=true; TickBbscLoadState();
+        assert(bbsc_load_generation==1 && item_seed_calls==1);
+        tick(1); assert(item_seed_calls==1);
+        state=6; tick(1); assert(item_seed_calls==2);
+        tick(16); assert(item_seed_calls==2); return 0;
     }
     if(test=="native_wipe_alive" || test=="native_wipe_dead") {
         bbsc_spectate_active=true;
@@ -173,7 +183,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-recovery-') as tmp:
     cpp=Path(tmp)/'fixture.cpp'; exe=Path(tmp)/'fixture.exe'
     cpp.write_text(prefix+functions+fixture,encoding='utf-8')
     subprocess.run([os.environ.get('CXX','g++'),'-std=c++20','-O0',str(cpp),'-o',str(exe)],check=True)
-    for scenario in ('load_observer','native_load_observer','native_wipe_alive','native_wipe_dead','override','boss_without_load','home','home_pending','dead','healthy',
+    for scenario in ('load_observer','native_load_observer','delayed_guest_role','native_wipe_alive','native_wipe_dead','override','boss_without_load','home','home_pending','dead','healthy',
                      'missing','failed_revive','host_missing','loading','joining','invader','title','lua_unavailable'):
         if len(sys.argv)>1 and scenario not in sys.argv[1:]: continue
         subprocess.run([str(exe),scenario],check=True,timeout=5)

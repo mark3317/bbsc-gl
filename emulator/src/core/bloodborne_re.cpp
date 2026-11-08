@@ -6,6 +6,7 @@
 #include "core/bbsc_dream_finale.h"
 #include "core/bbsc_world_presence.h"
 #include "core/bbsc_world_control.h"
+#include "core/bbsc_lift_flags.h"
 #include "core/bbsc_world_native_initial.h"
 #include "core/bbsc_world_blocks.h"
 #include "core/bbsc_world_players.h"
@@ -111,6 +112,7 @@ bool BbscWorldTaskHere(u64 task);
 u32 BbscWorldLivingHere();
 u32 BbscWorldParticipantsHere();
 bool BbscWorldPeerHere(u32 peer);
+bool BbscLectureExitRecipient(u64 member);
 bool BbscWorldActorHere(u64 chr);
 void DiscardBbscWorldScenes();
 u32 BbscIndependentCapabilities();
@@ -6251,14 +6253,16 @@ u64 BbscFlagGroupStorage(u32 key) {
     // +0x19 is-nil. Same lower_bound walk as 0x013CFD80.
     u64 node = ReadValue<u64>(head, 0x08);
     u64 found = head;
-    for (int depth = 0; depth < 64 && ReadablePointer(node, 0x38) && ReadValue<u8>(node, 0x19) == 0;
-         ++depth) {
-        if (key <= ReadValue<u32>(node, 0x20)) {
+    for (int depth = 0; depth < 64 && ReadablePointer(node, 0x38); ++depth) {
+        const auto* current = reinterpret_cast<const u8*>(node);
+        if (current[0x19] != 0) break;
+        u32 node_key;
+        std::memcpy(&node_key, current + 0x20, sizeof(node_key));
+        const bool left = key <= node_key;
+        if (left) {
             found = node;
-            node = ReadValue<u64>(node, 0x00);
-        } else {
-            node = ReadValue<u64>(node, 0x10);
         }
+        std::memcpy(&node, current + (left ? 0x00 : 0x10), sizeof(node));
     }
     if (found == head || ReadValue<u32>(found, 0x20) != key) {
         return 0;
@@ -6489,7 +6493,10 @@ void SetBbscNpcFlagBit(u64 storage, u32 flag, bool on) {
 }
 
 bool IsBbscNativeItemStateFlag(u32 flag);
+bool IsBbscEventWrittenItemStateFlag(u32 flag);
 void RecordBbscNativeItemFlag(u32 flag, u8 value);
+bool bbsc_native_item_completion_hook_ready = false;
+std::optional<u32> bbsc_native_item_seed_generation;
 void RestoreBbscNativeLootReceipts(bool force = false);
 bool IsBbscGlobalLootReceipt(u32 flag) {
     return flag >= 50'000'000 && flag < 50'100'000;
@@ -6498,7 +6505,7 @@ s32 BbscLotOfFlag(u32 flag);
 
 // SetFlag hook: our own game set it.
 void NoteBbscNpcOwnFlag(u32 flag, u8 value) {
-    if (IsBbscNativeItemStateFlag(flag)) return; // native writes are observed, never rolled back
+    if (IsBbscNativeItemStateFlag(flag)) return; // native writes are never rolled back
     if (!bbsc_npc_own_active || !IsBbscNpcQuestFlag(flag)) {
         return;
     }
@@ -6536,7 +6543,24 @@ void KeepBbscNpcOwnBits(u32 key, const u8* before, u8* live) {
     }
 }
 
-// Puts back every NPC quest flag that is not our own value (game thread).
+struct BbscNpcFlagPassCatalog {
+    std::vector<u32> observed_at_write;
+    std::vector<u32> periodic;
+};
+
+const BbscNpcFlagPassCatalog& BbscNpcFlagPassFlags() {
+    static const auto catalog = [] {
+        BbscNpcFlagPassCatalog result;
+        for (const u32 flag : BbscNpcQuestFlags) {
+            auto& flags = IsBbscEventWrittenItemStateFlag(flag) ? result.observed_at_write : result.periodic;
+            flags.push_back(flag);
+        }
+        return result;
+    }();
+    return catalog;
+}
+
+// Puts back NPC quest flags that are not our own values (game thread).
 void RevertBbscNpcOwnFlags() {
 #ifdef BBSC_PERF_NESTED
     BBSC_PERF_NESTED("measure NPC own flags");
@@ -6545,9 +6569,11 @@ void RevertBbscNpcOwnFlags() {
     u64 storage = 0;
     u8* checked = nullptr;
     std::vector<std::pair<u32, u8>> native_changes;
+    const std::span<const u32> flags = bbsc_native_item_completion_hook_ready
+        ? std::span<const u32>{BbscNpcFlagPassFlags().periodic} : std::span<const u32>{BbscNpcQuestFlags};
     {
     std::scoped_lock lock{bbsc_npc_own_mutex};
-    for (auto flag_it = BbscNpcQuestFlags.begin(); flag_it != BbscNpcQuestFlags.end();) {
+    for (auto flag_it = flags.begin(); flag_it != flags.end();) {
         const u32 flag = *flag_it;
         const u32 key = flag / 1000;
         if (key != last_key) {
@@ -6568,7 +6594,7 @@ void RevertBbscNpcOwnFlags() {
             }
         }
         if (storage == 0) {
-            flag_it = std::lower_bound(flag_it, BbscNpcQuestFlags.end(), (key + 1) * 1000);
+            flag_it = std::lower_bound(flag_it, flags.end(), (key + 1) * 1000);
             continue;
         }
         ++flag_it;
@@ -6638,7 +6664,6 @@ void ObserveBbscNativeWorldCommand(u64 instance,s32 bank);
 void HideBbscNativeKitGift(u64 instance);
 void EnableBbscKidnapEvent(u64 instance);
 void EnableBbscRomJumpEvent(u64 instance);
-bool GuardBbscLocalTransitionTrigger(u64 instance);
 bool GuardBbscSharedFinaleEvent(u64 instance);
 u8 bbsc_transition_event_skip = 0;
 bool bbsc_npc_pass_due = false;
@@ -6664,8 +6689,7 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
         // The host still owns the audience, encounter and ending triggers.
         if (ReadValue<u8>(registers->rdi, 0x78) != 0) WriteValue<u8>(registers->rdi, 0x78, 0);
     }
-    if (((steps & EventSteps::Door) && GuardBbscLocalTransitionTrigger(registers->rdi)) ||
-        ((steps & EventSteps::Finale) && GuardBbscSharedFinaleEvent(registers->rdi))) {
+    if ((steps & EventSteps::Finale) && GuardBbscSharedFinaleEvent(registers->rdi)) {
         bbsc_transition_event_skip = 1;
         return;
     }
@@ -6696,6 +6720,7 @@ void TickBbscNpcOwnQuests() {
             bbsc_npc_own.clear();
             bbsc_npc_checked_groups.clear();
             bbsc_action_owner.clear();
+            bbsc_native_item_seed_generation.reset();
             bbsc_npc_own_active = false;
         }
         return;
@@ -7237,6 +7262,10 @@ void MaskBbscSharedFlagGroup(u32 key, u8* outgoing) {
         }
     }
 }
+
+#ifdef BBSC_MOD
+#include "core/bbsc_native_join_flags.inc"
+#endif
 
 // Puts the guest's own shop flags of Dream group `index` back into `live`; returns bits changed.
 size_t KeepBbscOwnDreamShopFlags(size_t index, u8* live) {
@@ -8221,9 +8250,12 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
     if (IsBbscNativeItemStateFlag(flag)) {
         NoteBbscTalkFlag(flag, value, 0, true); // existing personal-state save, not a reward retry
         if (const auto own = bbsc_own_world.find(key); own != bbsc_own_world.end()) {
-            own->second[byte] = static_cast<u8>((own->second[byte] & ~mask) | (value ? mask : 0));
-            bbsc_own_world_dirty = true;
-            WriteBbscOwnWorldFile();
+            const u8 updated = static_cast<u8>((own->second[byte] & ~mask) | (value ? mask : 0));
+            if (own->second[byte] != updated) {
+                own->second[byte] = updated;
+                bbsc_own_world_dirty = true;
+                WriteBbscOwnWorldFile();
+            }
         }
         return;
     }
@@ -8240,6 +8272,41 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
     bbsc_loot_dirty = true;
     WriteBbscGuestLootFile();
     WriteBbscOwnWorldFile();
+}
+
+void SeedBbscNativeItemStateAtLoad() {
+    if (!bbsc_native_item_completion_hook_ready || !BbscGuestInHostWorld()) return;
+    const u32 generation = bbsc_load_generation.load();
+    if (bbsc_native_item_seed_generation == generation ||
+        ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0) == 0) return;
+    bbsc_native_item_seed_generation = generation;
+    u32 last_key = 0;
+    const u8* live = nullptr;
+    for (const u32 flag : BbscNpcFlagPassFlags().observed_at_write) {
+        const u32 key = flag / 1000;
+        if (key != last_key) {
+            last_key = key;
+            const u64 storage = BbscFlagGroupStorage(key);
+            live = storage && ReadablePointer(storage, BbscWorldGroupBytes)
+                ? reinterpret_cast<const u8*>(storage) : nullptr;
+        }
+        // An older save may already have the completion set without a write in
+        // this process. A zero in a freshly loaded table is not a reset action.
+        const u32 byte = (flag % 1000) / 8;
+        const u8 mask = static_cast<u8>(0x80u >> (flag % 8));
+        if (!live || !(live[byte] & mask)) continue;
+        const auto own = bbsc_own_world.find(key);
+        if (own == bbsc_own_world.end() || !(own->second[byte] & mask)) {
+            RecordBbscNativeItemFlag(flag, 1);
+        }
+    }
+}
+
+void RecordBbscNativeItemSetFlag(u64 manager, u32 flag, bool value) {
+    if (manager == ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0) &&
+        BbscFlagGroupStorage(flag / 1000)) {
+        RecordBbscNativeItemFlag(flag, value);
+    }
 }
 
 // Flush before switching dungeon/ordinary-world namespace. Unknown identity cannot create
@@ -10322,18 +10389,19 @@ void TickBbscSpectate() {
 //                                    StageTransition (loads the guest's own world); host: only
 //                                    clears event flags 4047 / 4000.
 // Run 2026-09-16 without this: the guest left the room but stayed in the host's world without a
-// character (camera only), the host saw the guest vanish. So for a live session the guest skips
-// _3Leave and _3; the rewards in BlockClear2/_2 still run. BlockClear2_1 (host and guest) arms the
-// death-lock clearing so the "leaving" slot marks set by BlockClear2 are removed again.
+// character (camera only), the host saw the guest vanish. The retained guest skips the home
+// transition and the locks that prepare for it. The original reward and completion steps run.
+// BlockClear2_1 still arms the existing recovery of the native leaving slot marks.
 constexpr u64 BlockClear2FirstOffset = 0x01385470; // BlockClear2_1
 constexpr u64 BlockClear2LeaveOffset = 0x013858A0; // BlockClear2_3Leave
 constexpr u64 BlockClear2HomeOffset = 0x01385930;  // BlockClear2_3
 u8 bbsc_boss_leave_skip = 0;
 u8 bbsc_boss_home_skip = 0;
-// After a guest skipped BlockClear2_3: clear its locks for this long, see TickBbscBossUnlock.
-constexpr s64 BbscBossUnlockMs = 20'000;
-s64 bbsc_boss_unlock_until_ms = 0;
+u8 bbsc_boss_departure_gate_skip = 0;
+bool bbsc_boss_departure_gates_ready = false;
 s64 bbsc_gate_watch_since_ms = 0; // the guest's last boss clear, see TickBbscGateWatch
+
+void ReleaseBbscLeaveLocks(std::string_view why);
 
 bool BbscSessionAlive() {
     const s32 state = GetSessionState();
@@ -10343,6 +10411,13 @@ bool BbscSessionAlive() {
 s32 LocalPlayerType() {
     const u64 player = GetLocalPlayerCharacter();
     return ReadablePointer(player, 0x80) ? ReadValue<s32>(player, 0x78) : -1;
+}
+
+void PS4_SYSV_ABI BbscBossDepartureGateHook(u64, const GuestRegisterSnapshot*) {
+    if (bbsc_boss_departure_gates_ready && BbscSessionAlive() && LocalPlayerType() == 1 &&
+        !BbscQuitInProgress()) {
+        bbsc_boss_departure_gate_skip = 1;
+    }
 }
 
 // The host's boss clear decides on the game's co-op count (2026-10-20, CONFIRMED in test5, host
@@ -10431,76 +10506,16 @@ void PS4_SYSV_ABI BbscBossClearHook(u64 tag, const GuestRegisterSnapshot* regist
         LOG_INFO(Debug, "BBSC boss clear: BlockClear2_3Leave skipped (guest stays in the session)");
     } else if (tag == 2 && LocalPlayerType() == 1) {
         bbsc_boss_home_skip = 1;
-        bbsc_boss_unlock_until_ms = SteadyNowMs() + BbscBossUnlockMs;
         LOG_INFO(Debug, "BBSC boss clear: BlockClear2_3 skipped (guest stays in the host world)");
-    }
-}
-
-// The boss-clear locks a skipped BlockClear2_3 leaves on the guest (CONFIRMED statically,
-// 2026-09-27; report: after the boss the guest could not use a ladder or interact at all).
-// BlockClear2 (0x013849A0) sets event flags 4047, 4000 and 4092 on every living member
-// (0x01384E5E..0x01384E86) and MenuMan [0x05562878]+0x2F0 = 1. What undoes them is the end of the
-// chain: BlockClear2_3 (0x01385930: +0x2F0 = 0, flags 4047/4000 = 0 - the host runs it) or the
-// game's leave variant 0x013859F0 (+0x2F0 = 0 and, when 4092 is set, 4047/4000/4092 = 0, then it
-// leaves the session). The guest skips both, so here are their unlocking parts without the leaving.
-void TickBbscBossUnlock() {
-    if (BbscQuitInProgress()) return;
-    if (bbsc_boss_unlock_until_ms == 0) {
-        return;
-    }
-    const s64 now = SteadyNowMs();
-    if (now > bbsc_boss_unlock_until_ms) {
-        bbsc_boss_unlock_until_ms = 0;
-        return;
-    }
-    static s64 last_ms = 0;
-    if (now - last_ms < 1'000) {
-        return; // again every second for the window: a late Lua step may set them once more
-    }
-    last_ms = now;
-    const u64 global = GetGlobalState();
-    const u64 player = GetLocalPlayerCharacter();
-    if (!BbscSessionAlive() || !ReadablePointer(global, 0x10) || ReadValue<u8>(global, 0x08) != 0 ||
-        player == 0 || GetCharacterHp(player) <= 0) {
-        return;
-    }
-    bool menu = false;
-    if (const u64 menu_man = ReadValue<u64>(image_base + 0x05562878, 0);
-        ReadablePointer(menu_man, 0x2F8) && HasMemoryAccess(menu_man + 0x2F0, 4, MemoryProt::CpuWrite) &&
-        ReadValue<s32>(menu_man, 0x2F0) != 0) {
-        WriteValue<s32>(menu_man, 0x2F0, 0);
-        menu = true;
-    }
-    // SetEventFlag panics when SprjEventState [0x0553B0D8] or SprjEventFlagMan [0x0553B100] is null.
-    if (ReadValue<u64>(image_base + 0x0553B0D8, 0) == 0 ||
-        ReadValue<u64>(image_base + 0x0553B100, 0) == 0) {
-        return;
-    }
-    using SetEventFlag = u64 PS4_SYSV_ABI (*)(u64 unused, u32 flag, u8 value);
-    const auto set = reinterpret_cast<SetEventFlag>(image_base + 0x0132E5A0);
-    set(0, 0xFCF, 0); // 4047
-    set(0, 0xFA0, 0); // 4000
-    set(0, 0xFFC, 0); // 4092
-    // 2026-10-20 (tester: "nothing works when you kill a boss" as a guest): the Lua load wait
-    // (Lua event object +0x8D, SetLoadWait) stops the player acting until a load (host Blank,
-    // TickBbscHostBlank); the guest skips the boss clear's load home, so it is lifted here too.
-    // HYPOTHESIS that the boss clear sets it - TickBbscGateWatch logs it either way.
-    bool load_wait = false;
-    if (const u64 lua_man = ReadValue<u64>(image_base + SprjLuaEventManPointerOffset, 0);
-        ReadablePointer(lua_man, 0x10)) {
-        const u64 lua = ReadValue<u64>(lua_man, 8);
-        if (ReadablePointer(lua, 0x90) && ReadValue<u8>(lua, 0x8D) != 0) {
-            WriteValue<u8>(lua, 0x8D, 0);
-            load_wait = true;
+        if (!bbsc_boss_departure_gates_ready) {
+            const u64 global = GetGlobalState();
+            const u64 player = GetLocalPlayerCharacter();
+            if (ReadablePointer(global, 0x10) && ReadValue<u8>(global, 8) == 0 && player != 0 &&
+                GetCharacterHp(player) > 0) {
+                ReleaseBbscLeaveLocks("boss clear compatibility");
+                ReleaseBbscDeathLocks("boss clear compatibility");
+            }
         }
-    }
-    static s64 logged_window = 0;
-    if (logged_window != bbsc_boss_unlock_until_ms || menu || load_wait) {
-        logged_window = bbsc_boss_unlock_until_ms;
-        LOG_INFO(Debug,
-                 "BBSC boss clear: guest unlocked (event flags 4047/4000/4092 cleared, mission-clear "
-                 "menu state {}, Lua load wait {})",
-                 menu ? "cleared" : "was already clear", load_wait ? "lifted" : "was off");
     }
 }
 
@@ -10519,6 +10534,22 @@ void InstallBbscBossClearHooks() {
     if (!ok) {
         LOG_ERROR(Debug, "BBSC boss clear: failed to hook the BlockClear2 chain");
         return;
+    }
+    // Skip only the writes that prepare for leaving. The guest HP check and native
+    // reward/cleanup code between and after these sites remain on their original paths.
+    static constexpr std::array<u8, 8> LoadWait{0x41, 0xC6, 0x86, 0x8D, 0, 0, 0, 1};
+    static constexpr std::array<u8, 10> FirstLeaveFlag{0xBE, 0xCF, 0x0F, 0, 0, 0xBA, 1, 0, 0, 0};
+    static constexpr std::array<u8, 10> MenuLock{0xC7, 0x80, 0xF0, 0x02, 0, 0, 1, 0, 0, 0};
+    bbsc_boss_departure_gates_ready =
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01384D03), LoadWait, 0,
+                             BbscBossDepartureGateHook, &bbsc_boss_departure_gate_skip, true) &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01384D48), FirstLeaveFlag, 0,
+                             BbscBossDepartureGateHook, &bbsc_boss_departure_gate_skip, false,
+                             reinterpret_cast<void*>(image_base + 0x01384D75)) &&
+        InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x013853E7), MenuLock, 0,
+                             BbscBossDepartureGateHook, &bbsc_boss_departure_gate_skip, true);
+    if (!bbsc_boss_departure_gates_ready) {
+        LOG_ERROR(Debug, "BBSC boss clear: native departure gates unavailable; cleanup on BlockClear2_3");
     }
     LOG_INFO(Debug, "BBSC boss clear keeps the co-op (BlockClear2_1 {:#x}, _3Leave {:#x}, _3 {:#x})",
              BlockClear2FirstOffset, BlockClear2LeaveOffset, BlockClear2HomeOffset);
@@ -11902,6 +11933,7 @@ void TickBbscLoadState() {
         if (was_loading || native_finish || world_ready) {
             ++bbsc_load_generation;
             FinishBbscNativeFinaleLoad();
+            SeedBbscNativeItemStateAtLoad();
             LOG_INFO(Debug, "BBSC load: completed generation {} (native finish {})",
                      bbsc_load_generation.load(), native_finish);
         }
@@ -11952,6 +11984,8 @@ void TickBbscPostLoadRecovery() {
     const s32 state = GetSessionState();
     const bool home = ReadValue<u8>(global, 0x1592) != 0;
     if (state != previous_state || home != previous_home) {
+        // A join can become a playable guest session after the map load completed.
+        if (state == 6 && !home) SeedBbscNativeItemStateAtLoad();
         previous_state = state;
         previous_home = home;
         stable_ms = 0;
@@ -12419,42 +12453,10 @@ void InstallBbscWallHooks() {
              "(base game, DLC, Chalice); boss walls untouched");
 }
 
-// ObjAct activation is replicated separately from event channel31. Observe the
-// ORIGINAL accepted local action, without changing its result or arguments.
-std::array<u64,2> bbsc_local_exit_action_load{};
-void PS4_SYSV_ABI BbscLocalTransitionActionHook(u64, const GuestRegisterSnapshot* registers) {
-    if (!registers || !(registers->rax & 0xFF) || !BbscIndependentTravelAllowed() ||
-        GetCurrentPackedMap()!=0x20000000 || (GetSessionState()!=3 && GetSessionState()!=6)) return;
-    const u32 action=static_cast<u32>(registers->r12);
-    if (action==3200000 || action==3200001)
-        bbsc_local_exit_action_load[action-3200000]=u64{bbsc_load_generation.load()}+1;
-}
-s64 BbscEventIdOf(u64 instance);
-bool GuardBbscLocalTransitionTrigger(u64 instance) {
-    if (!BbscIndependentTravelAllowed() || GetCurrentPackedMap()!=0x20000000 ||
-        (GetSessionState()!=3 && GetSessionState()!=6) || !ReadablePointer(instance,0xC0)) return false;
-    const s64 event=BbscEventIdOf(instance);
-    if (event!=13200310 && event!=13200311) return false;
-    const u64 instruction=ReadValue<u64>(instance,0xB0);
-    if (!ReadablePointer(instruction,0x20) || ReadValue<s32>(instruction,0)!=5 ||
-        ReadValue<s32>(instruction,4)!=2) return false;
-    // 3200000 -> ObjAct13200123 ->13200311; 3200001 ->13200124 ->13200310.
-    return bbsc_local_exit_action_load[event==13200311?0:1]!=u64{bbsc_load_generation.load()}+1;
-}
-
 // The shared pre-event pass also enables local native travel for visitors.
-// No action-button rejection: the original Lecture Building doors are usable.
 void InstallBbscEventPassHook() {
     if (image_base == 0) return;
     static constexpr std::array<u8, 6> Prologue{0x55, 0x48, 0x89, 0xE5, 0x41, 0x57};
-    // After the native stack-cookie check, AL and R12 still contain the result
-    // and action ID. Copy only ADD RSP,58 / POP RBX; the earlier MOV at97D6
-    // is RIP-relative and cannot be copied into the DLL trampoline unchanged.
-    static constexpr std::array<u8,5> ActionResult{0x48,0x83,0xC4,0x58,0x5B};
-    if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base+0x01CD97E6),
-                              std::span<const u8>{ActionResult},0,BbscLocalTransitionActionHook)) {
-        LOG_ERROR(Debug,"BBSC local travel: failed to observe original exit action result");
-    }
     // Install independently of Dream/personal-quest options. This is also the
     // existing NPC event pass; one trampoline owns the native event-update entry.
     if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x012ECDC0),
@@ -12587,6 +12589,12 @@ bool IsBbscNativeItemStateFlag(u32 flag) {
     // Original-data survey: only these native-reward receipts overlap NPC guards.
     // Ordinary kind-5 receipts already have personal loot isolation.
     return flag == 6671 || IsBbscScriptedPickupFlag(flag) || IsBbscKidnapFlag(flag);
+}
+
+bool IsBbscEventWrittenItemStateFlag(u32 flag) {
+    // 6671 and 9470 are ItemLot receipts. The native completion and SetFlag
+    // boundaries cover the scripted completions, placement and abduction bits.
+    return IsBbscKidnapFlag(flag) || (flag != 9470 && IsBbscScriptedPickupFlag(flag));
 }
 
 bool IsBbscPersonalMapEvent(s64 event) {
@@ -14922,7 +14930,12 @@ void PS4_SYSV_ABI BbscGuestAwardHook(u64 /*tag*/, const GuestRegisterSnapshot* r
         LOG_INFO(Debug, "BBSC kit: native lot {} skipped; supplied with Notebook", lot);
         return;
     }
-    if (IsBbscNativeRewardLot(lot)) {
+    // BlockClear2 already checked the guest's eligibility for Vermin. Keep its
+    // AwardItemLot call on the native path instead of routing it as a guest drop.
+    const bool chalice_vermin = reward_return == 0x0138515B &&
+        (lot == 5900 || lot == 5920 || lot == 5930) &&
+        Chalice::IsMap(GetCurrentPackedMap()) && BbscGuestInHostWorld();
+    if (chalice_vermin || IsBbscNativeRewardLot(lot)) {
         // Personal event completion / native receipts own repetition. Do not
         // consult K3's inventory history, mutate the lot, or reroll a native
         // empty/failed result. Begin only observes real gives and own flags.
@@ -15075,6 +15088,10 @@ bool BbscSharedMapProgressAllowed(u32 flag) {
 }
 
 u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming) {
+    if (!incoming) return 0;
+    for (const auto& lift : World::LiftFlags(key)) {
+        if (lift.offset == byte) incoming &= ~(lift.position | lift.temporary);
+    }
     for (u32 bit = 0; bit < 8; ++bit) {
         const u32 flag = key * 1000 + static_cast<u32>(byte) * 8 + bit;
         if ((incoming & (0x80u >> bit)) != 0 && !BbscSharedMapProgressAllowed(flag)) {
@@ -17675,22 +17692,26 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
                             caller_offset >= BbscEventBank2003Begin &&
                             caller_offset < BbscEventBank2003End &&
                             IsBbscTalkDrivenEvent(bbsc_event_run.event);
-    NoteBbscTalkFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx),
-                     caller_offset, talk_event);
-    if (talk_event && static_cast<u8>(registers->rdx) != 0) {
-        std::scoped_lock owner_lock{bbsc_npc_own_mutex};
-        bbsc_action_owner[static_cast<u32>(registers->rsi)] = true;
+    const u32 flag = static_cast<u32>(registers->rsi);
+    const u8 value = static_cast<u8>(registers->rdx);
+    if (bbsc_native_item_completion_hook_ready && IsBbscEventWrittenItemStateFlag(flag) &&
+        BbscGuestInHostWorld()) {
+        RecordBbscNativeItemSetFlag(registers->rdi, flag, static_cast<u32>(registers->rdx) != 0);
+    } else {
+        NoteBbscTalkFlag(flag, value, caller_offset, talk_event);
     }
-    NoteBbscNpcOwnFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
+    if (talk_event && value != 0) {
+        std::scoped_lock owner_lock{bbsc_npc_own_mutex};
+        bbsc_action_owner[flag] = true;
+    }
+    NoteBbscNpcOwnFlag(flag, value);
     if (caller_offset == BbscTalkSetFlagReturnOffset) {
-        NoteBbscLocalTalkFlag(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx));
+        NoteBbscLocalTalkFlag(flag, value);
     }
     const s32 state = GetSessionState();
     if ((state != 3 && state != 6) || !BbscResearchEnabled()) {
         return;
     }
-    const u32 flag = static_cast<u32>(registers->rsi);
-    const u8 value = static_cast<u8>(registers->rdx);
     static std::mutex mutex;
     static std::vector<std::tuple<u32, u8, u64>> seen;
     {
@@ -17707,6 +17728,15 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
                   state);
 }
 
+void PS4_SYSV_ABI BbscNativeItemCompletionHook(u64, const GuestRegisterSnapshot* registers) {
+    if (!registers || registers->rax >= BbscWorldGroupBytes) return;
+    // The native completion writer has found a live group. r8d is the first
+    // flag in that group, eax the byte index, r14b the MSB-first shift.
+    const u32 flag = static_cast<u32>(registers->r8 + registers->rax * 8 + 7 - (registers->r14 & 7));
+    if (IsBbscEventWrittenItemStateFlag(flag)) RecordBbscNativeItemFlag(flag, 1);
+    // Resume the native load/OR/store. The observer only changes our journal.
+}
+
 void InstallBbscResearchHooks() {
     // SprjEventFlagMan::SetFlag 0x013CFCC0(man, flag, value), a leaf: MOV R8D, EDX / MOV ECX,
     // [RDI + 0x1C]. Every flag the events, the talk scripts and the game set (0x0132E5A0, used by
@@ -17719,6 +17749,18 @@ void InstallBbscResearchHooks() {
         LOG_ERROR(Debug, "BBSC research: SetEventFlag hook failed");
     } else {
         bbsc_chalice_flag_hook_ready = true;
+        if (BbscOwnNpcQuestsEnabled()) {
+            static constexpr std::array<u8, 9> CompletionStore{
+                0x0F, 0xB6, 0x0C, 0x02, 0x09, 0xF1, 0x88, 0x0C, 0x02};
+            bbsc_native_item_completion_hook_ready = InstallGuestCodeHook(
+                reinterpret_cast<void*>(image_base + 0x012ED357), CompletionStore, 0,
+                BbscNativeItemCompletionHook);
+            if (bbsc_native_item_completion_hook_ready) {
+                (void)BbscNpcFlagPassFlags(); // split the catalog at startup, not on the first join
+            } else {
+                LOG_WARNING(Debug, "BBSC personal flags: native completion observer unavailable, keeping periodic receipt checks");
+            }
+        }
     }
     static constexpr std::array<u8, 7> StepBegin{0x48, 0x8B, 0xB5, 0x20, 0xFF, 0xFF, 0xFF};
     static constexpr std::array<u8, 7> StepEnd{0x44, 0x3B, 0xA5, 0x44, 0xFF, 0xFF, 0xFF};
@@ -22958,14 +23000,18 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     if (site.offset == 0x01938F65) { // Warp.RespawnPoint.Resolve: a load picks its spawn point
         // Observe construction even when the ordinary tick misses the whole load.
         // Apply/cleanup stays on the first ready game tick, after native initialization.
-        if (!BbscReturningToTitle()) {
-            if(!bbsc_world_load_pending.exchange(GetGlobalState()))++bbsc_world_native_load;
-        }
+        const bool new_load = !BbscReturningToTitle() &&
+                              !bbsc_world_load_pending.exchange(GetGlobalState());
+        if (new_load) ++bbsc_world_native_load;
         if (BbscNativeFinaleCommitted()) {
             DepartBbscNativeFinaleAtSpawn(registers->r13);
         } else {
             RestoreBbscOwnWorldAtLoad();
             ApplyBbscSharedProgressAtLoad();
+#ifdef BBSC_MOD
+            if (new_load && BbscIndependentActive() && ReadablePointer(registers->r13, 0x5C))
+                BbscWorldSeedLiftFlags(ReadValue<u32>(registers->r13, 0x58));
+#endif
         }
     }
     if (site.offset == 0x01332C1B) { // SummonedPlacement.SelectMap: a load picks its map
@@ -23057,7 +23103,6 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscDeathCurtain"); TickBbscDeathCurtain(); }
         { BBSC_PERF_NESTED("tick TickBbscStageWatch"); TickBbscStageWatch(); }
         { BBSC_PERF_NESTED("tick TickBbscHostDeathNotice"); TickBbscHostDeathNotice(); }
-        { BBSC_PERF_NESTED("tick TickBbscBossUnlock"); TickBbscBossUnlock(); }
         { BBSC_PERF_NESTED("tick CaptureBbscGuestLoot"); CaptureBbscGuestLoot(); }
         { BBSC_PERF_NESTED("tick TickBbscGuestLootReset"); TickBbscGuestLootReset(); }
         { BBSC_PERF_NESTED("tick TickBbscDreamStateRestore"); TickBbscDreamStateRestore(); }
@@ -25788,6 +25833,9 @@ void InstallReverseEngineeringTrace() {
     InstallBbscSpectateHooks();
     InstallBbscWallHooks();
     InstallBbscEventPassHook();
+#ifdef BBSC_MOD
+    InstallBbscNativeJoinFlags();
+#endif
     InstallBbscEchoPathHooks();
     InstallBbscDreamHooks();
     static constexpr std::array<u8, 6> RemoStartStore{0x88, 0x83, 0x68, 0x01, 0x00, 0x00};
