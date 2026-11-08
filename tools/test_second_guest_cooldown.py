@@ -19,15 +19,20 @@ fixture=r'''
 #include <limits>
 #include <vector>
 #include "core/cpu_patches.h"
+#include "bbsc_summon_admission.h"
 using Core::GuestRegisterSnapshot;
 #define LOG_INFO(...)
 u64 image_base=0; bool enabled=true, readable=true;
 namespace BbscMod { void LogPlain(const char*){} u64 EbootAddress(){return image_base;} }
+BbscMod::SummonAdmission admission;
+bool BbscMod::PartySummonSelectionBlocked(){return admission.Blocked();}
 constexpr u64 RoleMetadataTableOffset=0x0553D750,RoleMetadataStride=0x80,SummonBuildRoleTableOffset=0x0556E560;
 bool BbscHuntersEnabled(){return enabled;}
 bool ReadablePointer(u64 p,size_t n){return readable&&p>=image_base&&p+n<=image_base+0x5600000;}
 template<class T>T ReadValue(u64 p,size_t off){T v;std::memcpy(&v,reinterpret_cast<void*>(p+off),sizeof(v));return v;}
+#define BBSC_MOD
 HOOK
+#undef BBSC_MOD
 void PS4_SYSV_ABI adapter(u64,const GuestRegisterSnapshot* regs){ApplyBbscSummonRoleDelayMask(regs);}
 template<class T>void put(u64 p,size_t off,T v){std::memcpy(reinterpret_cast<void*>(p+off),&v,sizeof(v));}
 void bytes(u64 p,const std::vector<u8>& v){std::memcpy(reinterpret_cast<void*>(p),v.data(),v.size());}
@@ -94,6 +99,24 @@ int main(){
  assert(select(m,(1u<<7)|(1u<<8))==t); // delayed co-op doesn't block another eligible role
  reset(7,1.5f);enabled=false;assert(select(m,1u<<7)==t);enabled=true;
  reset(7,1.5f);readable=false;assert(select(m,1u<<7)==t);readable=true;
+ // Cached co-op candidate survives a busy Party response, even with no native cooldown.
+ admission.BeginSearch(10); admission.Read(10,"{\"MessageId\":\"legacy\"}");
+ admission.BeginClaim(11); assert(!admission.Blocked()); admission.Finish(11);
+ admission.BeginSearch(12); admission.Read(12,"{\"BBSCAdmission"); admission.Read(12,"Ready\":1,");
+ assert(!admission.Blocked());
+ admission.BeginSearch(13); admission.BeginClaim(14);
+ admission.Read(13,"{\"BBSCAdmissionReady\":1,"); assert(admission.Blocked());
+ admission.BeginSearch(15); admission.Finish(14);
+ admission.Read(15,"{\"BBSCAdmissionReady\":1,"); assert(admission.Blocked());
+ admission.BeginSearch(16); admission.Read(16,"{\"BBSCAdmissionReady\":0,");
+ for(u32 role:{7u,21u,22u,23u,24u}) {
+  reset(role,0.0f); assert(select(m,1u<<role)==0&&second[0x10]==0);
+ }
+ reset(8,0.0f); assert(select(m,(1u<<7)|(1u<<8))==t);
+ admission.BeginSearch(17); admission.Finish(17);
+ admission.Read(17,"{\"BBSCAdmissionReady\":1,"); assert(admission.Blocked());
+ admission.BeginSearch(18); admission.Read(18,"{\"BBSCAdmissionReady\":1,");
+ reset(7,0.0f); assert(select(m,1u<<7)==t&&second[0x10]==1);
  GuestRegisterSnapshot regs{};regs.r13=0;ApplyBbscSummonRoleDelayMask(nullptr);
  auto saved=image_base;image_base=0;ApplyBbscSummonRoleDelayMask(&regs);image_base=saved;
 }
@@ -101,7 +124,7 @@ int main(){
 # Compile only the temporary regression harness, never the DLL/port/launcher/package.
 with tempfile.TemporaryDirectory(prefix='bbsc-second-guest-') as tmp:
  cpp=Path(tmp)/'test.cpp';exe=Path(tmp)/'test.exe';cpp.write_text(fixture,encoding='utf-8')
- subprocess.run([os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe'),'-std=c++20','-O0','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-I',str(root/'emulator/src'),'-I',str(root/'emulator/externals/xbyak'),str(cpp),str(root/'emulator/mod/bbsc_hooks.cpp'),'-o',str(exe)],check=True)
+ subprocess.run([os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe'),'-std=c++20','-O0','-DNOMINMAX','-DWIN32_LEAN_AND_MEAN','-I',str(root/'emulator/src'),'-I',str(root/'emulator/mod'),'-I',str(root/'emulator/externals/xbyak'),str(cpp),str(root/'emulator/mod/bbsc_hooks.cpp'),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True,timeout=10,
                 env={**os.environ,'PATH':'C:/msys64/clang64/bin;'+os.environ.get('PATH','')})
-print('Second guest cooldown: production hook, exact native scan/consume/builder, retry and guards: PASS')
+print('Second guest: exact native scan, cooldown, cached sign and Party reply ordering: PASS')

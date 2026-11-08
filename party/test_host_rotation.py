@@ -38,6 +38,7 @@ class HostRotationTests(CompatibilityTests):
             # A real request must reach the former host; no synthetic invitation.
             from compat import game_user_id
             self.http(c,'/summon_messenger/request',{'TargetUserId':game_user_id('A'),'HostData':'new-owner'})
+            self.assertIn('A',self.settled([a,b,c])[0]['state']['pending'])
             self.assertEqual(json.loads(self.http(a,'/summon_messenger/create',sign))['HostData'],'new-owner')
 
     def wait_for(self, clients, predicate):

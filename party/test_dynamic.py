@@ -1,6 +1,7 @@
 """Late-join protocol and production native bridge, on isolated loopback profiles."""
 import base64
 import copy
+from contextlib import ExitStack
 import hashlib
 import json
 from pathlib import Path
@@ -13,6 +14,8 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import dynamic
 from dynamic import DynamicEngine
@@ -560,6 +563,83 @@ class DynamicNativeProcesses(DynamicHelpers, unittest.TestCase):
         c = processes.Client(path, who, self.root/who, compat=True)
         self.clients.append(c)
         return c
+
+    def test_sequential_search_and_cached_signs_up_to_five_players(self):
+        clients = {who: self.client(who) for who in 'ABCDE'}
+        host = clients['A']
+        for who in clients:
+            atomic_json(self.root/(who+'-peers.json'), self.offers)
+
+        def publish(who):
+            self.http(clients[who], '/summon_messenger/create', dict(
+                UserId=game_user_id(who), CharaId=12, AreaId=23,
+                SummonData=base64.b64encode(bytes(224)).decode()))
+
+        def search(ready, guests, *, legacy=False):
+            if legacy:
+                result = json.loads(self.http(host, '/summon_messenger/get'))
+                self.assertNotIn('BBSCAdmissionReady', result)
+            else:
+                request = Request(f"http://127.0.0.1:{host.info['http']}/summon_messenger/get",
+                                  data=b'{}', headers={'X-BBSC-Sequential-Admission': '1'})
+                with urlopen(request, timeout=4) as response:
+                    raw = response.read()
+                self.assertTrue(raw.startswith(f'{{"BBSCAdmissionReady":{int(ready)},'.encode()))
+                result = json.loads(raw)
+                self.assertEqual(result['BBSCAdmissionReady'], int(ready))
+            return {sign['UserId'] for sign in result['SummonDataList']} == {
+                game_user_id(who) for who in guests}
+
+        def invite(who):
+            return self.http(host, '/summon_messenger/request', dict(TargetUserId=game_user_id(who)))
+
+        with ExitStack() as stack:
+            sockets = {who: stack.enter_context(self.np_connect(client, 'Hunter'+who))
+                       for who, client in clients.items()}
+            self.assertEqual(self.http(host, '/party/acquire', control=True), b'1')
+            room = self.np_call(sockets['A'], 101, 'CreateRoomRequest', dict(max_slots=5),
+                                'CreateRoomReply')['room_id']
+            for who in 'BCDE':
+                publish(who)
+            self.eventually(lambda: search(True, 'BCDE'))
+
+            invite('B')
+            self.assertTrue(search(False, ''))
+            self.assertTrue(search(False, '', legacy=True))
+            with self.assertRaises(HTTPError) as busy:
+                invite('C')  # A client can still submit a previously cached sign.
+            self.assertEqual(busy.exception.code, 409)
+            busy.exception.close()
+            self.assertNotIn('error', clients['B'].op('admission_cancel'))
+            self.eventually(lambda: clients['B'].state()['state']['owner'] is None)
+            publish('B')
+
+            members = {'HunterA'}
+            waiting = set('BCDE')
+            for who in 'CBDE':
+                for guest in waiting:
+                    publish(guest)
+                self.eventually(lambda: search(True, waiting))
+                invite(who)
+                self.assertTrue(search(False, ''))
+                self.eventually(lambda: clients[who].state()['final'] >= 0 and
+                                clients[who].state()['state']['owner'] == 'A')
+                joined = self.np_call(sockets[who], 102, 'JoinRoomRequest', dict(room_id=room),
+                                      'JoinRoomReply')
+                members.add('Hunter'+who)
+                waiting.remove(who)
+                self.assertEqual({member['npid'] for member in joined['details']['members']}, members)
+            self.assertTrue(search(False, ''))
+
+            self.np_call(sockets['E'], 103, 'LeaveRoomRequest', dict(room_id=room), 'LeaveRoomReply')
+            self.eventually(lambda: clients['E'].state()['state']['owner'] is None)
+            publish('E')
+            self.eventually(lambda: search(True, 'E'))
+            invite('E')
+            self.eventually(lambda: clients['E'].state()['final'] >= 0 and
+                            clients['E'].state()['state']['owner'] == 'A')
+            joined = self.np_call(sockets['E'], 102, 'JoinRoomRequest', dict(room_id=room), 'JoinRoomReply')
+            self.assertEqual({member['npid'] for member in joined['details']['members']}, members)
 
     def test_real_http_np_late_join_and_host_rotation(self):
         a = self.client('A')

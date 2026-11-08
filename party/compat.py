@@ -724,13 +724,31 @@ class Compatibility:
             elif kind=='get':
                 result['SummonDataList']=[]
                 diagnostic=[]
-                if s['owner']==who and self.e.finalized(s):
-                    with self.e.lock: signs=copy.deepcopy(self.e.signs)
-                    if self.diagnostics:diagnostic.extend((peer,'not_received') for peer in s['roster'] if peer!=who and peer not in signs)
+                with self.e.lock:
+                    # Read readiness and signs from the same snapshot. A staged
+                    # claim is already reserving a guest before pending is committed.
+                    s=self.e.state
+                    owner=s['owner']
+                    finalized=self.e.finalized(s)
+                    command=self.e.pending_local
+                    room=s['room']
+                    available=(owner==who and finalized and not s['pending'] and
+                               not (command and command['op']['kind']=='claim') and
+                               not (getattr(self.e,'dynamic',False) and self.e.disk['staged']) and
+                               (room is None or (not room.get('closing') and
+                                len(room['members'])<room['max_slots'])))
+                    if available:
+                        roster=set(s['roster'])
+                        joined=set(s['joined'])
+                        signs=copy.deepcopy(self.e.signs)
+                if headers.get('X-BBSC-Sequential-Admission')=='1':
+                    result['BBSCAdmissionReady']=int(available)
+                if available:
+                    if self.diagnostics:diagnostic.extend((peer,'not_received') for peer in sorted(roster) if peer!=who and peer not in signs)
                     for peer,entry in signs.items():
                         sign=entry['body'].get('sign')
-                        reason=('self' if peer==who else 'outside_roster' if peer not in s['roster'] and not getattr(self.e,'dynamic',False) else
-                                'pending' if peer in s['pending'] else 'joined' if peer in s['joined'] else
+                        reason=('self' if peer==who else 'outside_roster' if peer not in roster and not getattr(self.e,'dynamic',False) else
+                                'joined' if peer in joined else
                                 'no_sign' if not sign else 'stale' if time.monotonic()-entry['at']>12 else None)
                         if reason:
                             if self.diagnostics:diagnostic.append((peer,reason))
@@ -746,10 +764,10 @@ class Compatibility:
                                            list(data[0x78:0x7b]) if len(data)==224 else []))
                         sign.pop('MessageId',None); result['SummonDataList'].append(sign)
                 if self.diagnostics:
-                    snapshot=(s['owner'],self.e.finalized(s),diagnostic)
+                    snapshot=(owner,finalized,available,diagnostic)
                     if snapshot!=self.search_diagnostic:
                         self.search_diagnostic=copy.deepcopy(snapshot)
-                        self.log('sign_search',owner=s['owner'],finalized=snapshot[1],
+                        self.log('sign_search',owner=owner,finalized=finalized,available=available,
                                  candidates=diagnostic,returned=len(result['SummonDataList']))
             elif kind=='request':
                 candidates=self.e.members if getattr(self.e,'dynamic',False) else s['roster']

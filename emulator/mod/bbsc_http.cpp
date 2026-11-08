@@ -58,6 +58,8 @@
 #include "common/logging/log.h"
 #include "common/types.h"
 #include "bbsc_network_attempt.h"
+#include "bbsc_party.h"
+#include "bbsc_summon_admission.h"
 #include "core/bloodborne_re.h"
 
 // One line in this run's BBSC timeline (bloodborne_re.cpp, "Timeline").
@@ -109,6 +111,7 @@ DeleteFn original_delete = nullptr;
 ReadDataFn original_read_data = nullptr;
 
 std::mutex state_mutex;
+BbscMod::SummonAdmission summon_admission;
 std::set<int> native_sign_requests; // pending native create replies, protected by state_mutex
 std::map<int, std::string> request_urls;            // reqId -> URL the request really goes to
 std::vector<std::pair<std::string, std::string>> overrides; // URL prefix -> replacement
@@ -612,6 +615,10 @@ int PS4_SYSV_ABI SendRequest(int request, const void* data, u64 size) {
         own_sign_deleted_ms = NowMs();
     }
     if (IsSummonClaim(url)) {
+        if (BbscMod::PartyEnabled()) {
+            std::scoped_lock lock{state_mutex};
+            summon_admission.BeginClaim(request);
+        }
         // The host rang one sign: the broker gets our placement with the claim and only that
         // sign's player hears it over the relay (it moves its sign into our map, then the broker
         // delivers). Without a target nothing is sent - a claim with a placement nobody follows
@@ -642,7 +649,12 @@ int PS4_SYSV_ABI SendRequest(int request, const void* data, u64 size) {
         return original_send(request, data, size);
     }
     if (IsSummonSearch(url)) {
-        return original_send(request, data, size); // searches go out unchanged (0.0.1 hotfix)
+        if (BbscMod::PartyEnabled() &&
+            original_add_header(request, "X-BBSC-Sequential-Admission", "1", 0) >= 0) {
+            std::scoped_lock lock{state_mutex};
+            summon_admission.BeginSearch(request);
+        }
+        return original_send(request, data, size);
     }
     if (IsSummonCreate(url)) {
         own_sign_created_ms = NowMs();
@@ -676,6 +688,7 @@ int PS4_SYSV_ABI ReadData(int request, void* data, u64 size) {
         std::string url;
         {
             std::scoped_lock lock{state_mutex};
+            summon_admission.Read(request, {static_cast<const char*>(data), static_cast<size_t>(read)});
             if (const auto it = request_urls.find(request); it != request_urls.end()) {
                 url = it->second;
             }
@@ -741,6 +754,7 @@ int PS4_SYSV_ABI DeleteRequest(int request) {
     FinishNativeSignRequest(request);
     {
         std::scoped_lock lock{state_mutex};
+        summon_admission.Finish(request);
         request_urls.erase(request);
     }
     return original_delete(request);
@@ -787,6 +801,10 @@ u64 WaitForSlot(u64 slot_offset) {
 } // namespace
 
 namespace BbscMod {
+
+bool PartySummonSelectionBlocked() {
+    return summon_admission.Blocked();
+}
 
 // The emulator's overrides file, in the order the emulator looks for it:
 // 1. SHADPS4_HTTP_HOST_OVERRIDES_JSON - BBport (run.py) passes the file it uses this way: its own

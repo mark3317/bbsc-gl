@@ -72,6 +72,7 @@
 #ifdef BBSC_MOD
 #include "../../mod/bbsc_register.h"
 #include "../../mod/bbsc_party.h"
+#include "../../mod/bbsc_summon_admission.h"
 #include "core/bbsc_dreg_rules.h"
 #endif
 
@@ -22343,20 +22344,27 @@ void ApplyBbscHunterCap(u64 summon_manager) {
 // Native 018732DD consumes pending.state before 0187338A calls SummonBuild.
 // SummonBuild's role cooldown (01874750..69) can then return null without a
 // request. A subsequent scan ignores state 1 until a new sign generation arrives.
-// Defer those roles BEFORE selection, keeping the real pending node untouched.
+// Defer those roles before selection, including cached co-op signs while Party
+// is processing another invitation. Keep the real pending node untouched.
 // The native builder still owns capacity, identity and all readiness checks.
 void ApplyBbscSummonRoleDelayMask(const GuestRegisterSnapshot* registers) {
     if (!registers || !BbscHuntersEnabled() || image_base == 0 ||
         static_cast<u32>(registers->r13) == 0) return;
     constexpr std::array<u32, 5> coop_roles{7, 21, 22, 23, 24};
+#ifdef BBSC_MOD
+    const bool admission_busy = BbscMod::PartySummonSelectionBlocked();
+#else
+    constexpr bool admission_busy = false;
+#endif
     u32 delayed_mask = 0;
     for (const u32 role : coop_roles) {
         const u64 metadata = image_base + RoleMetadataTableOffset + role * RoleMetadataStride;
         const u64 backoff = image_base + SummonBuildRoleTableOffset + role * 12;
-        if (!ReadablePointer(metadata, 8) || !ReadablePointer(backoff, 8)) return;
+        if (!ReadablePointer(metadata, 8) || (!admission_busy && !ReadablePointer(backoff, 8))) return;
         // Same enabled/positive predicate as native CMP / VUCOMISS / JBE.
         // NaN, zero and negative countdowns pass in the native builder too.
-        if (ReadValue<u8>(backoff, 0) != 0 && ReadValue<float>(backoff, 4) > 0.0f) {
+        if (admission_busy ||
+            (ReadValue<u8>(backoff, 0) != 0 && ReadValue<float>(backoff, 4) > 0.0f)) {
             delayed_mask |= ReadValue<u32>(metadata, 4);
         }
     }
