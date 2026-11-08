@@ -17482,18 +17482,10 @@ void PS4_SYSV_ABI BbscChaliceRewardGateHook(u64, const GuestRegisterSnapshot* re
     bbsc_chalice_reward_gate_skip = 1; // completed no-op; native interpreter advances normally
 }
 
-// CUSA03173 1.09 boss entrances. Their retry branch jumps over the native
+// The boss entrance retry branch jumps over the native
 // object/collision and SFX enable commands, assuming a fresh map. A guest can
 // retain the open first-encounter geometry. Land on the original enable block
 // before continuing to the original label and the host/guest entry conditions.
-constexpr std::pair<s64, s32> BbscBossFogRetrySteps[] = {
-    {12104810, 5}, {12104880, 5}, {12204890, 10}, {12304730, 10}, {12304810, 8},
-    {12404840, 8}, {12414730, 8}, {12414810, 8}, {12424710, 10}, {12424810, 8},
-    {12504810, 8}, {12604845, 8}, {12604860, 10}, {12704840, 8}, {12804880, 10},
-    {12906789, 10}, {12906796, 10}, {12906800, 8}, {13204830, 9}, {13304870, 14},
-    {13404800, 8}, {13404850, 9}, {13504800, 8}, {13504850, 8}, {13604800, 8},
-};
-
 bool RedirectBbscBossFogRetry(u64 instance) {
     if (!ReadablePointer(instance, 0xC4) || ReadValue<s32>(instance, 0xA0) != 1) return false;
     const u64 instruction = ReadValue<u64>(instance, 0xB0);
@@ -17503,10 +17495,9 @@ bool RedirectBbscBossFogRetry(u64 instance) {
 
     const auto* range = LookupBbscQuestRange(instance);
     if (!range || instruction != range->first + 0x20) return false;
-    const auto gate = std::ranges::lower_bound(BbscBossFogRetrySteps, range->event, {},
-                                               &std::pair<s64, s32>::first);
-    if (gate == std::end(BbscBossFogRetrySteps) || gate->first != range->event) return false;
-    const u64 enable = range->first + gate->second * 0x20;
+    const s32 enable_step = GuestAccess::BossFogRetryEnableStep(range->event);
+    if (!enable_step) return false;
+    const u64 enable = range->first + enable_step * 0x20;
     if (enable + 0x20 > range->end || !ReadablePointer(enable, 0x20) ||
         ReadValue<s32>(enable, 0) != 2005 || ReadValue<s32>(enable, 4) != 3 ||
         ReadValue<u64>(enable, 8) != 8) return false;
@@ -17524,7 +17515,7 @@ bool RedirectBbscBossFogRetry(u64 instance) {
 
     // The native iterator consumes this relative step count, including argument
     // resolution for the enable commands. The defeat guard already ran at step 0.
-    return WriteValue<s32>(instance, 0xC0, gate->second - 1);
+    return WriteValue<s32>(instance, 0xC0, enable_step - 1);
 }
 
 void PS4_SYSV_ABI BbscEventBank1003Hook(u64 tag, const GuestRegisterSnapshot* registers) {

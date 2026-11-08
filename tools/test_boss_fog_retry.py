@@ -15,9 +15,10 @@ elf = Path(sys.argv[1]).read_bytes()[0x4000:]
 assert elf[0x17bedd0:0x17bedd6] == bytes.fromhex('55 48 89 e5 41 57')
 assert elf[0x12ef2e0:0x12ef2e6] == bytes.fromhex('55 48 89 e5 41 57')
 source = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
-production = source[source.index('constexpr std::pair<s64, s32> BbscBossFogRetrySteps'):
+production = source[source.index('bool RedirectBbscBossFogRetry(u64 instance)'):
                     source.index('// From an event\'s 2003 instruction')]
-targets = {int(event): int(step) for event, step in re.findall(r'\{(\d+), (\d+)\}', production)}
+access = (ROOT / 'emulator/src/core/bbsc_guest_access.h').read_text(encoding='utf-8')
+targets = {int(event): int(step) for event, step in re.findall(r'\{(\d+), (\d+)\}', access)}
 
 cases = {}
 scripts = {}
@@ -48,6 +49,8 @@ fixture = r'''
 #include <iterator>
 #include <vector>
 #include "core/cpu_patches.h"
+#include "core/bbsc_guest_access.h"
+namespace GuestAccess = Core::Bloodborne::GuestAccess;
 using Core::GuestRegisterSnapshot;
 using s64=int64_t;
 using s32=int32_t;
@@ -81,6 +84,7 @@ void Load(const char* path, u64 address) {
     std::copy(std::istreambuf_iterator<char>(file), {}, (char*)address);
 }
 void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bool hooked) {
+    assert(!GuestAccess::EventAllowed(event));
     std::ifstream script(path,std::ios::binary);
     std::vector<char> data(std::istreambuf_iterator<char>(script), {});
     const u64 file=(u64)data.data();

@@ -40,6 +40,8 @@ main=r'''
 int main(){
  assert(!GuestAccess::EventAllowed(13204820)); // never execute both jump scripts as guest
  assert(GuestAccess::EventAllowed(13204832)&&GuestAccess::EventAllowed(13204833));
+ assert(!GuestAccess::EventAllowed(12424810)&&GuestAccess::EventAllowed(12424811));
+ assert(!GuestAccess::EventAllowed(13304870)&&GuestAccess::EventAllowed(13304871));
  std::array<u8,0x48> record{};std::array<u8,0x30> condition{};
  const u64 c=(u64)condition.data();
  Set(record,0x10,c);Set(record,0x18,u64{0x60000});
@@ -63,7 +65,7 @@ int main(){
  Set(condition,0x18,u64{0x40000});state=3;BbscDreamTalkHook(0,&r);assert(condition[0x25]==1);
  // No pointer permission cache: event identity is checked on every invocation.
  std::array<u8,0xc0> instance{};r.rdi=c;r.rdx=(u64)instance.data();
- for(s64 event:std::array<s64,11>{-1,0,999999,3503,12100000,12100002,12100180,12104800,12104850,13204832,13204820})
+ for(s64 event:std::array<s64,15>{-1,0,999999,3503,12100000,12100002,12100180,12104800,12104850,13204832,13204820,12424810,12424811,13304870,13304871})
  for(s32 role:{0,3,6})for(s32 entity:{10000,3200110})for(s8 type:{0,1,2}){
    state=role;native_event=event;Set(condition,0x28,entity);Set(condition,0x2c,type);
    condition[0x10]=0;bbsc_dream_type_skip=0;BbscDreamTypeCheckHook(0,&r);
@@ -73,7 +75,7 @@ int main(){
  // Only this exact bank1003 caller/context may receive a local host answer.
  std::array<u64,1> stack{};r.rsp=(u64)stack.data();r.r14=(u64)instance.data();r.rdi=c;
  Set(condition,0,image_base+0x0532D270);
- for(s64 event:std::array<s64,6>{-1,999999,9421,12501803,3503,12100000})
+ for(s64 event:std::array<s64,10>{-1,999999,9421,12501803,3503,12100000,12424810,12424811,13304870,13304871})
  for(s32 role:{3,6})for(u8 wanted:{0,1,2,3,4})for(bool bank:{false,true}){
    native_event=event;state=role;Set(condition,0x28,wanted);
    stack[0]=image_base+(bank?0x17bf643:0x1800000);r.rax=123;bbsc_guest_role_skip=0;condition[0x10]=0xa6;
