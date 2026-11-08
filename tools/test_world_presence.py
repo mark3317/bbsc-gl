@@ -105,10 +105,11 @@ int main() {
     assert(book.Hear(22,a.world,a,100));
     assert(!book.Hear(22,a.world,a,101));
     assert(book.Find(22,3099)); assert(!book.Find(22,3100));
-    assert(book.LivingHere(a,100)==1);
-    assert(book.LivingHere(a,3100)==1); // a movie is not a death or departure
+    const auto no_deaths = [](u32,s64){return false;};
+    assert(book.LivingHere(a,no_deaths)==1); // a movie is not a death or departure
+    assert(book.LivingHere(a,[](u32 peer,s64 received){return peer==22 && received==100;})==0);
     b=Sample(Dream,2); assert(book.Hear(22,b.world,b,3200));
-    assert(book.LivingHere(a,3200)==0);
+    assert(book.LivingHere(a,no_deaths)==0);
     b=Sample(Yharnam,3); b.visit=2; assert(book.Hear(22,b.world,b,3300));
     bad=Sample(Yharnam,4); assert(!book.Hear(22,bad.world,bad,3400));
     book.Forget(22); assert(!book.Find(22,3400));
@@ -128,6 +129,38 @@ int main() {
     b.sequence++; b.capabilities=a.capabilities; assert(book.Hear(22,a.world,b,4001));
     assert(book.AllSupportTravel(a,roster,4001));
     assert(!book.AllSupportTravel(a,roster,7001));
+
+    // A full reset rebuilds the same map in the same room, in any load order.
+    // Every observer rejects old actor traffic until the sender is Playing again.
+    constexpr std::array<u32,3> hunters{11,22,33};
+    std::array<unsigned,3> order{0,1,2};
+    do {
+        std::array<Presence,3> players{Sample(),Sample(),Sample()};
+        std::array<PresenceBook,3> books;
+        for (unsigned i=0;i<3;++i) books[i].Bind(players[i].world,hunters[i]);
+        const auto publish = [&](unsigned i,s64 now) {
+            for (unsigned j=0;j<3;++j)
+                if (i!=j) assert(books[j].Hear(hunters[i],players[i].world,players[i],now));
+        };
+        for (unsigned i=0;i<3;++i) {
+            players[i].alive=0;publish(i,1);
+            players[i].phase=Phase::Loading;++players[i].sequence;publish(i,2);
+        }
+        for (unsigned i:order) {
+            players[i].phase=Phase::Playing;players[i].alive=1;
+            ++players[i].visit;++players[i].sequence;publish(i,3);
+            for (unsigned j=0;j<3;++j) if (i!=j)
+                assert(Routes(0x31,players[i],players[j])==(players[j].phase==Phase::Playing));
+        }
+        for (unsigned i=0;i<3;++i) {
+            assert(books[i].LivingHere(players[i],no_deaths)==2);
+            for (unsigned j=0;j<3;++j) if (i!=j) {
+                const auto* resident=books[i].Resident(hunters[j]);
+                assert(resident && resident->presence.visit==2 && SamePlace(players[i],resident->presence));
+                assert(!books[i].Hear(hunters[j],players[i].world,Sample(),4));
+            }
+        }
+    } while (std::next_permutation(order.begin(),order.end()));
 
     // Stable owner: a returning host follows the still-present owner first.
     std::map<u32,Member> owners{{11,{a,4000,3900}},{22,{b,4000,3800}}};

@@ -34,6 +34,7 @@ u64 image_base=0x100000, gauge=0x200000, rules=0x300000;
 constexpr u64 BossGaugePointerOffset=0x10, SummonSessionRulesPointerOffset=0x18;
 std::array<int,3> handles{1,2,3};
 bool bbsc_boss_at_own_death=true;
+bool bbsc_boss_wipe_seen=true;
 s32 bbsc_encounter_lamp=2412952;
 u32 bbsc_encounter_map=24, bbsc_encounter_load_generation=1;
 s64 bbsc_boss_bar_seen_ms=100, bbsc_boss_killed_ms=50;
@@ -54,6 +55,7 @@ bool HasMemoryAccess(u64,size_t,int) { return true; }
 bool BossFightActive() { for(auto h:handles) if(h!=-1) return true; return false; }
 void NativeClear() { ++clears; handles.fill(-1); }
 void NotifyBbscHostDeathReload() { ++notified; }
+bool RequestBbscSharedLampReload() { return false; }
 struct SummonPlacementDescriptor { u32 packed_region=24; float x=0,y=0,z=0; };
 namespace Chalice { bool IsMap(u32 map) { return map==29; } }
 bool PrepareBbscChaliceLoad(u32) { return chalice_ready; }
@@ -65,7 +67,7 @@ void Flag() {}
 bool Select(u64,s32) { return selected; }
 u64 Transition() {
     assert(!BossFightActive());
-    assert(!bbsc_boss_at_own_death && bbsc_boss_bar_seen_ms==0 && bbsc_boss_killed_ms==0);
+    assert(!bbsc_boss_at_own_death && !bbsc_boss_wipe_seen && bbsc_boss_bar_seen_ms==0 && bbsc_boss_killed_ms==0);
     assert(bbsc_encounter_lamp==-1 && bbsc_encounter_map==0 && bbsc_encounter_load_generation==0);
     ++transitions; return 1;
 }
@@ -90,27 +92,27 @@ int main() {
     assert(clears==1 && transitions==1 && notified==1);
     arm(); SummonPlacementDescriptor to;
     selected=false;
-    assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
+    assert(!RequestBbscSessionWarp(0x400000,to,"follow"));
     assert(clears==1 && BossFightActive() && penalties==0); // failed request preserves current encounter
     selected=true; selected_map=25;
-    assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
+    assert(!RequestBbscSessionWarp(0x400000,to,"follow"));
     assert(clears==1 && BossFightActive() && penalties==0);
     selected_map=24; writable=false;
-    assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
+    assert(!RequestBbscSessionWarp(0x400000,to,"follow"));
     assert(clears==1 && BossFightActive() && penalties==0);
     writable=true;
-    assert(RequestBbscSessionWarp(0x400000,to,"wipe"));
+    assert(RequestBbscSessionWarp(0x400000,to,"follow"));
     assert(clears==2 && transitions==2 && !bbsc_chalice_transition_owned);
-    assert(penalties==1 && bbsc_wipe_restock_pending);
+    assert(penalties==0 && !bbsc_wipe_restock_pending);
     arm(); to.packed_region=29; chalice_ready=false;
-    assert(!RequestBbscSessionWarp(0x400000,to,"wipe"));
+    assert(!RequestBbscSessionWarp(0x400000,to,"follow"));
     assert(clears==2 && BossFightActive());
     // New encounter after a completed request remains visible; no periodic suppression.
     handles={40,-1,-1}; assert(BossFightActive());
 }
 '''
 warp = function('bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std::string_view why)')
-assert warp.index('BbscApplyDeathPenalty') < warp.index('reinterpret_cast<StageTransition>')
+assert 'BbscApplyDeathPenalty' not in warp
 reinsert = function('void TickBbscReinsertV8()')
 assert 'now - bbsc_v8_ready_since_ms < BbscReinsertSettleMs' not in reinsert
 assert reinsert.index('TickBbscRejoinLines();') < reinsert.index('set_state(task, 4)')

@@ -4323,8 +4323,6 @@ std::string_view bbsc_spectate_name;
 // asks for the reload itself whenever a death has to end the way the game intends.
 constexpr u64 DeathReloadRequestOffset = 0x013CDE30;
 bool bbsc_request_death_reload = false;
-// Keep the death recovery state machine active while its spectator camera is released.
-bool bbsc_spectate_waiting_host_reload = false;
 u64 GetLocalPlayerCharacter();
 void NotifyBbscHostDeathReload();
 void ClearBbscBossContext(std::string_view why);
@@ -4350,35 +4348,8 @@ s64 bbsc_spectate_since_ms = 0;
 // separate from the spectator's existing safety/settle clocks.
 s64 bbsc_dead_since_ms = 0;
 s64 bbsc_spectate_death_ms = 0;
-// The local character when the spectate started. A load builds a new one: someone reloaded (the
-// host after its own death) and every boss is back to full health, so nobody is going to kill the
-// boss this death was waiting for. Test 2026-10-01: the guest stayed dead after the host's reload
-// until the host died again.
 s64 bbsc_spectate_alone_since_ms = 0;
-// Test 2026-10-04 (mod 11, boss fight): the guest died first and spectated; when the host died the
-// guest saw nobody alive and reloaded on its own - into its OWN respawn point (the Hunter's Dream),
-// still in the session. While it loaded it stopped reporting "dead", the host's death step saw the
-// guest's copy alive, spectated, and stayed a corpse. A summoned guest therefore never reloads
-// itself while the session lives: it keeps spectating until the host's reload rebuilds the guest's
-// character ("a load ended the boss fight" -> respawn in place in the host's reset world). Only if
-// no such load comes within BbscGuestWaitHostMs does it fall back to its own reload.
-constexpr s64 BbscGuestWaitHostMs = 45'000;
-bool bbsc_spectate_logged_wait = false;
-// Test 2026-10-04 (mod 15, CLS_AMG host, brother guest): the wait worked, the host reloaded and came
-// back alive - but the host's reload does NOT reload a summoned guest, so the guest's character
-// never changed, "a load ended the boss fight" never fired and the guest stayed dead waiting for a
-// boss kill. So once a guest has seen nobody alive (a wipe), the host coming back alive means the
-// host reloaded: the guest then does its own full reload into the host's map at the host's
-// position (the join warp, RequestBbscSessionWarp), which resets its copy of the world too; the
-// new character after that load is revived by the "a load ended the boss fight" path.
-bool bbsc_spectate_saw_wipe = false;
-bool bbsc_spectate_wipe_warped = false;
-s64 bbsc_spectate_host_back_ms = 0;
-constexpr s64 BbscWipeHostSettleMs = 2'000; // let the host's synced position settle first
-// bbsc_peer_revivals when this death started. A guest whose partner said "dead" and then "alive"
-// while the guest was down saw a wipe and a reload, even if it never saw "nobody alive" itself
-// (test 2026-10-06: the guest died while the dead host was already reloading).
-u32 bbsc_spectate_revivals_at_death = 0;
+bool bbsc_boss_wipe_seen = false;
 
 bool BbscSpectateEnabled() {
     static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_SPECTATE");
@@ -4418,7 +4389,6 @@ struct BbscPeerLife {
     u8 dead = 0;
     u32 sequence = 0;
     s64 received_ms = 0;
-    bool host_reloading = false;
     bool model_visible = false;
 };
 std::mutex bbsc_life_mutex;
@@ -4462,26 +4432,8 @@ void NotifyBbscHostDeathReload() {
     if (!bbsc_spectate_active && (player == 0 || GetCharacterHp(player) != 0)) return;
     bbsc_host_death_reloading = true;
     SendBbscLifeState(2);
-    BBSC_TIMELINE("DEATH", "host death reload starting; releasing guest spectator cameras");
+    BBSC_TIMELINE("DEATH", "host death reload starting");
 }
-
-bool BbscHostReportsDeathReload() {
-    if (BbscIndependentActive() && !BbscWorldPeerHere(GetBbscRelayHost())) return false;
-    std::scoped_lock lock{bbsc_life_mutex};
-    for (const auto& [player, life] : bbsc_peer_life) {
-        if (life.host_reloading) return true;
-    }
-    return false;
-}
-
-// Counts "dead -> alive" reports: a partner that came back by reloading (see TickBbscSpectate).
-std::atomic<u32> bbsc_peer_revivals{0};
-// T5 (2026-10-29, Gascoigne): the host's wipe reload was over (it said "alive" at 17:35:39.8) before
-// the guest's death step ran (17:35:43); the step took bbsc_peer_revivals then, saw no revival and
-// the guest watched the reloaded host for a boss kill that never came. The count is now taken when
-// we told the others we are dead (hp 0), which is what the death step compares with.
-std::atomic<bool> bbsc_own_dead{false};
-std::atomic<u32> bbsc_revivals_at_own_death{0};
 
 // {fresh reports, of which dead}
 std::pair<u32, u32> BbscPeerLifeCounts() {
@@ -5057,12 +5009,6 @@ bool RequestBbscSessionWarp(u64 global, const SummonPlacementDescriptor& to, std
     const u64 rules = ReadValue<u64>(image_base + SummonSessionRulesPointerOffset, 0);
     if (ReadablePointer(rules, 0x88) && HasMemoryAccess(rules + 0x84, 4, MemoryProt::CpuWrite)) {
         WriteValue<s32>(rules, 0x84, 3);
-    }
-    if (why == "wipe") {
-        // Before StageTransition / ArmBbscRejoin snapshots the carried echoes.
-        // The death snapshot is consumed once, so a deferred retry cannot charge twice.
-        BbscApplyDeathPenalty("before guest wipe reload");
-        bbsc_wipe_restock_pending = true;
     }
     // A kept guest bypasses the vanilla failed-mission teardown. Clear the old encounter
     // before StageTransition snapshots the world, not after the new character is built.
@@ -10119,16 +10065,7 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
         bbsc_request_death_reload = true;
         return; // native 9421 selects the prison before the death load
     }
-    if (BbscIndependentActive() && !LivingPartnerExists()) {
-        bbsc_spectate_active = false;
-        bbsc_request_death_reload = true;
-        return;
-    }
-    const bool guest_waits_for_host = session_state == 6 && !LivingPartnerExists();
-    if (!guest_waits_for_host && !LivingPartnerExists()) {
-        // No partner: ask for the reload the retargeted call site no longer performs, so a solo
-        // death still ends the way the game intends.
-        LOG_INFO(Debug, "BBSC spectate: {} runs normally (no living partner)", name);
+    if (bbsc_boss_wipe_seen || !LivingPartnerExists()) {
         bbsc_spectate_active = false;
         bbsc_request_death_reload = true;
         return;
@@ -10136,7 +10073,6 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
     bbsc_native_death_rearm = {GetLocalPlayerCharacter(), GetGlobalState(), 0,
                               bbsc_load_generation.load()};
     StashBbscOwnWorldSnapshot();
-    bbsc_spectate_waiting_host_reload = false;
     bbsc_spectate_name = name;
     bbsc_spectate_since_ms = SteadyNowMs();
     bbsc_spectate_death_ms = bbsc_dead_since_ms > 0 &&
@@ -10144,34 +10080,10 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
                                  ? bbsc_dead_since_ms : bbsc_spectate_since_ms;
     bbsc_spectate_load_generation = bbsc_load_generation.load();
     bbsc_spectate_alone_since_ms = 0;
-    bbsc_spectate_logged_wait = false;
-    bbsc_spectate_saw_wipe = guest_waits_for_host;
-    bbsc_spectate_wipe_warped = false;
-    bbsc_spectate_host_back_ms = 0;
-    bbsc_spectate_revivals_at_death =
-        bbsc_own_dead.load() ? bbsc_revivals_at_own_death.load() : bbsc_peer_revivals.load();
     bbsc_boss_cleared_since_ms = 0;
-    bbsc_death_mode = BbscBossFightAtDeath() || guest_waits_for_host ? BbscDeathMode::Spectate
-                                                                      : BbscDeathMode::RespawnNow;
-    // A guest whose host said "dead" and then "alive" while we were dying: the host reloaded after
-    // a wipe (the fight is over in its world) - no watching, the guest reloads beside the host now.
-    if (!BbscIndependentActive() && session_state == 6 && !guest_waits_for_host &&
-        bbsc_peer_revivals.load() != bbsc_spectate_revivals_at_death) {
-        bbsc_spectate_saw_wipe = true;
-        bbsc_spectate_host_back_ms = SteadyNowMs() - BbscWipeHostSettleMs;
-        bbsc_death_mode = BbscDeathMode::Spectate;
-        LOG_INFO(Debug, "BBSC death: {} - the host died and reloaded while we were dying (fight "
-                        "over) -> the guest reloads beside the host now, no watching",
-                 name);
-        BBSC_TIMELINE("DEATH", "{}: the host reloaded while we were dying - reload beside it", name);
-    }
+    bbsc_death_mode = BbscBossFightAtDeath() ? BbscDeathMode::Spectate
+                                            : BbscDeathMode::RespawnNow;
     bbsc_spectate_active = true;
-    if (guest_waits_for_host) {
-        LOG_INFO(Debug, "BBSC death: {} with nobody alive (guest) -> wait for the host's reload, "
-                        "no reload of our own",
-                 name);
-        return;
-    }
     LOG_INFO(Debug, "BBSC death: {} without reload (session state {}, partner alive) -> {}", name,
              session_state,
              bbsc_death_mode == BbscDeathMode::Spectate
@@ -10197,9 +10109,16 @@ void PS4_SYSV_ABI BbscSpectateDeathHook(u64 tag, const GuestRegisterSnapshot* re
 
 void ReleaseBbscGuestRespawnPoint(std::string_view why); // see TickBbscRespawnPointWatch
 
-// Game-thread tick: release the held death once nobody is left alive, the session is over, or the
-// safety limit is reached.
 void ReleaseBbscDeathLocks(std::string_view why);
+
+// PartyGhostDeath_2 omits the guest's echo drop and restock on a full reload.
+void RequestBbscCoopDeathReload(std::string_view why, bool apply_penalty = true) {
+    if (GetSessionState() == 6 && !IsInvaderType(GetLocalCharacterType())) {
+        if (apply_penalty) BbscApplyDeathPenalty("before guest death reload");
+        bbsc_wipe_restock_pending = true;
+    }
+    RequestBbscDeathReload(why);
+}
 
 void TickBbscSpectate() {
     NoteBbscBossBar();
@@ -10215,15 +10134,7 @@ void TickBbscSpectate() {
     }
     if (bbsc_request_death_reload) {
         bbsc_request_death_reload = false;
-        // PartyGhostDeath_2 does not drop a co-op guest's echoes. A guest
-        // alone on this map reloads instead of entering the in-place respawn
-        // path, so apply the same native drop before unloading its death spot.
-        // Abduction was handled above; solo, host and invader rules stay native.
-        if (BbscIndependentActive() && GetSessionState() == 6 &&
-            !IsInvaderType(GetLocalCharacterType())) {
-            BbscApplyDeathPenalty("before independent guest death reload");
-        }
-        RequestBbscDeathReload("no living partner at the death step");
+        RequestBbscCoopDeathReload("no living partner at the death step");
         return;
     }
     if (!bbsc_spectate_active || bbsc_spectate_releasing) {
@@ -10232,63 +10143,18 @@ void TickBbscSpectate() {
     const s64 now = SteadyNowMs();
     const s32 session_state = GetSessionState();
     const bool session_alive = session_state == 3 || session_state == 6;
-    const bool independent = BbscIndependentActive();
-    if (!independent && session_state == 6 && !bbsc_spectate_waiting_host_reload && BbscHostReportsDeathReload()) {
-        bbsc_spectate_waiting_host_reload = true;
-        bbsc_spectate_saw_wipe = true;
-        bbsc_spectate_host_back_ms = 0;
-        Bbsc::CinematicForceOff();
-        Bbsc::CinematicSetWatching(false);
-        LOG_INFO(Debug, "BBSC spectate: host started death reload - camera released, waiting for host placement");
-        BBSC_TIMELINE("DEATH", "host death reload: spectator camera released before host respawn");
-    }
     if (session_alive && bbsc_load_generation.load() != bbsc_spectate_load_generation) {
         // The completed load belongs to the common reconciler, including dead/missing locals.
         // Do not race its settle/retry window with another warp or a partner-dependent revive.
         return;
     }
+    const bool living_partner = session_alive && !bbsc_boss_wipe_seen && LivingPartnerExists();
     std::string_view reason;
-    if (!independent && session_state == 6 && !bbsc_spectate_saw_wipe &&
-        bbsc_boss_killed_ms < bbsc_spectate_death_ms &&
-        bbsc_peer_revivals.load() != bbsc_spectate_revivals_at_death) {
-        bbsc_spectate_saw_wipe = true;
-        LOG_INFO(Debug, "BBSC spectate: a partner said dead and then alive while we were down - "
-                        "it reloaded after a wipe, the guest follows");
-    }
-    if (session_alive && LivingPartnerExists()) {
+    bool penalty_applied = false;
+    if (living_partner) {
         std::string_view respawn_why;
         if (bbsc_death_mode == BbscDeathMode::RespawnNow) {
             respawn_why = "no boss fight";
-        } else if (!independent && session_state == 6 && bbsc_spectate_saw_wipe && !bbsc_spectate_wipe_warped) {
-            if (bbsc_spectate_host_back_ms == 0) {
-                bbsc_spectate_host_back_ms = now;
-                LOG_INFO(Debug, "BBSC spectate: the host is alive again after the wipe (it "
-                                "reloaded) - the guest follows with its own reload");
-                return;
-            }
-            if (now - bbsc_spectate_host_back_ms < BbscWipeHostSettleMs) {
-                return;
-            }
-            bbsc_spectate_wipe_warped = true;
-            // Use the host's own placement packet: a remote character may still be in the old
-            // map after the host reloads. Never combine its coordinates with our current map.
-            BbscFollowMessage target{};
-            { std::scoped_lock lock{bbsc_follow_mutex}; target = bbsc_follow_latest; }
-            if (target.received_ms == 0 || now - target.received_ms > BbscFollowStaleMs ||
-                !IsUsablePackedMap(target.packed_map)) {
-                bbsc_spectate_wipe_warped = false;
-                return; // wait for host placement; no speculative teleport
-            }
-            SummonPlacementDescriptor to{};
-            to.packed_region = target.packed_map;
-            to.x = target.x + 1.0f;
-            to.y = target.y;
-            to.z = target.z;
-            to.heading = target.heading;
-            bbsc_spectate_load_generation = bbsc_load_generation.load();
-            if (RequestBbscSessionWarp(GetGlobalState(), to, "wipe")) return;
-            bbsc_spectate_wipe_warped = false;
-            return; // retry; never fall back into a different map
         } else if (bbsc_boss_killed_ms != 0 &&
                    bbsc_boss_killed_ms >= bbsc_spectate_death_ms) {
             if (bbsc_boss_cleared_since_ms == 0) {
@@ -10298,21 +10164,14 @@ void TickBbscSpectate() {
             }
         }
         if (!respawn_why.empty() && BbscDiedRightAfterRespawn(respawn_why)) {
-            if (!independent && session_state == 6 && !bbsc_spectate_wipe_warped) {
-                // Guest: the wipe path - a full reload beside the host (RequestBbscSessionWarp);
-                // the new character is revived by "a load ended the boss fight".
-                bbsc_death_mode = BbscDeathMode::Spectate;
-                bbsc_spectate_saw_wipe = true;
-                bbsc_spectate_host_back_ms = now - BbscWipeHostSettleMs;
-                LOG_INFO(Debug, "BBSC death: guest reloads beside the host instead");
-                return;
-            }
             BbscApplyDeathPenalty(respawn_why);
+            penalty_applied = true;
             reason = "repeat death right after a respawn in place";
             respawn_why = {};
         }
         if (!respawn_why.empty()) {
             BbscApplyDeathPenalty(respawn_why);
+            penalty_applied = true;
             if (StartBbscDeathCurtain(respawn_why) || BbscRespawnInPlace(respawn_why)) {
                 bbsc_spectate_active = false;
                 return;
@@ -10324,60 +10183,31 @@ void TickBbscSpectate() {
         // fall through to the release below: the normal reload is better than staying dead
     } else if (session_state != 3 && session_state != 6) {
         reason = "session ended";
-    } else if (!LivingPartnerExists() && now - bbsc_spectate_since_ms > BbscSpectateSafetyMs) {
+    } else if (!living_partner && now - bbsc_spectate_since_ms > BbscSpectateSafetyMs) {
         reason = "safety limit";
-    } else if (LivingPartnerExists()) {
+    } else if (living_partner) {
         bbsc_spectate_alone_since_ms = 0;
-        bbsc_spectate_logged_wait = false;
         return;
     } else {
         if (bbsc_spectate_alone_since_ms == 0) {
             bbsc_spectate_alone_since_ms = now;
+            // Keep an observed wipe through the existing debounce. A teammate
+            // already back at the lamp is no longer fighting this boss.
+            bbsc_boss_wipe_seen = bbsc_death_mode == BbscDeathMode::Spectate &&
+                                 BbscAllPartnersReportDead();
             return;
         }
         if (now - bbsc_spectate_alone_since_ms < BbscSpectateReleaseDebounceMs) {
             return;
         }
-        if (!independent && session_state == 6 && now - bbsc_spectate_alone_since_ms < BbscGuestWaitHostMs) {
-            bbsc_spectate_saw_wipe = true;
-            if (!bbsc_spectate_logged_wait) {
-                bbsc_spectate_logged_wait = true;
-                LOG_INFO(Debug, "BBSC spectate: nobody alive - guest waits for the host's reload "
-                                "(up to {} s) instead of reloading itself",
-                         BbscGuestWaitHostMs / 1'000);
-            }
-            return;
-        }
-        reason = session_state == 6 ? "no living partner and no host reload came"
-                                    : "no living partner";
+        reason = "no living partner";
     }
 
     LOG_INFO(Debug, "BBSC spectate: releasing {} after {} ms ({})", bbsc_spectate_name,
              now - bbsc_spectate_since_ms, reason);
     bbsc_spectate_active = false;
     bbsc_spectate_releasing = true;
-    if (session_state == 6 && !independent) {
-        // PT-2 (playtest 2026-10-27: guests thrown into the Hunter's Dream after a boss wipe, unable
-        // to do anything): a guest's own death reload goes to ITS respawn point (often the Dream,
-        // see 2026-10-04 above) - with the session kept that is the host's session in our own
-        // Dream, a soft lock. A guest that has to reload by itself is out of the co-op anyway, so
-        // the session ends first (patches lifted, CSMultiPlayMan::Stop) and the reload is then the
-        // game's own trip home.
-        SuspendBbscPersistenceOnce("a dead guest reloads by itself: the co-op ends first");
-        ReleaseBbscGuestRespawnPoint("a dead guest reloads by itself");
-        const u64 session_manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
-        if (ReadablePointer(session_manager, 0x128)) {
-            using Stop = u8 PS4_SYSV_ABI (*)(u64 session_manager);
-            const u8 stopped =
-                reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(session_manager);
-            LOG_INFO(Debug, "BBSC spectate: the guest leaves the session before its own reload "
-                            "(Stop -> {})",
-                     stopped);
-            BBSC_TIMELINE("DEATH", "dead guest reloads by itself: session ended first (Stop -> {})",
-                          stopped);
-        }
-    }
-    RequestBbscDeathReload(reason);
+    RequestBbscCoopDeathReload(reason, !penalty_applied);
     bbsc_spectate_releasing = false;
 }
 
@@ -11965,7 +11795,7 @@ void TickBbscPostLoadRecovery() {
     const u32 loaded = bbsc_load_generation.load();
     if (loaded != generation) {
         generation = loaded;
-        recover_death_load = bbsc_spectate_active || bbsc_v8_pending;
+        recover_death_load = bbsc_spectate_active || bbsc_v8_pending || bbsc_wipe_restock_pending;
         revive_attempts = 0;
         last_revive_ms = 0;
         stable_ms = 0;
@@ -16503,14 +16333,7 @@ void PS4_SYSV_ABI BbscCinematicCameraHook(u64 /*tag*/, const GuestRegisterSnapsh
         static s64 spectate_since_ms = 0; // 0 = not spectating; -1 = auto-on done for this death
         const u64 player = GetLocalPlayerCharacter();
         const s32 hp = ReadablePointer(player, 0x3B8) ? GetCharacterHp(player) : -1;
-        if (bbsc_spectate_active && bbsc_spectate_waiting_host_reload) {
-            // Do not auto-enable (or manually re-enable) the camera while the host reloads.
-            Bbsc::CinematicForceOff();
-            Bbsc::CinematicSetWatching(false);
-            bbsc_watch = BbscWatchState{};
-            in.enabled = false;
-            spectate_since_ms = -1;
-        } else if (!bbsc_spectate_active) {
+        if (!bbsc_spectate_active) {
             spectate_since_ms = 0;
         } else if (spectate_since_ms == 0) {
             spectate_since_ms = SteadyNowMs();
@@ -17659,6 +17482,60 @@ void PS4_SYSV_ABI BbscChaliceRewardGateHook(u64, const GuestRegisterSnapshot* re
     bbsc_chalice_reward_gate_skip = 1; // completed no-op; native interpreter advances normally
 }
 
+// CUSA03173 1.09 boss entrances. Their retry branch jumps over the native
+// object/collision and SFX enable commands, assuming a fresh map. A guest can
+// retain the open first-encounter geometry. Land on the original enable block
+// before continuing to the original label and the host/guest entry conditions.
+constexpr std::pair<s64, s32> BbscBossFogRetrySteps[] = {
+    {12104810, 5}, {12104880, 5}, {12204890, 10}, {12304730, 10}, {12304810, 8},
+    {12404840, 8}, {12414730, 8}, {12414810, 8}, {12424710, 10}, {12424810, 8},
+    {12504810, 8}, {12604845, 8}, {12604860, 10}, {12704840, 8}, {12804880, 10},
+    {12906789, 10}, {12906796, 10}, {12906800, 8}, {13204830, 9}, {13304870, 14},
+    {13404800, 8}, {13404850, 9}, {13504800, 8}, {13504850, 8}, {13604800, 8},
+};
+
+bool RedirectBbscBossFogRetry(u64 instance) {
+    if (!ReadablePointer(instance, 0xC4) || ReadValue<s32>(instance, 0xA0) != 1) return false;
+    const u64 instruction = ReadValue<u64>(instance, 0xB0);
+    if (!ReadablePointer(instruction, 0x20) || ReadValue<s32>(instruction, 0) != 1003 ||
+        ReadValue<s32>(instruction, 4) != 101 || ReadValue<u64>(instruction, 8) != 8 ||
+        GetSessionState() != 6 || GetLocalPlayerType() != 1) return false;
+
+    const auto* range = LookupBbscQuestRange(instance);
+    if (!range || instruction != range->first + 0x20) return false;
+    const auto gate = std::ranges::lower_bound(BbscBossFogRetrySteps, range->event, {},
+                                               &std::pair<s64, s32>::first);
+    if (gate == std::end(BbscBossFogRetrySteps) || gate->first != range->event) return false;
+    const u64 enable = range->first + gate->second * 0x20;
+    if (enable + 0x20 > range->end || !ReadablePointer(enable, 0x20) ||
+        ReadValue<s32>(enable, 0) != 2005 || ReadValue<s32>(enable, 4) != 3 ||
+        ReadValue<u64>(enable, 8) != 8) return false;
+
+    const u64 ref = ReadValue<u64>(instance, 0xA8);
+    const u64 file = ReadablePointer(ref, 0x10) ? ReadValue<u64>(ref, 8) : 0;
+    if (!ReadablePointer(file, 0x80)) return false;
+    const u64 arg_base = file + ReadValue<u64>(file, 0x78);
+    const u64 enable_args = arg_base + ReadValue<u64>(enable, 0x10);
+    if (!ReadablePointer(enable_args, 8) || ReadValue<u32>(enable_args, 4) != 1) return false;
+    u64 args = ReadValue<u64>(instance, 0xB8); // includes the current Chalice slot's intro flag
+    if (!args) args = arg_base + ReadValue<u64>(instruction, 0x10);
+    if (!ReadablePointer(args, 8) || ReadValue<u32>(args, 0) != 256 ||
+        !BbscEventFlag(ReadValue<u32>(args, 4))) return false;
+
+    // The native iterator consumes this relative step count, including argument
+    // resolution for the enable commands. The defeat guard already ran at step 0.
+    return WriteValue<s32>(instance, 0xC0, gate->second - 1);
+}
+
+void PS4_SYSV_ABI BbscEventBank1003Hook(u64 tag, const GuestRegisterSnapshot* registers) {
+    if (registers && RedirectBbscBossFogRetry(registers->rsi)) {
+        const_cast<GuestRegisterSnapshot*>(registers)->rax = 1;
+        bbsc_chalice_reward_gate_skip = 1;
+        return;
+    }
+    BbscChaliceRewardGateHook(tag, registers);
+}
+
 // From an event's 2003 instruction now (the caller is the bank 2003 handler), and not ours.
 bool BbscEventActionNotOurs(u64 caller_offset) {
     return bbsc_npc_own_active && !bbsc_event_run.ours && caller_offset >= BbscEventBank2003Begin &&
@@ -17824,9 +17701,9 @@ void InstallBbscResearchHooks() {
 
     if (image_base == 0 || !InstallGuestCodeHook(
             reinterpret_cast<void*>(image_base + 0x017BEDD0),
-            std::span<const u8>{AwardPrologue}, 0, BbscChaliceRewardGateHook,
+            std::span<const u8>{AwardPrologue}, 0, BbscEventBank1003Hook,
             &bbsc_chalice_reward_gate_skip)) {
-        LOG_ERROR(Debug, "BBSC chalice rewards: native reward gate unavailable");
+        LOG_ERROR(Debug, "BBSC: native boss entrance and chalice reward hook unavailable");
     }
 
     // CUSA03173 1.09 CharacterDead condition evaluator (bank 4[0]).
@@ -18064,9 +17941,7 @@ void TickBbscLifeBroadcast() {
         last_dead = dead;
         if (dead) {
             bbsc_boss_at_own_death = BbscBossFightAtDeath();
-            bbsc_revivals_at_own_death = bbsc_peer_revivals.load();
         }
-        bbsc_own_dead = dead;
         LOG_INFO(Debug, "BBSC life: told the others we are {} (session state {})",
                  dead ? "dead" : "alive", state);
     }
@@ -18437,8 +18312,7 @@ void CaptureBbscGuestRespawnPoint() {
     bbsc_guest_respawn_released = false;
 }
 
-// A dead guest that reloads by itself leaves the session first (TickBbscSpectate): its own respawn
-// point back now, before the reload picks the map.
+// Restore the guest's personal checkpoint before a confirmed return home.
 void ReleaseBbscGuestRespawnPoint(std::string_view why) {
     const u64 global = GetGlobalState();
     bbsc_guest_respawn_released = true;
@@ -18984,6 +18858,7 @@ void ClearBbscBossContext(std::string_view why) {
         reinterpret_cast<Clear>(image_base + 0x01336D00)();
     }
     bbsc_boss_at_own_death = false;
+    bbsc_boss_wipe_seen = false;
     bbsc_boss_bar_seen_ms = 0;
     bbsc_boss_killed_ms = 0;
     bbsc_encounter_lamp = -1;
@@ -19665,12 +19540,14 @@ void TickBbscDeathLifecycle() {
     if ((state != 3 && state != 6) || loading || BbscQuitInProgress() || BbscReturningToTitle()) {
         bbsc_native_death_rearm = {};
         bbsc_dead_since_ms = bbsc_death_script_ms = 0;
+        bbsc_boss_wipe_seen = false;
         return;
     }
     const u64 player = GetLocalPlayerCharacter();
     const s32 hp = ReadablePointer(player, 0x3B8) ? GetCharacterHp(player) : -1;
     if (hp > 0 && !bbsc_spectate_active && !bbsc_spectate_releasing && !BbscCurtainActive()) {
         bbsc_boss_at_own_death = false;
+        bbsc_boss_wipe_seen = false;
         bbsc_dead_since_ms = bbsc_death_script_ms = 0;
         RearmBbscNativeDeathEvents(); // retry only registrations native declined
         return;
@@ -19681,6 +19558,10 @@ void TickBbscDeathLifecycle() {
     if (!bbsc_dead_since_ms) {
         bbsc_dead_since_ms = now;
         bbsc_boss_at_own_death = BbscBossFightAtDeath();
+        // The last hunter can still be in the native death animation when
+        // earlier spectators finish their own reload. Record the wipe at HP 0.
+        bbsc_boss_wipe_seen = bbsc_boss_at_own_death && BbscAllPartnersReportDead() &&
+                             !LivingPartnerExists();
         bbsc_echoes_at_death = GetBloodEchoes(); // before native drop / rewards earned while dead
         return;
     }
@@ -24622,7 +24503,7 @@ std::int32_t GetBbscRelaySessionState() {
     return bbsc_relay_session_state.load();
 }
 
-void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence, bool host,
+void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence, bool /*host*/,
                       bool model_visible) {
     if (player == bbsc_life_own_id.load()) {
         return;
@@ -24636,10 +24517,7 @@ void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t seq
             return; // older than what we have
         }
         changed = life.received_ms == 0 || life.dead != dead;
-        if (host && life.received_ms != 0 && life.dead != 0 && dead == 0) {
-            ++bbsc_peer_revivals;
-        }
-        life = {dead, sequence, SteadyNowMs(), host && dead == 2, model_visible};
+        life = {dead, sequence, SteadyNowMs(), model_visible};
     }
     if (changed) {
         LOG_INFO(Debug, "BBSC life: player {:08x} says it is {}", player, dead ? "dead" : "alive");

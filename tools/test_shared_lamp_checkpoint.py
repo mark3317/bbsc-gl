@@ -38,6 +38,8 @@ using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 bool active=true,snapshot=true,prepared=true,ready=true,needs_load=false,writable=true,finale_committed=false;
 s32 role=3;u32 self=11,current=0x20000000;s64 now=1000,wall=10000;
+bool invader=false; s32 GetLocalCharacterType(){return invader?2:1;}
+bool IsInvaderType(s32 type){return type==2;}
 s32 hp=594;u64 GetLocalPlayerCharacter(){return 1;}s32 GetCharacterHp(u64){return hp;}
 std::array<u8,0x1800> global{};u64 image_base=0;
 constexpr u32 BbscDreamStateMap=0x15000000;
@@ -268,6 +270,24 @@ int main(){
  WriteValue<s32>(GetGlobalState(),0x1528,3202950);assert(ResolveLastLampTransform());
  // A session change clears canonical state, retries and pending death loads.
  BindBbscSharedLamp({11,100});assert(!bbsc_checkpoint.point&&!bbsc_checkpoint_offer.point&&!bbsc_checkpoint_reload.point);
+ // Each participant loads locally from the same accepted checkpoint. The
+ // host has not loaded yet when either guest starts.
+ for(u32 client:{22u,33u,11u}){
+  reset();local(client,0x18020000);
+  bbsc_checkpoint={World::ScopeOf(bbsc_world_presence_local),2422952,11,1,1};
+  const int before=loads;
+  RequestBbscDeathReload("no living partner");
+  TickBbscSharedLampCheckpoint();TickBbscSharedLampCheckpoint();
+  assert(loads==before+1&&loaded_point==2422952&&role==(client==11?3:6));
+ }
+ // A guest without negotiated travel uses the room point already selected
+ // by the native death flow, even without a shared snapshot or a host load.
+ reset();local(22,0x18020000);active=false;snapshot=false;
+ WriteValue<s32>(GetGlobalState(),0x1528,2102950);assert(!RequestBbscSharedLampReload());
+ WriteValue<s32>(GetGlobalState(),0x1528,2422952);
+ invader=true;assert(!RequestBbscSharedLampReload());invader=false;
+ const int before=loads;RequestBbscDeathReload("no living partner");
+ assert(loads==before+1&&loaded_point==2422952&&role==6);
 }
 '''
 if os.environ.get('BBSC_TEST_EBOOT'):

@@ -123,7 +123,7 @@ int main(int argc,char**argv) {
         tick(16); assert(item_seed_calls==2); return 0;
     }
     if(test=="native_wipe_alive" || test=="native_wipe_dead") {
-        bbsc_spectate_active=true;
+        assert(!bbsc_spectate_active && !bbsc_v8_pending);
         bbsc_wipe_restock_pending=true;
         hp=test=="native_wipe_alive" ? 100 : 0;
         bbsc_reload_finish_pending=true; TickBbscLoadState();

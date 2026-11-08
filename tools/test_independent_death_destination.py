@@ -11,9 +11,6 @@ while depth:
     depth += (source[end]=='{')-(source[end]=='}'); end += 1
 production = source[start:end]
 penalty_negative=os.environ.get('BBSC_TEST_GUEST_RELOAD_NO_PENALTY')=='1'
-if penalty_negative:
-    production=production.replace('BbscApplyDeathPenalty("before independent guest death reload");',
-                                  '/* pre-fix reload omitted the native penalty */')
 start_entry=source.index('void BeginBbscCoopDeath(std::string_view name, s32 session_state) {')
 end_entry=source.index('{',start_entry)+1;depth=1
 while depth:
@@ -30,9 +27,9 @@ def function(signature):
         depth+=(source[b]=='{')-(source[b]=='}');b+=1
     return source[a:b]+'\n'
 kidnap_production=function('bool BbscKidnapRespawnReady()')+function('bool BbscKidnapDeathPending()')
-negative=os.environ.get('BBSC_TEST_DEATH_OLD')=='1'
-if negative:
-    production=production.replace('const bool independent = BbscIndependentActive();','const bool independent = false;')
+reload = function("void RequestBbscCoopDeathReload(std::string_view why, bool apply_penalty = true)")
+if penalty_negative:
+    reload = reload.replace('BbscApplyDeathPenalty("before guest death reload");', '(void)0;')
 prefix = r'''
 #include <atomic>
 #include <cassert>
@@ -49,7 +46,8 @@ bool BbscIndependentTravelAllowed();
 // Match live historical9421/9422 on an ordinary checkpoint by default.
 bool BbscEventFlag(u32 f){return f==9420?kidnap:(f==9421||f==9422);}
 
-bool independent=true,living=true,host_reload=true,loop=false,revive_ok=true;
+bool independent=true,living=true,loop=false,revive_ok=true,bbsc_wipe_restock_pending=false;
+bool all_report_dead=false,bbsc_boss_wipe_seen=false;
 bool bbsc_request_death_reload=false,bbsc_spectate_active=true,bbsc_spectate_releasing=false;
 bool bbsc_spectate_waiting_host_reload=false,bbsc_spectate_saw_wipe=true,bbsc_spectate_wipe_warped=false;
 bool bbsc_spectate_logged_wait=false; s32 role=6;
@@ -64,7 +62,8 @@ constexpr s64 BbscSpectateSafetyMs=120000,BbscSpectateReleaseDebounceMs=500,Bbsc
 constexpr u64 MatchingStatePointerOffset=1,MultiPlayStopRequestOffset=2;u64 image_base=0;
 std::string_view bbsc_spectate_name="death";
 std::mutex bbsc_follow_mutex;
-struct BbscFollowMessage{s64 received_ms=100000;u32 packed_map=0x18000000;float x=9,y=0,z=0,heading=0;};
+struct BbscFollowMessage{s64 received_ms=100000;u32 packed_map=0x18000000;float x=9,y=0,z=0,heading=0;
+ s64 arrival_ms=0;bool arrival_by_load=false;};
 BbscFollowMessage bbsc_follow_latest;
 struct SummonPlacementDescriptor{u32 packed_region;float x,y,z,heading;};
 int warps=0,reloads=0,suspends=0,releases=0,revives=0,penalties=0,curtains=0;
@@ -83,8 +82,9 @@ void RequestBbscDeathReload(std::string_view){
 }
 bool BbscIndependentTravelAllowed(){return independent;}
 bool BbscIndependentActive(){return independent;}s64 SteadyNowMs(){return now;}
-s32 GetSessionState(){return role;}bool BbscHostReportsDeathReload(){return host_reload;}
+s32 GetSessionState(){return role;}
 bool LivingPartnerExists(){return living;}bool IsUsablePackedMap(u32){return true;}
+bool BbscAllPartnersReportDead(){return all_report_dead;}
 u64 GetGlobalState(){return 0x10000;}bool RequestBbscSessionWarp(u64,SummonPlacementDescriptor,std::string_view){++warps;return true;}
 bool BbscDiedRightAfterRespawn(std::string_view){return loop;}
 void BbscApplyDeathPenalty(std::string_view){++penalties;}
@@ -97,11 +97,12 @@ bool ReadablePointer(u64 p,size_t){return p==0x10000;}
 '''
 main = r'''
 void reset(){warps=reloads=suspends=releases=revives=penalties=curtains=0;fade_ok=false;boss=false;
- invader=false;expected_penalties_at_reload=-1;
+ invader=false;expected_penalties_at_reload=-1;bbsc_wipe_restock_pending=false;
+ all_report_dead=false;bbsc_boss_wipe_seen=false;
  bbsc_dead_since_ms=0;bbsc_boss_killed_ms=0;bbsc_spectate_death_ms=100;
  bbsc_spectate_active=true;bbsc_spectate_releasing=false;bbsc_request_death_reload=false;
  bbsc_spectate_saw_wipe=true;bbsc_spectate_wipe_warped=false;
- bbsc_spectate_waiting_host_reload=false;bbsc_spectate_alone_since_ms=0;
+ bbsc_spectate_alone_since_ms=0;
  bbsc_death_mode=BbscDeathMode::RespawnNow;living=true;loop=false;revive_ok=true;
  bbsc_spectate_host_back_ms=1;bbsc_load_generation=1;bbsc_spectate_load_generation=1;}
 int main(){
@@ -109,13 +110,13 @@ int main(){
  // Host, solo, invasion and legacy mode keep their existing native rules.
  for(bool mode:{false,true})for(s32 r:{0,3,6})for(bool invading:{false,true}){
   independent=mode;role=r;reset();invader=invading;living=false;
-  if(!mode&&r==6&&!invading)continue; // legacy guest waits for host
   bbsc_spectate_active=false;
   BeginBbscCoopDeath("native final",role);
   assert(bbsc_request_death_reload&&!bbsc_spectate_active);
-  expected_penalties_at_reload=mode&&r==6&&!invading?1:0;
+  expected_penalties_at_reload=r==6&&!invading?1:0;
   TickBbscSpectate();
   assert(reloads==1&&penalties==expected_penalties_at_reload);
+  assert(bbsc_wipe_restock_pending==(r==6&&!invading));
   TickBbscSpectate();assert(reloads==1&&penalties==expected_penalties_at_reload);
   // The next death is also charged exactly once.
   BeginBbscCoopDeath("native final",role);
@@ -125,7 +126,7 @@ int main(){
  // Production entry + controller: delayed final/watchdog, ordinary final,
  // stale victory, repeated death, and the existing settle/load boundaries.
  for(bool mode:{false,true})for(s32 r:{3,6})for(int order:{0,1,2,3}){
-  independent=mode;role=r;reset();host_reload=false;boss=true;fade_ok=true;
+  independent=mode;role=r;reset();boss=true;fade_ok=true;
   bbsc_spectate_active=false;bbsc_spectate_saw_wipe=false;
   bbsc_peer_revivals=0;bbsc_revivals_at_own_death=0;
   const s64 death=now-15000;
@@ -180,21 +181,55 @@ int main(){
   expected_penalties_at_reload=0;
   TickBbscSpectate();assert(reloads==0&&bbsc_request_death_reload);
   prison_ready=true;TickBbscSpectate();assert(reloads==1&&!bbsc_request_death_reload);
-  kidnap=false;
+  kidnap=false;prison_ready=false;
  }
- // The negotiated-independent guard must not silently change old follow mode.
- independent=false;role=6;reset();host_reload=false;bbsc_death_mode=BbscDeathMode::Spectate;
- bbsc_follow_latest.received_ms=now;TickBbscSpectate();assert(warps==1&&revives==0);
+ // All three clients run their own native death load on the same room.
+ // Cover different orders, both travel modes, and no host placement packet.
+ for(bool mode:{false,true})for(s32 first:{3,6}) {
+  independent=mode;
+  for(s32 r:{first,first==3?6:3,6}) {
+   reset();role=r;boss=true;bbsc_spectate_active=false;
+   BeginBbscCoopDeath("native final",role);
+   TickBbscSpectate();assert(bbsc_spectate_active&&reloads==0);
+   living=false;TickBbscSpectate();
+   now+=BbscSpectateReleaseDebounceMs-1;TickBbscSpectate();assert(reloads==0);
+   ++now;TickBbscSpectate();TickBbscSpectate();
+   assert(reloads==1&&warps==0&&suspends==0&&releases==0&&role==r);
+   assert(penalties==(r==6?1:0)&&bbsc_wipe_restock_pending==(r==6));
+  }
+ }
+ // A genuine session end still completes the native return exactly once.
+ // A temporary absence is not a wipe, and a confirmed wipe survives the
+ // first teammate finishing a native load during our original debounce.
+ for(bool confirmed:{false,true}){
+  reset();role=6;boss=true;bbsc_spectate_active=false;
+  BeginBbscCoopDeath("native final",role);
+  living=false;all_report_dead=confirmed;TickBbscSpectate();assert(reloads==0);
+  living=true;all_report_dead=false;now+=BbscSpectateReleaseDebounceMs;
+  TickBbscSpectate();TickBbscSpectate();
+  assert(reloads==(confirmed?1:0)&&bbsc_spectate_active!=confirmed);
+ }
+ // The final hunter can be in the death animation while a teammate returns.
+ reset();role=3;boss=true;bbsc_spectate_active=false;bbsc_boss_wipe_seen=true;
+ BeginBbscCoopDeath("delayed native final",role);TickBbscSpectate();
+ assert(reloads==1&&!bbsc_spectate_active&&role==3);
+
+ reset();living=false;role=0;TickBbscSpectate();TickBbscSpectate();
+ assert(!bbsc_spectate_active&&reloads==1&&warps==0&&penalties==0);
+ // Failed in-place recovery uses a full load and does not charge twice.
+ reset();role=6;revive_ok=false;TickBbscSpectate();TickBbscSpectate();
+ assert(reloads==1&&warps==0&&penalties==1&&bbsc_wipe_restock_pending);
+
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-death-destination-') as tmp:
     cpp, exe = Path(tmp)/'death.cpp', Path(tmp)/'death.exe'
-    cpp.write_text(prefix+kidnap_production+entry+production+main, encoding='utf-8')
+    cpp.write_text(prefix+kidnap_production+entry+reload+production+main, encoding='utf-8')
     compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
     subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
     env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     result=subprocess.run([str(exe)],env=env)
-    if negative or boss_negative or penalty_negative:
+    if boss_negative or penalty_negative:
         assert result.returncode!=0,'Old death routing did not fail the regression'
     else:
         result.check_returncode()
@@ -204,7 +239,4 @@ if penalty_negative:
 if boss_negative:
     print('PASS negative control: pre-fix boss timestamp comparison FAILS delayed-death regression')
     raise SystemExit(0)
-if negative:
-    print('PASS negative control: old host-follow death routing FAILS independent regression')
-    raise SystemExit(0)
-print('PASS production spectate: both roles, host revival/wipe, repeated death, failed local lamp, no local partners, loading; independent deaths never follow host or leave room; legacy follow retained')
+print('PASS production death controller: local loads for all roles, preserved room, one guest penalty, delayed boss victory, prison and actual departure')

@@ -217,10 +217,10 @@ public:
     const Member* Resident(u32 sender) const {
         const auto it=members_.find(sender);return it==members_.end()?nullptr:&it->second;
     }
-    u32 LivingHere(const Presence& local, s64 /*now*/) const {
+    u32 LivingHere(const Presence& local, const auto& reported_dead) const {
         u32 count = 0;
         for (const auto& [id, m] : members_)
-            count += m.presence.alive && SamePlace(local, m.presence);
+            count += m.presence.alive && SamePlace(local, m.presence) && !reported_dead(id, m.received);
         return count;
     }
     bool AllSupportTravel(const Presence& local, std::span<const u32> native_members,

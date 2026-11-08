@@ -182,9 +182,25 @@ bool ReadBbscSharedLampCheckpoint(s32& point,bool& here) {
     return true;
 }
 bool RequestBbscSharedLampReload() {
+    if (bbsc_checkpoint_fallback) return false;
+    if (!BbscIndependentTravelAllowed()) {
+        if (BbscIndependentActive() || GetSessionState() != 6 ||
+            IsInvaderType(GetLocalCharacterType())) return false;
+        const u64 global = GetGlobalState();
+        if (!ReadablePointer(global, 0x1530) || ReadValue<u8>(global, 8)) return false;
+        const s32 point = ReadValue<s32>(global, 0x1528);
+        const auto lamp = std::ranges::find(LampPoints, point, &LampPoint::warp_point);
+        // Resolve the guest's room lamp through the native point loader even
+        // if the delayed death step has not selected the next stage yet.
+        if (lamp == LampPoints.end() || lamp->packed_map != GetCurrentPackedMap()) return false;
+        ClearBbscBossContext("before guest lamp death load");
+        using PointLoad = void PS4_SYSV_ABI (*)(s32);
+        reinterpret_cast<PointLoad>(image_base + 0x013CDF30)(point);
+        BBSC_TIMELINE("RESPAWN", "guest native death load point={} map={:#x}", point, lamp->packed_map);
+        return true;
+    }
     s32 point=0;bool here=false;
-    if(bbsc_checkpoint_fallback || !BbscIndependentTravelAllowed() ||
-       !ReadBbscSharedLampCheckpoint(point,here))return false;
+    if(!ReadBbscSharedLampCheckpoint(point,here))return false;
     if(!bbsc_checkpoint_reload.point){
         // Freeze this death's target. A lamp lit during its load is for the
         // next death, and cannot redirect an already prepared native load.

@@ -23,6 +23,7 @@ PREFIX=r'''
 #include <vector>
 #include "core/bbsc_world_presence.h"
 using namespace Core::Bloodborne;
+namespace Finale = Core::Bbsc::DreamFinale;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define LOG_INFO(...)
 #define BBSC_TIMELINE(...)
@@ -47,7 +48,13 @@ template<class T>T ReadValue(u64 p,size_t offset){
  return static_cast<T>(loading);
 }
 bool BbscCurtainActive(){return false;}
+enum class BbscWork { Finale };
+void QueueBbscWork(BbscWork){}
+bool bbsc_finale_hooks_ready=false;
+Finale::Signal BbscFinalePresence(World::WorldId){return {};}
+bool BbscNativeFinaleWantsPresence(){return false;}
 std::atomic<u32> bbsc_load_generation{1};
+std::atomic<u64> bbsc_world_player_revision{0};
 std::atomic<u64> bbsc_world_load_pending{0};std::atomic<bool> bbsc_reload_finish_pending{false};
 struct Transform{std::array<float,4> position{1,2,3,1};};
 Transform transform;
@@ -120,6 +127,30 @@ int main(){
  room=0;loading=true;now++;TickBbscWorldPresence();
  assert(sent.back().world.room==0x0f05780968768890ULL); // transient missing controller
  room=0x0f05780968768890ULL;loading=false;
+ // A same-map group wipe has three independent loads in one room. Arrival
+ // order is arbitrary, and matching map/room does not admit a loading peer.
+ hp=0;now++;TickBbscWorldPresence();
+ const auto dead_host=sent.back();
+ auto dead_guest=dead_host;dead_guest.visit+=4;dead_guest.sequence=500;
+ OnBbscWorldPresencePacket(22,11,&dead_guest,sizeof(dead_guest));
+ OnBbscWorldPresencePacket(23,11,&dead_guest,sizeof(dead_guest));
+ loading=true;now++;TickBbscWorldPresence();
+ assert(sent.back().phase==World::Phase::Loading&&sent.back().world==dead_host.world);
+ auto loading_guest=dead_guest;loading_guest.phase=World::Phase::Loading;++loading_guest.sequence;
+ OnBbscWorldPresencePacket(22,11,&loading_guest,sizeof(loading_guest));
+ OnBbscWorldPresencePacket(23,11,&loading_guest,sizeof(loading_guest));
+ auto arrived_guest=dead_guest;arrived_guest.alive=1;++arrived_guest.visit;
+ arrived_guest.sequence=loading_guest.sequence+1;
+ OnBbscWorldPresencePacket(22,11,&arrived_guest,sizeof(arrived_guest));
+ assert(!World::SamePlace(bbsc_world_presence_local,bbsc_world_presence_book.Find(22,now)->presence));
+ loading=false;hp=594;++bbsc_load_generation;now++;TickBbscWorldPresence();
+ assert(sent.back().world==dead_host.world&&sent.back().map==dead_host.map&&sent.back().visit>dead_host.visit);
+ assert(World::SamePlace(bbsc_world_presence_local,bbsc_world_presence_book.Find(22,now)->presence));
+ assert(!World::SamePlace(bbsc_world_presence_local,bbsc_world_presence_book.Find(23,now)->presence));
+ OnBbscWorldPresencePacket(23,11,&arrived_guest,sizeof(arrived_guest));
+ OnBbscWorldPresencePacket(23,11,&loading_guest,sizeof(loading_guest));
+ assert(World::SamePlace(bbsc_world_presence_local,bbsc_world_presence_book.Find(23,now)->presence));
+ assert(bbsc_world_presence_book.Find(23,now)->presence.visit>dead_guest.visit);
  // Chalice identity is observed, never guessed: ritual 0 cannot join simulation.
  map=0x1D0A5A00;loading=true;now++;TickBbscWorldPresence();
  dungeon={55,66,16,0};loading=false;now++;TickBbscWorldPresence();
@@ -138,6 +169,6 @@ def main():
         subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
-    print('PASS production world tick/receiver: native observations, loads, borders, session fencing, passive capabilities')
+    print('PASS production world tick/receiver: independent same-room wipe arrivals, borders, session fencing, passive capabilities')
 
 if __name__=='__main__': main()

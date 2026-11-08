@@ -42,6 +42,7 @@ int hp=100,state=6,deletes=0,deaths=0,hps=0;
 bool enabled=true,quit=false,title=false,writable=true,death_ok=true,hp_ok=true;
 bool bbsc_spectate_active=false,bbsc_spectate_releasing=false;
 bool bbsc_boss_at_own_death=false,curtain=false;
+bool bbsc_boss_wipe_seen=false,all_report_dead=false,living_partner=true;
 int handoffs=0,echoes=123,bbsc_echoes_at_death=-1;bool boss=false;
 int GetBloodEchoes(){return echoes;}
 void BeginBbscCoopDeath(std::string_view why,s32 role){assert(why=="watchdog"&&role==state);assert(bbsc_dead_since_ms>0&&now-bbsc_dead_since_ms>=BbscDeadWatchdogMs);++handoffs;bbsc_spectate_active=true;}
@@ -54,6 +55,8 @@ template<class T>T ReadValue(u64 p,size_t o){return static_cast<T>(memory[p+o]);
 template<class T>void WriteValue(u64 p,size_t o,T v){memory[p+o]=v;}
 int GetCharacterHp(u64){return hp;}bool BbscCurtainActive(){return curtain;}
 bool BbscBossFightAtDeath(){return boss;}
+bool BbscAllPartnersReportDead(){return all_report_dead;}
+bool LivingPartnerExists(){return living_partner;}
 bool BbscQuitInProgress(){return quit;}bool BbscReturningToTitle(){return title;}
 void delete_event(u64 e,s32 id){assert(e==event&&id==99999);++deletes;}
 bool register_death(u64 e,s32 id,s32 chr,const char* name,u8 once){
@@ -134,6 +137,13 @@ int main(){
   if(mode==3)hp=-1;if(mode==4)state=0;if(mode==5)hp=100;
   if(mode==6)bbsc_spectate_active=true;if(mode==7)curtain=true;
   TickBbscDeathLifecycle();assert(handoffs==0);
+ }
+ for(bool other_alive:{false,true}){
+  reset();boss=true;hp=0;all_report_dead=!other_alive;living_partner=other_alive;
+  TickBbscDeathLifecycle();assert(bbsc_boss_wipe_seen==!other_alive);
+  all_report_dead=false;living_partner=true;++now;TickBbscDeathLifecycle();
+  assert(bbsc_boss_wipe_seen==!other_alive); // another hunter finished loading first
+  hp=100;++now;TickBbscDeathLifecycle();assert(!bbsc_boss_wipe_seen);
  }
 
 }

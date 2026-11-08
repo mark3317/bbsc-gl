@@ -218,8 +218,14 @@ bool BbscWorldPlayerSendHere(u32 peer) {
     return member && World::SamePlayerSpace(bbsc_world_presence_local,member->presence);
 }
 u32 BbscWorldLivingHere() {
-    std::scoped_lock lock{bbsc_world_presence_mutex};
-    return bbsc_world_presence_book.LivingHere(bbsc_world_presence_local,SteadyNowMs());
+    std::scoped_lock lock{bbsc_life_mutex, bbsc_world_presence_mutex};
+    return bbsc_world_presence_book.LivingHere(bbsc_world_presence_local, [](u32 peer, s64 present_at) {
+        // A room member can report death before its map presence arrives.
+        // Use the explicit newer report without treating silence as a death.
+        const auto life = bbsc_peer_life.find(peer);
+        return life != bbsc_peer_life.end() && life->second.dead &&
+               life->second.received_ms >= present_at;
+    });
 }
 u32 BbscWorldParticipantsHere() {
     std::scoped_lock lock{bbsc_world_presence_mutex};u32 count=0;
