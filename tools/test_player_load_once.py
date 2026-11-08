@@ -50,6 +50,21 @@ main = setup + r'''
  ++peer.visit;Hear();++bbsc_world_player_revision;task_present=false;
  TickBbscWorldPlayers();now+=15001;TickBbscWorldPlayers();idle();
  task_present=true;TickBbscWorldPlayers();assert(inserts==3);
+ // The first settled task in a new world may have no actor to rebind.
+ // Admit it once during the existing visit work, without a model watchdog.
+ auto& local_place=bbsc_world_presence_local;
+ local_place.world.room++;++local_place.visit;++bbsc_world_native_load;
+ peer=local_place;bbsc_world_presence_book.Bind(peer.world,11);
+ remote=0;Hear();++bbsc_world_player_revision;
+ TickBbscWorldPlayers();assert(inserts==4 && removals==3);
+ idle();
+ // A native actor whose relay mapping is unavailable still owns its task.
+ local_place.world.room++;++local_place.visit;++bbsc_world_native_load;
+ peer=local_place;bbsc_world_presence_book.Bind(peer.world,11);
+ remote=reinterpret_cast<u64>(actor2.data());Actor(remote);relay_member_known=false;
+ Hear();++bbsc_world_player_revision;TickBbscWorldPlayers();
+ assert(inserts==4 && removals==3 && remote);
+ idle();
  puts("PASS native load/reunion: one restart, pending native task, no repeated creation or idle actor polling, bounded admission");
 }
 '''

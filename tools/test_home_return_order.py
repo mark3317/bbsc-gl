@@ -25,12 +25,16 @@ class ReturnOrder(unittest.TestCase):
     def test_fallback_waits_for_native_and_shares_claim(self):
         fallback = body('void TickBbscStrandedGuest()')
         self.assertIn("constexpr s64 BbscStrandedMs = 15'000;", SOURCE)
-        self.assertIn('const s64 grace = BbscStrandedMs;', fallback)
+        self.assertIn('BbscConfirmedHostLeaveMs : BbscStrandedMs', fallback)
         self.assertIn('if (bbsc_home_return_claimed || now - since_ms < grace)', fallback)
         self.assertLess(fallback.index('bbsc_home_return_claimed = true;'), fallback.index('WriteValue<s32>(event_state'))
         self.assertLess(fallback.index('bbsc_home_return_claimed = true;'), fallback.index('reinterpret_cast<HomePoint>'))
 
     def test_failed_prerequisites_do_not_claim(self):
+        native = body('void PS4_SYSV_ABI BbscSendPhantomHomeHook(')
+        claim = native.index('bbsc_home_return_claimed = true;')
+        self.assertLess(native.index('!IsSprjLuaEventManReady()'), claim)
+        self.assertLess(native.index('GetBbscLocalPlayerHp() <= 0'), claim)
         fallback = body('void TickBbscStrandedGuest()')
         self.assertLess(fallback.index('!IsSprjLuaEventManReady()'), fallback.index('bbsc_home_return_claimed = true;'))
 

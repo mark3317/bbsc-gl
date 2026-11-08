@@ -7251,8 +7251,17 @@ bool BbscHostDreamStateReady() {
            SteadyNowMs() - bbsc_dream_ready.complete_ms < BbscWorldFlagsFreshMs;
 }
 
-// The independent guest's native Doll/Gehrman stages, burning Dream and night.
-void KeepBbscNativeDreamPhase(u32 key, const u8* own, u8* live) {
+constexpr u32 BbscDlcEyeReceipt = 50000100;
+
+void KeepBbscLocalDreamFlags(u32 key, const u8* own, u8* live, bool native_phase) {
+    if (key == BbscDlcEyeReceipt / 1000) {
+        constexpr size_t bit = BbscDlcEyeReceipt % 1000;
+        constexpr size_t byte = bit / 8;
+        constexpr u8 mask = 0x80 >> (bit % 8);
+        live[byte] = (live[byte] & ~mask) | (own[byte] & mask);
+    }
+    if (!native_phase) return;
+    // The independent guest's native Doll/Gehrman stages, burning Dream and night.
     if (key == 1) std::copy_n(own, 5, live); // 1000..1039, two native state ranges
     if (key == 12601) {
         constexpr size_t byte = 800 / 8;
@@ -7326,7 +7335,7 @@ void ApplyBbscHostDreamState(std::string_view why) {
         std::memcpy(before_commands.data(),live,BbscWorldGroupBytes);
         Chalice::CopyHostFlagGroup(BbscDreamStateKeys[i], live, host.groups[i]);
         KeepBbscNpcOwnBits(BbscDreamStateKeys[i], before_commands.data(), live);
-        if (independent) KeepBbscNativeDreamPhase(BbscDreamStateKeys[i], before_commands.data(), live);
+        KeepBbscLocalDreamFlags(BbscDreamStateKeys[i], before_commands.data(), live, independent);
         if(BbscIndependentTravelAllowed())
             LampTravel::KeepTravelCommands(BbscDreamStateKeys[i],before_commands.data(),live);
         shop_bits += KeepBbscOwnDreamShopFlags(i, live);
@@ -7363,8 +7372,8 @@ void RestoreBbscOwnDreamState(std::string_view why) {
             continue;
         }
         auto* live = reinterpret_cast<u8*>(storage);
-        if (bbsc_dream_own.native_phase)
-            KeepBbscNativeDreamPhase(BbscDreamStateKeys[i], live, bbsc_dream_own.own[i].data());
+        KeepBbscLocalDreamFlags(BbscDreamStateKeys[i], live, bbsc_dream_own.own[i].data(),
+                                bbsc_dream_own.native_phase);
         for (size_t b = 0; b < BbscWorldGroupBytes; ++b) {
             const u8 changed = static_cast<u8>(live[b] ^ bbsc_dream_own.written[i][b]);
             kept_bits += std::popcount(changed);
@@ -11197,6 +11206,11 @@ void PS4_SYSV_ABI BbscSendPhantomHomeHook(u64, const GuestRegisterSnapshot* regi
             LOG_INFO(Debug, "BBSC leave: duplicate native send-home skipped; return already claimed");
             return; // do not release locks while the first return is loading
         }
+        // The original OnLeave_Limit can return before StageTransition.
+        // Keep the existing recovery available when its native gates fail.
+        if (!IsSprjLuaEventManReady() || GetBbscLocalPlayerHp() <= 0) {
+            return;
+        }
         bbsc_home_return_claimed = true;
         LOG_INFO(Debug, "BBSC leave: the game's send-home step runs (session state {}, own world {})",
                  GetSessionState(),
@@ -13669,6 +13683,15 @@ void BeginBbscLedgerAward(s32 lot, u64 row) {
 bool SkipBbscRepeatedLot(s32 lot, u64 row) {
     if (bbsc_ledger_regive || row == 0) {
         return false;
+    }
+    // The DLC Eye has a single original lot. Repair a missing receipt for an
+    // older guest who already owns that key item, even without a BBSC ledger.
+    if (lot == 10040 && BbscLotMainFlag(row) == BbscDlcEyeReceipt &&
+        BbscGuestInHostWorld() && GetCurrentPackedMap() == BbscDreamStateMap &&
+        BbscLedgerCount(0x400010D7) > 0) {
+        SetBbscLedgerFlag(BbscDlcEyeReceipt, 1);
+        RecordBbscNativeItemFlag(BbscDlcEyeReceipt, 1);
+        return true;
     }
     const auto flags = BbscLotFlags(row);
     if (flags.empty()) {

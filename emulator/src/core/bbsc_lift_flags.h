@@ -36,7 +36,11 @@ inline std::span<const LiftFlagByte> LiftFlags(std::uint32_t group) {
     static constexpr F woods[]{F::Position(134, 135), F::Position(144, 145)};
     static constexpr F yahargul[]{F::Position(610, 611)};
     static constexpr F yahargul_busy[]{F::Temporary(700)};
-    static constexpr F mensis[]{F::Position(115, 116)};
+    static constexpr F mensis[]{F::Position(250), F::Position(251), F::Position(252),
+                                    F::Position(254), F::Position(255), F::Position(256)};
+    static constexpr F mensis_busy[]{F::Temporary(250), F::Temporary(251), F::Temporary(252),
+                                         F::Temporary(253), F::Temporary(254), F::Temporary(256)};
+    static constexpr F frontier[]{F::Position(115, 116)};
     static constexpr F hall[]{F::Position(106), F::Position(116), F::Position(126)};
     static constexpr F hall_busy[]{F::Temporary(100), F::Temporary(110), F::Temporary(120)};
     static constexpr F hamlet[]{F::Position(106)};
@@ -49,7 +53,9 @@ inline std::span<const LiftFlagByte> LiftFlags(std::uint32_t group) {
     case 12700: return woods;
     case 12800: return yahargul;
     case 12804: return yahargul_busy;
-    case 13300: return mensis;
+    case 12601: return mensis;
+    case 12605: return mensis_busy;
+    case 13300: return frontier;
     case 13501: return hall;
     case 13504: return hall_busy;
     case 13601: return hamlet;

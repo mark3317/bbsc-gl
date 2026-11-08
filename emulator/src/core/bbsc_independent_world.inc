@@ -896,14 +896,17 @@ void TickBbscWorldPlayers() {
                     peer,chr,mesh,(ReadValue<u8>(chr,0x1E2)&0x10)!=0,local.visit,in.peer_visit);
             }
         }
-        if(action.insert){
+        // A settled native task can reach its first visit admission without
+        // a PlayerIns. The one-shot path will not revisit WaitingActor.
+        const bool missing_on_admission = once && in.here && in.alive && !chr;
+        if(action.insert || missing_on_admission){
             if(HasMemoryAccess(task+0xED,1,MemoryProt::CpuWrite) &&
                ReadablePointer(world,0x68) && IsValidMemberId(task+0xC8) &&
                ReadValue<u64>(task,0xC8)){
                 const u64 retiring = FindBbscRemotePlayer(world, task);
                 // The relay may temporarily lack a registration for an actor
                 // that still owns this native member's movement queue.
-                if (chr && chr != retiring) continue;
+                if ((chr && chr != retiring) || (!action.insert && retiring)) continue;
                 // Same per-character removal used by native CSMultiPlayerIns.Delete
                 // at01E50C54. Keep the session/member task; never run bulk cleanup.
                 if(retiring){

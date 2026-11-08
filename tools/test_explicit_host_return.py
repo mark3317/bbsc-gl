@@ -24,6 +24,7 @@ std::array<u8,0x1800> memory{};
 u64 image_base=1;int state=0,home_calls=0,transitions=0;
 s64 now=1000,bbsc_persistence_restore_at_ms=100,bbsc_confirmed_departure_ms=0;
 bool own=false,loading=false,quit=false,finale=false,ready=true;
+int hp=100;
 bool bbsc_home_return_claimed=false,bbsc_release_leave_locks=false;
 u8 bbsc_send_home_skip=0;
 std::atomic<u32> bbsc_explicit_host_leave_pending{0};
@@ -32,20 +33,21 @@ u64 GetGlobalState(){return reinterpret_cast<u64>(memory.data());}
 int GetSessionState(){return state;}
 bool BbscOwnWorldNonGuest(u64){return own;}
 bool BbscQuitInProgress(){return quit;}
+bool BbscNativeFinaleCommitted(){return false;}
 bool BbscDreamFinaleHolding(){return finale;}
 bool BbscGuestStayingInSession(){return state==6 && bbsc_persistence_restore_at_ms==0;}
 s64 SteadyNowMs(){return now;}
 bool ReadablePointer(u64 p,size_t){return p!=0;}
 bool IsSprjLuaEventManReady(){return ready;}
 u64 GetLocalPlayerCharacter(){return 1;}
-int GetCharacterHp(u64){return 100;}
+int GetBbscLocalPlayerHp(){return hp;}
 namespace MemoryProt {constexpr int CpuRead=1;}
 bool HasMemoryAccess(u64,size_t,int){return false;}
 template<class T>T ReadValue(u64 p,size_t offset){
  if(p==GetGlobalState())return offset==8?loading:offset==0x1592?own:0;
  if(p==image_base+0x0553B0C8)return 100;
  if(p==100 && offset==8)return 200;
- if(p==image_base+0x0553B0D8)return 300;
+ if(p==image_base+0x0553B0D8)return static_cast<T>(300);
  return 0;
 }
 int event_state=0;
@@ -79,6 +81,19 @@ int main(){
  own=true;loading=false;now+=1000;TickBbscStrandedGuest();own=false;quit=true;bbsc_confirmed_departure_ms=now;
  now+=2000;TickBbscStrandedGuest();assert(transitions==2);
  quit=false;loading=true;now+=2000;TickBbscStrandedGuest();assert(transitions==2);
+ own=true;loading=false;now+=1000;TickBbscStrandedGuest();
+ own=false;hp=0;bbsc_send_home_skip=0;
+ BbscSendPhantomHomeHook(0,nullptr);
+ assert(!bbsc_home_return_claimed && !bbsc_send_home_skip);
+ now+=1000;TickBbscStrandedGuest();
+ now+=15000;TickBbscStrandedGuest();assert(transitions==3);
+ own=true;loading=false;now+=1000;TickBbscStrandedGuest();
+ own=false;hp=100;ready=false;bbsc_send_home_skip=0;
+ BbscSendPhantomHomeHook(0,nullptr);
+ assert(!bbsc_home_return_claimed && !bbsc_send_home_skip);
+ ready=true;
+ BbscSendPhantomHomeHook(0,nullptr);
+ assert(bbsc_home_return_claimed && !bbsc_send_home_skip);
 }
 """
 with tempfile.TemporaryDirectory() as tmp:

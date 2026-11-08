@@ -43,8 +43,16 @@ MOVEMENT = [
     (0x23000000, (13501122, 13501123), 13501126, 13504120, 0),
     (0x24000000, (13601102, 13601103), 13601106, 13604100, 0),
 ]
+MENSIS_MOVEMENT = [
+    (0x1A000000, (12601320, 12601330), 12601250, 12605250, 0),
+    (0x1A000000, (12601320, 12601330), 12601251, 12605251, 0),
+    (0x1A000000, (12601320, 12601330), 12601252, 12605252, 0),
+    (0x1A000000, (12601320, 12601330), 12601256, 12605256, 0),
+    (0x1A000000, (12601320, 12601330), 12601254, 12605253, 0),
+    (0x1A000000, (12601320, 12601330), 12601255, 12605254, 0),
+]
 
-def resolved_instructions(emevd, event):
+def resolved_instructions(emevd, event, slot=0):
     events = dict(emevd.events)
     instructions = [(b, i, bytearray(args)) for b, i, args in events[event]]
     count, table = emevd.header[:2]
@@ -54,7 +62,7 @@ def resolved_instructions(emevd, event):
     if params:
         (args,) = [a[8:] for b, i, a in events[0]
                    if (b, i) == (2000, 0) and len(a) >= 8
-                   and struct.unpack_from('<I', a, 4)[0] == event]
+                   and struct.unpack_from('<II', a) == (slot, event)]
         for row in range(params):
             ins, target, source, length, _ = struct.unpack_from(
                 '<qqqii', emevd.data, emevd.header[9] + offset + 0x20 * row)
@@ -82,11 +90,12 @@ def original(game):
         else:
             assert any(b==2003 and i==2 and a==struct.pack('<II',flag,1) for b,i,a in ins)
     print('PASS original 1.09: 10 permanent unlock flags, region/lever paths, implicit completion, parameter substitutions, no NoNetSync')
-    for packed, events, position, busy, interlock in MOVEMENT:
+    lifts = [(0, movement) for movement in MOVEMENT] + list(enumerate(MENSIS_MOVEMENT))
+    for slot, (packed, events, position, busy, interlock) in lifts:
         name = f'm{packed>>24:02d}_{packed>>16&255:02d}_00_00'
         evd = Emevd(game/'event'/(name+'.emevd.dcx'))
         for event, value in zip(events, (1, 0)):
-            ins = resolved_instructions(evd, event)
+            ins = resolved_instructions(evd, event, slot)
             writes = [struct.unpack('<II', a) for b, i, a in ins if (b, i) == (2003, 2)]
             assert writes.index((busy, 1)) < writes.index((busy, 0))
             assert (position, value) in writes
@@ -94,7 +103,7 @@ def original(game):
         if interlock:
             init = {12410351: 12410321, 12800611: 12800600}[interlock]
             assert (2003, 2, struct.pack('<II', interlock, 0)) in resolved_instructions(evd, init)
-    print('PASS original 1.09: movement and temporary flags for 11 lifts, including parameterized events')
+    print('PASS original 1.09: movement and temporary flags for 17 lifts, including six Mensis slots')
 
 PREFIX=r'''
 #include <algorithm>
@@ -213,7 +222,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
     return (group[flag % 1000 / 8] & (0x80u >> (flag % 8))) != 0;
  };
  '''
-    for packed, _, position, busy, interlock in MOVEMENT:
+    for packed, _, position, busy, interlock in MOVEMENT + MENSIS_MOVEMENT:
         code+=f'''
  {{
     const u32 position = {position}, busy = {busy}, interlock = {interlock};
@@ -289,7 +298,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
     print('PASS production: all 10 events shared, channel31 same-place policy, capture/apply host+guest, late-arrival snapshot, additive unlock/no rollback, incomplete/owner/off-map fences')
-    print('PASS production: 11 lifts, native live bits preserved, exact arrival position, no additive replay')
+    print('PASS production: 17 lifts, native live bits preserved, exact arrival position, no additive replay')
 
 if __name__=='__main__':
     original(Path(sys.argv[1]))

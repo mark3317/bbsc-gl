@@ -28,7 +28,9 @@ int state=6, hp=100, releases=0, deaths=0; bool quit=false, finale=false, loadin
 u64 image_base=1; s64 now=100, bbsc_persistence_restore_at_ms=0;
 u8 bbsc_send_home_skip=0; bool bbsc_release_leave_locks=false, bbsc_home_return_claimed=false;
 int GetSessionState(){return state;} int GetCharacterHp(u64){return hp;}
+int GetBbscLocalPlayerHp(){return hp;} bool IsSprjLuaEventManReady(){return true;}
 u64 GetLocalPlayerCharacter(){return 1;} bool BbscQuitInProgress(){return quit;}
+bool BbscNativeFinaleCommitted(){return false;}
 bool BbscDreamFinaleHolding(){return finale;} u64 GetGlobalState(){return 1;}
 bool BbscOwnWorldNonGuest(u64){return own;}
 bool ReadablePointer(u64,int){return true;}
@@ -55,7 +57,8 @@ int main(){
  bbsc_persistence_restore_at_ms=0;
  // Host lost / real native teardown / joining / dead: native recovery remains.
  for(int s : {0,4,7}){bbsc_home_return_claimed=false;state=s;hook();assert(!bbsc_send_home_skip);}
- bbsc_home_return_claimed=false;state=6;hp=0;hook();assert(!bbsc_send_home_skip);hp=100;
+ bbsc_home_return_claimed=false;state=6;hp=0;hook();
+ assert(!bbsc_send_home_skip && !bbsc_home_return_claimed);hp=100;
  bbsc_home_return_claimed=false;quit=true;hook();assert(!bbsc_send_home_skip);quit=false;
  // Departure between skip and deferred release must not unlock the real leave.
  hook();TickBbscLeaveLocks();bbsc_persistence_restore_at_ms=1000;++now;

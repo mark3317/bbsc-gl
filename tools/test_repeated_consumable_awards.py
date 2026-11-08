@@ -15,12 +15,18 @@ fixture = r'''
 #include <cassert>
 using u32=uint32_t; using u64=uint64_t; using s32=int32_t; using s16=int16_t;
 bool bbsc_ledger_regive=false, flagged=true, addable=true, npc=true;
-int count=1, area=24, writes=0; s16 maxnum=99; u64 goodsrow=1;
+int count=1, area=24, writes=0, eye_writes=0, eye_records=0;
+s16 maxnum=99; u64 goodsrow=1;
 constexpr int BbscChaliceArea=29;
+constexpr u32 BbscDreamStateMap=0x15000000, BbscDlcEyeReceipt=50000100;
+u32 main_flag=50002000;
+bool guest=true;
 std::mutex bbsc_ledger_mutex;
 std::unordered_map<int,u32> bbsc_ledger_lots;
 std::unordered_map<u32,int> bbsc_ledger_own_flags;
 std::vector<u32> BbscLotFlags(u64){return flagged?std::vector<u32>{50002000}:std::vector<u32>{};}
+u32 BbscLotMainFlag(u64){return main_flag;}
+bool BbscGuestInHostWorld(){return guest;}
 bool BbscLedgerAddable(u32){return addable;}
 int BbscLedgerCount(u32){return count;}
 u64 BbscGameParamTable(const char*){return 1;}
@@ -31,7 +37,12 @@ int BbscMapArea(int a){return a;}
 int GetSessionState(){return 6;}
 bool IsBbscNpcQuestFlag(u32){return npc;}
 int SteadyNowMs(){return 123;}
-void SetBbscLedgerFlag(u32 f,int value){assert(f==50002000 && value==1);++writes;}
+void SetBbscLedgerFlag(u32 f,int value){
+ assert(value==1);
+ if(f==BbscDlcEyeReceipt){++eye_writes;return;}
+ assert(f==50002000);++writes;
+}
+void RecordBbscNativeItemFlag(u32 f,int value){assert(f==BbscDlcEyeReceipt && value==1);++eye_records;}
 #define LOG_WARNING(...)
 #define BBSC_TIMELINE(...)
 ''' + s[a:b] + r'''
@@ -52,6 +63,15 @@ int main(){
  bbsc_ledger_lots[37000]=100; count=0; assert(!SkipBbscRepeatedLot(37000,1));
  count=1; assert(SkipBbscRepeatedLot(37000,1)); // weapon
  addable=false; count=0; assert(SkipBbscRepeatedLot(37000,1)); // gem/rune
+ // The original Eye gift can repair an older guest without a ledger entry.
+ area=BbscDreamStateMap;main_flag=BbscDlcEyeReceipt;
+ assert(!SkipBbscRepeatedLot(10040,1)); // first gift when the item is absent
+ count=1;guest=false;assert(!SkipBbscRepeatedLot(10040,1));
+ guest=true;assert(!SkipBbscRepeatedLot(10041,1));
+ main_flag=50002000;assert(!SkipBbscRepeatedLot(10040,1));
+ main_flag=BbscDlcEyeReceipt;area=24;assert(!SkipBbscRepeatedLot(10040,1));
+ area=BbscDreamStateMap;assert(eye_writes==0&&eye_records==0);
+ assert(SkipBbscRepeatedLot(10040,1));assert(eye_writes==1&&eye_records==1);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-award-') as d:
