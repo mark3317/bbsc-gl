@@ -57,7 +57,7 @@ bool ReadablePointer(u64 p,size_t) { return p>=0x10000; }
 bool HasMemoryAccess(u64,size_t,int) { return true; }
 bool BossFightActive() { for(auto h:handles) if(h!=-1) return true; return false; }
 void NativeClear() { ++clears; handles.fill(-1); }
-void NotifyBbscHostDeathReload() { ++notified; }
+void NotifyBbscDeathReload() { ++notified; }
 bool RequestBbscSharedLampReload() { return false; }
 void SelectBbscLocalDeathLamp() {}
 struct SummonPlacementDescriptor { u32 packed_region=24; float x=0,y=0,z=0; };

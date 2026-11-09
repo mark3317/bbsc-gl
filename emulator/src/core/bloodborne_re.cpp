@@ -4334,7 +4334,7 @@ std::string_view bbsc_spectate_name;
 constexpr u64 DeathReloadRequestOffset = 0x013CDE30;
 bool bbsc_request_death_reload = false;
 u64 GetLocalPlayerCharacter();
-void NotifyBbscHostDeathReload();
+void NotifyBbscDeathReload();
 void ClearBbscBossContext(std::string_view why);
 void SelectBbscLocalDeathLamp();
 
@@ -4350,7 +4350,7 @@ void RequestBbscDeathReload(std::string_view why) {
     }
     // 0x01332BC0 already picked the destination (global+0xC map, global+0x10 respawn point) while
     // the death step ran, so the request alone reproduces the vanilla death reload.
-    NotifyBbscHostDeathReload(); // send before loading can suspend the game tick
+    NotifyBbscDeathReload(); // send before loading can suspend the game tick
     ClearBbscBossContext("before death reload");
     using ReloadRequest = u64 PS4_SYSV_ABI (*)();
     const u64 result = reinterpret_cast<ReloadRequest>(image_base + DeathReloadRequestOffset)();
@@ -4365,6 +4365,7 @@ s64 bbsc_spectate_death_ms = 0;
 s64 bbsc_spectate_alone_since_ms = 0;
 bool bbsc_boss_wipe_seen = false;
 bool bbsc_boss_death_ready = false;
+std::atomic<u32> bbsc_load_generation{0}; // incremented after an actual load completes
 
 bool BbscSpectateEnabled() {
     static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_SPECTATE");
@@ -4412,13 +4413,13 @@ std::mutex bbsc_life_mutex;
 std::map<u32, BbscPeerLife> bbsc_peer_life;
 std::atomic<u32> bbsc_life_own_id{0}; // ours, so an echo of our own packet is ignored
 u32 bbsc_life_sequence = 0; // all life sends share ordering, game thread only
-bool bbsc_host_death_reloading = false;
+std::optional<u32> bbsc_death_reload_generation;
+constexpr u8 BbscLifeDeathReloading = 2;
 constexpr u8 BbscLifeBossDeathReady = 3;
 
 enum class BbscBossDeathGroup { Unavailable, Waiting, Ready };
 
 BbscBossDeathGroup ReadBbscBossDeathGroup() {
-    if (!BbscIndependentActive()) return BbscBossDeathGroup::Unavailable;
     std::scoped_lock lock{bbsc_life_mutex, bbsc_world_presence_mutex};
     const auto& local = bbsc_world_presence_local;
     const auto scope = World::ScopeOf(local);
@@ -4426,7 +4427,8 @@ BbscBossDeathGroup ReadBbscBossDeathGroup() {
         return BbscBossDeathGroup::Unavailable;
     bool has_partner = false;
     bool all_ready = true;
-    for (const auto& [peer, member] : bbsc_world_presence_book.Members()) {
+    const auto& roster = bbsc_world_presence_book.Members();
+    for (const auto& [peer, member] : roster) {
         const auto& presence = member.presence;
         if (World::ScopeOf(presence) != scope) continue;
         const auto life = bbsc_peer_life.find(peer);
@@ -4441,8 +4443,21 @@ BbscBossDeathGroup ReadBbscBossDeathGroup() {
         if (!(presence.capabilities & World::BossDeathReadyCapability))
             return BbscBossDeathGroup::Unavailable;
         has_partner = true;
-        all_ready &= loading_dead || (same_visit && !presence.alive &&
-                                      life->second.dead == BbscLifeBossDeathReady);
+        // The native death reload has been requested even if the next
+        // presence packet has not caught up.
+        const bool death_finished = same_visit &&
+                                    (life->second.dead == BbscLifeDeathReloading ||
+                                     (!presence.alive && life->second.dead == BbscLifeBossDeathReady));
+        all_ready &= loading_dead || death_finished;
+    }
+    // A missing presence is common when the native room admitted a guest
+    // before their route was established. That hunter can still be fighting.
+    // Use the native roster even when independent travel did not negotiate.
+    if (has_partner || BbscIndependentActive()) {
+        const s32 native_members = GetBbscSessionMemberCount(GetGlobalState());
+        if (native_members >= 2 && native_members <= 5 &&
+            roster.size() < static_cast<size_t>(native_members - 1))
+            return BbscBossDeathGroup::Waiting;
     }
     if (!has_partner) return BbscBossDeathGroup::Unavailable;
     return all_ready ? BbscBossDeathGroup::Ready : BbscBossDeathGroup::Waiting;
@@ -4484,13 +4499,20 @@ void SendBbscLifeState(u8 state) {
     Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(packet.data(), packet.size());
 }
 
-void NotifyBbscHostDeathReload() {
-    if (GetSessionState() != 3 || bbsc_host_death_reloading) return;
+bool IsInvaderType(s32 type);
+
+void NotifyBbscDeathReload() {
+    const s32 state = GetSessionState();
+    if ((state != 3 && state != 6) ||
+        (state == 6 && IsInvaderType(GetLocalCharacterType()))) return;
+    const u32 generation = bbsc_load_generation.load();
+    if (bbsc_death_reload_generation == generation) return;
     const u64 player = GetLocalPlayerCharacter();
-    if (!bbsc_spectate_active && (player == 0 || GetCharacterHp(player) != 0)) return;
-    bbsc_host_death_reloading = true;
-    if (!bbsc_boss_death_ready) SendBbscLifeState(2);
-    BBSC_TIMELINE("DEATH", "host death reload starting");
+    if (!bbsc_boss_death_ready && !bbsc_spectate_active &&
+        (player == 0 || GetCharacterHp(player) != 0)) return;
+    bbsc_death_reload_generation = generation;
+    SendBbscLifeState(BbscLifeDeathReloading);
+    BBSC_TIMELINE("DEATH", "{} death reload starting", state == 3 ? "host" : "guest");
 }
 
 // {fresh reports, of which dead}
@@ -4664,7 +4686,6 @@ s64 bbsc_boss_killed_ms = 0;
 // Latched at HP zero, before Failed_BossAreaMission removes the gauge. The native final
 // death step can arrive more than 15 seconds later; a time-limited bar cache is insufficient.
 bool bbsc_boss_at_own_death = false;
-std::atomic<u32> bbsc_load_generation{0}; // incremented after an actual load completes
 std::atomic<u64> bbsc_world_native_load{0}; // before destination events, not the next game tick
 World::Scope bbsc_boss_wipe_scope{};
 std::atomic<u64> bbsc_boss_wipe_load{0};
@@ -5370,7 +5391,7 @@ u32 BbscChaliceInitialJoinMap() {
 // reloaded the Dream first. Already joined, living cooperators use the scoped follow instead.
 // Initial summons, death/home loads, invaders and our own explicit requests keep their path.
 void PS4_SYSV_ABI BbscChaliceTransitionHook(u64, const GuestRegisterSnapshot* registers) {
-    NotifyBbscHostDeathReload(); // native StageTransition, including death reloads
+    if (GetSessionState() == 3) NotifyBbscDeathReload(); // existing native host fallback
     if (!registers || bbsc_chalice_transition_owned || BbscWorldTravelInFlight() || !bbsc_join_teleport_done ||
         GetSessionState() != 6 || GetLocalPlayerType() != 1) return;
     const u64 global = GetGlobalState();
@@ -10323,10 +10344,11 @@ void TickBbscSpectate() {
         return;
     }
     std::string_view reason;
-    if (session_alive && bbsc_boss_death_group != BbscBossDeathGroup::Unavailable) {
+    if (session_alive && bbsc_death_mode == BbscDeathMode::Spectate) {
         if (!bbsc_boss_death_ready) {
             // The native final step returned, or the existing death watchdog
-            // handed off a stalled step. Publish before any StageTransition.
+            // handed off a stalled step. Peers can already be waiting even
+            // when independent mode is unavailable on this client.
             bbsc_boss_death_ready = true;
             SendBbscLifeState(BbscLifeBossDeathReady);
             BBSC_TIMELINE("DEATH", "boss death ready ({})", bbsc_spectate_name);
@@ -18266,7 +18288,7 @@ void TickBbscLifeBroadcast() {
     last_ms = now;
     const s32 state = GetSessionState();
     if (state != 3 && state != 6) {
-        bbsc_host_death_reloading = false;
+        bbsc_death_reload_generation.reset();
         const u64 global = GetGlobalState();
         if (state == 0 && ReadablePointer(global, 0x1598) &&
             ReadValue<u8>(global, 0x08) == 0 && ReadValue<u8>(global, 0x1592) != 0) {
@@ -18280,10 +18302,14 @@ void TickBbscLifeBroadcast() {
     if (!player || !ReadablePointer(global, 0x10) || ReadValue<u8>(global, 0x08) != 0 ||
         GetCharacterHp(player) < 0) return; // unknown/loading is never an alive or dead report
     const bool dead = bbsc_spectate_active || GetCharacterHp(player) == 0;
-    if (!dead) bbsc_host_death_reloading = false;
-    if (!dead) bbsc_boss_death_ready = false;
-    SendBbscLifeState(bbsc_boss_death_ready ? BbscLifeBossDeathReady :
-                      state == 3 && bbsc_host_death_reloading ? 2 : (dead ? 1 : 0));
+    if (!dead) {
+        bbsc_death_reload_generation.reset();
+        bbsc_boss_death_ready = false;
+    }
+    const bool reloading = bbsc_death_reload_generation &&
+                           *bbsc_death_reload_generation == bbsc_load_generation.load();
+    SendBbscLifeState(reloading ? BbscLifeDeathReloading :
+                      bbsc_boss_death_ready ? BbscLifeBossDeathReady : (dead ? 1 : 0));
     if (dead != last_dead) {
         last_dead = dead;
         if (dead) {

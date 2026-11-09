@@ -77,7 +77,7 @@ bool BbscChaliceArrivalReady(u32){return ready;}bool BbscChaliceNeedsLoad(u32){r
 bool PrepareBbscChaliceLoad(u32){return prepared;}
 void BbscWorldEnsureSeed(const World::Scope&){}bool BbscWorldHasSnapshot(u32){return snapshot;}
 int notifications=0,clears=0,loads=0,fallbacks=0,lookups=0,local_selections=0;s32 loaded_point=0;
-void NotifyBbscHostDeathReload(){++notifications;}void ClearBbscBossContext(std::string_view){++clears;}
+void NotifyBbscDeathReload(){++notifications;}void ClearBbscBossContext(std::string_view){++clears;}
 void RequestBbscDeathReload(std::string_view);
 constexpr u64 DeathReloadRequestOffset=0x013CDE30;
 constexpr u64 SelectSummonedPlacementOffset=0x01332BC0;
@@ -318,8 +318,10 @@ int main(){
  WriteValue<s32>(GetGlobalState(),0x1528,2102950);assert(!RequestBbscSharedLampReload());
  WriteValue<s32>(GetGlobalState(),0x1528,2422952);
  invader=true;assert(!RequestBbscSharedLampReload());invader=false;
- const int before=loads;RequestBbscDeathReload("no living partner");
+ const int before=loads, before_notice=notifications;
+ RequestBbscDeathReload("no living partner");
  assert(loads==before+1&&loaded_point==2422952&&role==6);
+ assert(notifications==before_notice+1);
 
  // Rom wipe: foreign shared and native points cannot send either role to
  // Cathedral. Only the lit, resolved Byrgenwerth lamp is eligible.

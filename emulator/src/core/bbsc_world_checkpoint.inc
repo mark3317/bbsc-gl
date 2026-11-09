@@ -34,7 +34,7 @@ bool BeginBbscSharedLampLoad(const World::Scope& scope,s32 point) {
     bbsc_world_travel_inflight=true;bbsc_world_travel_saw_load=false;bbsc_world_travel_native_armed=false;
     bbsc_world_travel_load=bbsc_load_generation.load();bbsc_world_travel_since=SteadyNowMs();
     if(!Chalice::IsMap(scope.map))bbsc_world_altar_visiting=-1;
-    NotifyBbscHostDeathReload();ClearBbscBossContext("before shared lamp death load");
+    NotifyBbscDeathReload();ClearBbscBossContext("before shared lamp death load");
     using PointLoad=void PS4_SYSV_ABI (*)(s32);
     reinterpret_cast<PointLoad>(image_base+0x013CDF30)(point);
     BBSC_TIMELINE("RESPAWN","shared lamp native death load point={} map={:#x} ritual={}",point,scope.map,scope.ritual);
@@ -193,6 +193,7 @@ bool RequestBbscSharedLampReload() {
         // Resolve the guest's room lamp through the native point loader even
         // if the delayed death step has not selected the next stage yet.
         if (lamp == LampPoints.end() || lamp->packed_map != GetCurrentPackedMap()) return false;
+        NotifyBbscDeathReload();
         ClearBbscBossContext("before guest lamp death load");
         using PointLoad = void PS4_SYSV_ABI (*)(s32);
         reinterpret_cast<PointLoad>(image_base + 0x013CDF30)(point);
