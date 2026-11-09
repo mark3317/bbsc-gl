@@ -103,10 +103,14 @@ class DynamicPeerFailure(DynamicHelpers, unittest.TestCase):
             native.close()
             bridge.close()
 
-    def test_expired_peer_is_fenced_without_stopping_other_workers(self):
+    def test_expired_guest_link_recovers_without_rejoining_the_room(self):
         a, b, c = self.joined()
+        room = b.state['room']['id']
+        events = []
+        b.diagnostic = lambda event, **fields: events.append((event, fields))
+        with b.lock: b.blocked.add('C')
         work = queue.Queue()
-        work.put((time.monotonic()-11, dict(session=a.current_session(), stream=a.relay_stream('C'))))
+        work.put((time.monotonic()-11, dict(session=b.current_session(), stream=b.relay_stream('C'))))
         # One production worker iteration, without waiting ten wall-clock seconds.
         original_get = work.get
         def get(**kw):
@@ -115,11 +119,25 @@ class DynamicPeerFailure(DynamicHelpers, unittest.TestCase):
             return original_get(**kw)
         with patch.object(work, 'get', side_effect=get):
             with self.assertRaises(SystemExit):
-                a.send_relay('C', work)
-        self.assertIn('C', a.relay_peer_errors)
-        self.assertIsNone(a.relay_error)
-        a.relay(b'alive', recipients=['C', 'B'])
-        self.assertEqual(b.relay_in.get(timeout=3)[1], b'alive')
+                b.send_relay('C', work)
+        self.assertIn('C', b.relay_peer_errors)
+        self.assertIsNone(b.relay_error)
+        self.assertFalse(b.relay(b'blocked', recipients=['C']))
+        b.relay(b'alive', recipients=['A'])
+        self.assertEqual(a.relay_in.get(timeout=3)[1], b'alive')
+        with b.lock: b.blocked.remove('C')
+        self.eventually(lambda: 'C' not in b.relay_peer_errors)
+        self.assertTrue(b.relay(b'reopened', recipients=['C']))
+        self.assertEqual(c.relay_in.get(timeout=3)[1], b'reopened')
+        self.eventually(lambda: any(event == 'relay_recovered' for event, _ in events))
+        transitions = [(event, fields['peer'], fields['room_id']) for event, fields in events
+                       if event in ('relay_fenced', 'relay_reopened', 'relay_recovered')]
+        self.assertEqual(transitions, [(event, 'C', room) for event in
+                                       ('relay_fenced', 'relay_reopened', 'relay_recovered')])
+        self.assertTrue(c.relay(b'reverse', recipients=['B']))
+        self.assertEqual(b.relay_in.get(timeout=3)[1], b'reverse')
+        self.assertEqual(b.state['room']['id'], room)
+        self.assertEqual(set(b.state['joined']), {'B', 'C'})
 
 
 if __name__ == '__main__':

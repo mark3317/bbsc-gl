@@ -4419,15 +4419,45 @@ constexpr u8 BbscLifeBossDeathReady = 3;
 
 enum class BbscBossDeathGroup { Unavailable, Waiting, Ready };
 
-BbscBossDeathGroup ReadBbscBossDeathGroup() {
+BbscBossDeathGroup ReadBbscBossDeathGroup(bool first_check = false) {
     std::scoped_lock lock{bbsc_life_mutex, bbsc_world_presence_mutex};
     const auto& local = bbsc_world_presence_local;
     const auto scope = World::ScopeOf(local);
+    const auto& roster = bbsc_world_presence_book.Members();
+    const bool trace = BbscTimelineEnabled();
+    s32 native_members = -1;
+    u32 party_members = 0;
+    u32 blocking_peer = 0;
+    u64 peer_visit = 0, life_visit = 0;
+    int peer_phase = -1, life_state = -1;
+    const auto read_counts = [&] {
+        native_members = GetBbscSessionMemberCount(GetGlobalState());
+#ifdef BBSC_MOD
+        party_members = BbscMod::PartyRoomMemberCount();
+#endif
+    };
+    const auto finish = [&](BbscBossDeathGroup result, std::string_view reason) {
+        if (!trace) return result;
+        if (native_members < 0) read_counts();
+        auto snapshot = std::make_tuple(scope, local.visit, local.phase, result, reason,
+                                        native_members, party_members, roster.size(),
+                                        blocking_peer, peer_visit, life_visit, peer_phase, life_state);
+        static std::optional<decltype(snapshot)> previous;
+        if (first_check || !previous || *previous != snapshot) {
+            previous.emplace(snapshot);
+            BBSC_TIMELINE("DEATH", "boss death decision={} reason={} room={:#x} map={:#x} ritual={} visit={} phase={} native_members={} party_members={} presence_peers={} blocking_peer={:08x} peer_visit={} life_visit={} peer_phase={} life_state={}",
+                          result == BbscBossDeathGroup::Ready ? "ready" :
+                          result == BbscBossDeathGroup::Waiting ? "waiting" : "unavailable",
+                          reason, scope.world.room, local.map, scope.ritual, local.visit,
+                          static_cast<unsigned>(local.phase), native_members, party_members, roster.size(),
+                          blocking_peer, peer_visit, life_visit, peer_phase, life_state);
+        }
+        return result;
+    };
     if (local.phase != World::Phase::Playing || !World::Valid(scope))
-        return BbscBossDeathGroup::Unavailable;
+        return finish(BbscBossDeathGroup::Unavailable, "local_scope_not_ready");
     bool has_partner = false;
     bool all_ready = true;
-    const auto& roster = bbsc_world_presence_book.Members();
     for (const auto& [peer, member] : roster) {
         const auto& presence = member.presence;
         if (World::ScopeOf(presence) != scope) continue;
@@ -4440,27 +4470,42 @@ BbscBossDeathGroup ReadBbscBossDeathGroup() {
         const bool loading_dead = presence.phase == World::Phase::Loading &&
                                   same_visit && life->second.dead != 0;
         if (presence.phase != World::Phase::Playing && !loading_dead) continue;
-        if (!(presence.capabilities & World::BossDeathReadyCapability))
-            return BbscBossDeathGroup::Unavailable;
+        const bool supported = (presence.capabilities & World::BossDeathReadyCapability) != 0;
         has_partner = true;
         // The native death reload has been requested even if the next
         // presence packet has not caught up.
         const bool death_finished = same_visit &&
                                     (life->second.dead == BbscLifeDeathReloading ||
                                      (!presence.alive && life->second.dead == BbscLifeBossDeathReady));
+        if (trace && (!supported || (!blocking_peer && !loading_dead && !death_finished))) {
+            blocking_peer = peer;
+            peer_visit = presence.visit;
+            peer_phase = static_cast<int>(presence.phase);
+            if (life != bbsc_peer_life.end()) {
+                life_visit = life->second.visit;
+                life_state = life->second.dead;
+            } else {
+                life_visit = 0;
+                life_state = -1;
+            }
+        }
+        if (!supported)
+            return finish(BbscBossDeathGroup::Unavailable, "peer_without_death_ready");
         all_ready &= loading_dead || death_finished;
     }
     // A missing presence is common when the native room admitted a guest
     // before their route was established. That hunter can still be fighting.
     // Use the native roster even when independent travel did not negotiate.
     if (has_partner || BbscIndependentActive()) {
-        const s32 native_members = GetBbscSessionMemberCount(GetGlobalState());
-        if (native_members >= 2 && native_members <= 5 &&
-            roster.size() < static_cast<size_t>(native_members - 1))
-            return BbscBossDeathGroup::Waiting;
+        read_counts();
+        const s32 expected_members = party_members ? static_cast<s32>(party_members) : native_members;
+        if (expected_members >= 2 && expected_members <= 5 &&
+            roster.size() < static_cast<size_t>(expected_members - 1))
+            return finish(BbscBossDeathGroup::Waiting, "missing_presence");
     }
-    if (!has_partner) return BbscBossDeathGroup::Unavailable;
-    return all_ready ? BbscBossDeathGroup::Ready : BbscBossDeathGroup::Waiting;
+    if (!has_partner) return finish(BbscBossDeathGroup::Unavailable, "no_partner_in_scope");
+    return all_ready ? finish(BbscBossDeathGroup::Ready, "all_partners_ready")
+                     : finish(BbscBossDeathGroup::Waiting, "partner_not_ready");
 }
 
 BbscBossDeathGroup bbsc_boss_death_group = BbscBossDeathGroup::Unavailable;
@@ -10258,10 +10303,12 @@ void BeginBbscCoopDeath(std::string_view name, s32 session_state) {
         return; // native 9421 selects the prison before the death load
     }
     const bool boss_death = BbscBossFightAtDeath();
-    bbsc_boss_death_group = boss_death ? ReadBbscBossDeathGroup()
+    bbsc_boss_death_group = boss_death ? ReadBbscBossDeathGroup(true)
                                       : BbscBossDeathGroup::Unavailable;
     if (bbsc_boss_death_group == BbscBossDeathGroup::Unavailable &&
         (bbsc_boss_wipe_seen || !LivingPartnerExists())) {
+        BBSC_TIMELINE("DEATH", "{} selected local reload boss_detected={} wipe_seen={}",
+                      name, boss_death, bbsc_boss_wipe_seen);
         bbsc_spectate_active = false;
         bbsc_request_death_reload = true;
         return;
@@ -10418,6 +10465,9 @@ void TickBbscSpectate() {
 
     LOG_INFO(Debug, "BBSC spectate: releasing {} after {} ms ({})", bbsc_spectate_name,
              now - bbsc_spectate_since_ms, reason);
+    if (bbsc_death_mode == BbscDeathMode::Spectate)
+        BBSC_TIMELINE("DEATH", "{} left boss spectate after {} ms reason={}",
+                      bbsc_spectate_name, now - bbsc_spectate_since_ms, reason);
     bbsc_spectate_active = false;
     bbsc_spectate_releasing = true;
     RequestBbscCoopDeathReload(reason, !penalty_applied);
@@ -22519,30 +22569,36 @@ void TickBbscPresence() {
             next.watch_count = bbsc_watch.count;
         }
     }
-    if (next.role != 0) {
+    s32 party_members = 0;
+#ifdef BBSC_MOD
+    party_members = static_cast<s32>(BbscMod::PartyRoomMemberCount());
+#endif
+    if (party_members) {
+        next.hunters = party_members;
+    } else if (next.role != 0) {
         const s32 members = GetBbscSessionMemberCount(GetGlobalState());
         next.hunters = std::clamp(members, 2, next.max_hunters);
     }
-    // 2026-10-06: no test has had more than one guest in the world yet (every log: "cooperators 1
-    // members 2"). Each change of the head count is logged, on host and guests alike, so a 4- or
-    // 5-player test shows who got in, when, and who dropped.
+    // During a stage load native population counts local actors, not the room.
+    // Only an authoritative room update changes the Party hunter count.
     {
         static s32 last_key = -1;
         const u64 global = GetGlobalState();
         const u64 population = ReadablePointer(global, 0x1700) ? ReadValue<u64>(global, 0x16F8) : 0;
-        if (ReadablePointer(population, 0x18)) {
-            const s32 coop = ReadValue<s32>(population, 0x08);
-            const s32 inv = ReadValue<s32>(population, 0x0C);
-            const s32 all = ReadValue<s32>(population, 0x14);
+        const bool has_population = ReadablePointer(population, 0x18);
+        if (party_members || has_population) {
+            const s32 inv = has_population ? ReadValue<s32>(population, 0x0C) : 0;
+            const s32 all = party_members ? party_members : ReadValue<s32>(population, 0x14);
+            const s32 coop = party_members ? std::max(0, all - 1 - inv) : ReadValue<s32>(population, 0x08);
             const s32 key = state * 10000 + coop * 1000 + inv * 100 + all;
             if (key != last_key) {
                 last_key = key;
                 LOG_INFO(Debug,
-                         "BBSC hunters: {} in the world - {} cooperator(s), {} invader(s), session "
+                         "BBSC hunters: {} in the session - {} cooperator(s), {} invader(s), session "
                          "state {} ({})",
                          all, coop, inv, state,
                          state == 3 ? "hosting" : state == 6 ? "guest" : "alone");
-                BBSC_TIMELINE("PARTY", "hunters: {} in the world - {} cooperator(s), {} invader(s), session "
+                BBSC_TIMELINE("PARTY", "hunters: {} in the session - {} cooperator(s), {} invader(s), session "
                          "state {} ({})",
                          all, coop, inv, state,
                          state == 3 ? "hosting" : state == 6 ? "guest" : "alone");

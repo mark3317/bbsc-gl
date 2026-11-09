@@ -26,11 +26,12 @@ int main(int argc,char** argv){
   return 0;
  }
  if(argc>1 && std::string(argv[1])=="notices"){
-  const unsigned long long expected[][3]={{7,0,0},{0,7,0},{0,0,0},{8,0,0},{0,0,0},{0,0,0},{9,8,1},{0,0,0}};
+  const unsigned long long expected[][4]={{7,0,0,0},{0,7,0,0},{0,0,0,0},{8,0,0,0},{0,0,0,0},{0,0,0,0},{9,8,1,0},{0,0,0,0},{10,8,1,3},{0,0,0,3},{10,8,1,3},{10,8,1,2},{10,8,1,0},{11,8,0,3}};
   for(const auto& pair:expected){
    BbscMod::PartyMaintain();
    bool counted=false;
-   if(BbscMod::PartyBellGeneration(counted)!=pair[0] || BbscMod::PartyBellReleasedGeneration()!=pair[1] || counted!=pair[2])return 30;
+   if(BbscMod::PartyBellGeneration(counted)!=pair[0] || BbscMod::PartyBellReleasedGeneration()!=pair[1] ||
+      counted!=pair[2] || BbscMod::PartyRoomMemberCount()!=pair[3])return 30;
    Sleep(260);
   }
   return 0;
@@ -111,7 +112,9 @@ class BridgeTests(ProcessTests):
     self.assertEqual(body['members'],1);self.assertFalse(body['bell'])
   finally:server.shutdown();server.server_close();thread.join()
  def test_notice_reply_versions_and_malformed_release(self):
-  replies=iter([b'0 0 7 0',b'1 0 0 7',b'1 0',b'0 0 8',b'1 0 0 invalid',b'garbage',b'0 0 9 8 1 1',b'0 0 10 8 1 2'])
+  replies=iter([b'0 0 7 0',b'1 0 0 7',b'1 0',b'0 0 8',b'1 0 0 invalid',b'garbage',b'0 0 9 8 1 1',b'0 0 10 8 1 2',
+                b'0 0 10 8 1 1 3',b'0 0 10 8 1 1 6',b'0 0 10 8 1 1',b'0 0 10 8 1 1 2',b'1 0 10 8 1 1 0',
+                b'0 0 11 8 1 0 3'])
   class Handler(BaseHTTPRequestHandler):
    def log_message(self,*args):pass
    def do_POST(self):

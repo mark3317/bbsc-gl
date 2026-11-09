@@ -40,7 +40,11 @@ prefix = r'''
 namespace World=Core::Bloodborne::World;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define LOG_INFO(...)
-#define BBSC_TIMELINE(...)
+int boss_decision_logs=0;
+#define BBSC_TIMELINE(kind, message, ...) do { \
+ if(std::string_view(message).starts_with("boss death decision=")) ++boss_decision_logs; \
+} while(false)
+bool BbscTimelineEnabled(){return true;}
 #define PS4_SYSV_ABI
 bool kidnap=false,prison_ready=false;
 bool BbscKidnapDeathPending();bool BbscKidnapRespawnReady();
@@ -316,7 +320,11 @@ int main(){
   auto peer=local;
   assert(bbsc_world_presence_book.Hear(11,local.world,peer,now));
   OnBbscLifePacket(11,BbscLifeBossDeathReady,1,true,false);
+  const int initial_decision_logs=boss_decision_logs;
   BeginBbscCoopDeath("native final",role);TickBbscSpectate();
+  assert(boss_decision_logs==initial_decision_logs+1);
+  RefreshBbscBossDeathGroup();
+  assert(boss_decision_logs==initial_decision_logs+1);
   now+=2*BbscSpectateReleaseDebounceMs;TickBbscSpectate();
   assert(!reloads&&bbsc_spectate_active&&ready_sends==1);
 
@@ -325,6 +333,7 @@ int main(){
   assert(bbsc_world_presence_book.Hear(33,local.world,peer,now));
   OnBbscLifePacket(33,0,1,false,false);
   RefreshBbscBossDeathGroup();TickBbscSpectate();
+  assert(boss_decision_logs==initial_decision_logs+2);
   if(last_hunter_here){
    assert(!reloads&&bbsc_spectate_active);
    peer.alive=0;peer.sequence=2;

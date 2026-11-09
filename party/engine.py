@@ -71,6 +71,14 @@ def initial(cfg):
             'generation': 0, 'owner': None, 'room': None, 'joined': {}, 'pending': {},
             'completed': {}, 'results': {}}
 
+def remove_room_guest(state, guest):
+    state['joined'].pop(guest, None)
+    room = state['room']
+    if room:
+        room['members'].pop(guest, None)
+        room.get('departing', {}).pop(guest, None)
+
+
 def transition(state, sender, seq, op):
     """Pure transition. Exceptions reject a proposal, never advance a revision."""
     s = copy.deepcopy(state)
@@ -148,8 +156,7 @@ def transition(state, sender, seq, op):
             if s['joined'] or s['pending']: raise ValueError('Guests/admissions must drain first')
             s['room'] = None
         else:
-            s['room']['members'].pop(sender,None); s['joined'].pop(sender, None)
-            s['room'].get('departing',{}).pop(sender,None)
+            remove_room_guest(s, sender)
     elif kind == 'room_update':
         if sender != s['owner'] or not s['room']: raise ValueError('Not room owner')
         s['room'].update({k: op[k] for k in ('bins', 'flags') if k in op})
@@ -177,7 +184,7 @@ class _Server(socketserver.ThreadingTCPServer):
         super().server_bind()
 
 class Engine:
-    def __init__(self, cfg, member, profile, *, fault=None):
+    def __init__(self, cfg, member, profile, *, fault=None, fresh=False):
         validate_invite(cfg)
         self.cfg = copy.deepcopy(cfg); self.id = member; self.profile = Path(profile)
         self.member = next(m for m in cfg['members'] if m['id'] == member)
@@ -198,7 +205,7 @@ class Engine:
         self.relay_window=16;self.relay_streams={}
         self.relay_in = queue.Queue(128); self.relay_error = None
         self.relay_peer_errors = {}
-        if self.path.exists():
+        if not fresh and self.path.exists():
             self.disk = json.loads(self.path.read_text())
             if self.disk['group'] != cfg['group'] or self.disk['id'] != member:
                 raise ValueError('Journal belongs to another group/member')
@@ -208,16 +215,14 @@ class Engine:
                          'incarnation': 0, 'history': {}}
         receipts=self.disk.pop('relay_received',{})
         self.relay_path=self.profile/'party-relay-journal.json'
-        if self.relay_path.exists():
+        if not fresh and self.relay_path.exists():
             relay_disk=json.loads(self.relay_path.read_text())
             if relay_disk['group']!=cfg['group'] or relay_disk['id']!=member:raise ValueError('Relay journal identity mismatch')
             receipts=relay_disk['received']
         self.relay_received={k:tuple(v) if len(v)==3 else (v[0],-1,v[1]) for k,v in receipts.items()}
-        if receipts and not self.relay_path.exists():
-            atomic_json(self.relay_path,{'group':cfg['group'],'id':member,'received':self.relay_received})
         self.disk.setdefault('native_retirements', {})
         self.retirement_at = 0
-        self.disk['incarnation'] += 1; self.persist()
+        self.disk['incarnation'] += 1
         self.state = self.disk['state']; self.pending_local = None
         engine = self
         class Handler(socketserver.BaseRequestHandler):
@@ -248,6 +253,13 @@ class Engine:
                     out.extend(part)
                 return bytes(out)
         self.server = _Server((self.member['host'], self.member['port']), Handler)
+        try:
+            if fresh or (receipts and not self.relay_path.exists()):
+                atomic_json(self.relay_path,{'group':cfg['group'],'id':member,'received':self.relay_received})
+            self.persist()
+        except OSError:
+            self.server.server_close()
+            raise
         self.journal=DurableWriter(atomic_json)
 
     def persist(self):

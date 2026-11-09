@@ -26,6 +26,7 @@ using u8=uint8_t; using u16=uint16_t; using u32=uint32_t; using u64=uint64_t;
 using s32=int32_t; using s64=int64_t;
 #define BBSC_MOD
 bool BbscIndependentActive(){return false;}
+namespace Core::Bloodborne::SessionTest { bool NativeNpcSync(){return false;} }
 #define PS4_SYSV_ABI
 #define BBSC_TIMELINE(...)
 #define LOG_INFO(...)
@@ -54,7 +55,7 @@ std::mutex bbsc_life_mutex; std::map<u32,Life> bbsc_peer_life;
 std::pair<int,int> BbscPeerLifeCounts(){int dead=0;for(auto& [id,l]:bbsc_peer_life)dead+=l.dead;return {2,dead};}
 """
 tick = function("void TickBbscRemoteRevive() {", "// ---- The death penalty")
-fixture += function("u64 BbscCharacterDrawState(", "// State 2 extends")
+fixture += function("u64 BbscCharacterDrawState(", "void SendBbscLifeState(")
 fixture += tick.replace("image_base + MemberIdEqualsOffset", "reinterpret_cast<u64>(&::Equals)").replace(
     "image_base + 0x018BCF30", "reinterpret_cast<u64>(&Physics)"
 )

@@ -196,7 +196,7 @@ class DynamicTests(DynamicHelpers, unittest.TestCase):
         signed=b.signed
         corrupted=threading.Event()
         def wrong_nonce(who, message):
-            if message.get('result') is True:
+            if message.get('result') == b.disk['incarnation']:
                 corrupted.set()
                 message=dict(message,nonce='previous-call')
             return signed(who,message)
@@ -411,7 +411,7 @@ class DynamicTests(DynamicHelpers, unittest.TestCase):
         self.assertIn('C',a.state['joined'])
         self.claim(a,b);b.command(dict(kind='room_join',room_id=rid))
 
-    def test_staged_host_crash_and_guest_restart_recover_binding(self):
+    def test_staged_host_crash_and_guest_restart_start_clean(self):
         a, b = self.node('A'), self.node('B')
         self.discover()
         rid = self.host(a)
@@ -434,10 +434,50 @@ class DynamicTests(DynamicHelpers, unittest.TestCase):
         a = DynamicEngine(a.cfg, 'A', self.root/'A', a.peers_file).start()
         b = DynamicEngine(b.cfg, 'B', self.root/'B', b.peers_file).start()
         self.engines.extend([a, b])
-        self.eventually(lambda: 'B' in a.state['pending'] and b.finalized())
-        self.assertEqual(a.state['room']['id'], rid)
-        b.command(dict(kind='room_join', room_id=rid))
+        for player in (a, b):
+            self.assertIsNone(player.state['owner'])
+            self.assertIsNone(player.state['room'])
+            self.assertIsNone(player.disk['attachment'])
+            self.assertIsNone(player.disk['staged'])
+            self.assertEqual(player.disk['identities'], {})
+            self.assertEqual(player.disk['receipts'], {})
+            self.assertEqual(player.disk['closed'], {})
+        self.assertEqual(a.disk['incarnation'], 2)
+        self.assertGreater(a.disk['counter'], 2)
+        self.discover()
+        new_room = self.host(a)
+        self.assertNotEqual(new_room, rid)
+        self.claim(a, b)
+        b.command(dict(kind='room_join', room_id=new_room))
         self.assertIn('B', a.state['joined'])
+
+    def test_moved_host_address_recovers_unconfirmed_admission(self):
+        a, b = self.node('A'), self.node('B')
+        self.discover()
+        self.host(a)
+        b.publish(dict(sign=dict(UserId=game_user_id('B'))))
+        original = b.rpc
+
+        def hold_view(who, body):
+            if body['kind'] == 'view':
+                raise OSError('Guest cannot reach the host yet')
+            return original(who, body)
+
+        with patch.object(b, 'rpc', side_effect=hold_view):
+            a.command(dict(kind='claim', target='B', claim={}))
+            self.assertFalse(b.finalized())
+            cfg = copy.deepcopy(a.cfg)
+            cfg['identity']['host'] = '127.0.0.110'
+            cfg['members'] = [dynamic.member(cfg['identity'])]
+            a.close()
+            self.engines.remove(a)
+            restarted = DynamicEngine(cfg, 'A', a.profile, a.peers_file).start()
+            self.engines.append(restarted)
+            self.offers = [restarted.identity, b.identity]
+            self.discover()
+            self.assertEqual(b.peers['A'], restarted.identity)
+        self.eventually(lambda: b.disk['attachment'] is None)
+        self.assertEqual(b.command(dict(kind='acquire')), 1)
 
     def test_journal_error_fails_closed_until_durable_write(self):
         a = self.node('A')

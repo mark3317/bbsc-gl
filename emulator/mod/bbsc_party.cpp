@@ -24,6 +24,7 @@ bool ExclusiveNative() {
 std::atomic<std::uint64_t> native{1u<<8};
 std::atomic<bool> can_beckon{false};
 std::atomic<unsigned> host_hint{0};
+std::atomic<unsigned> room_members{0};
 constexpr std::uint64_t CountedBellNotices=std::uint64_t{1}<<63;
 std::atomic<std::uint64_t> bell_generation{0}, bell_released_generation{0};
 std::atomic<std::uint64_t> local_bell_rings{0};
@@ -100,6 +101,9 @@ bool PartyCanBeckon() {
 unsigned PartyHostHint() {
     return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500 ? host_hint.load() : 0;
 }
+unsigned PartyRoomMemberCount() {
+    return PartyEnabled() && ExclusiveNative() ? room_members.load() : 0;
+}
 void PartyBellRang() { ++local_bell_rings; }
 std::uint64_t PartyBellGeneration(bool& counted) {
     const auto value=PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
@@ -145,11 +149,12 @@ void PartyMaintain() {
         ",\"cancel_seq\":"+std::to_string(cancel)+",\"await_title\":"+(awaiting?"true":"false")+
         ",\"bell_ring_seq\":"+std::to_string(local_bell_rings.load())+
         ",\"placement_ticket\":true,\"aimed_placement\":\""+AimedPlacementAcknowledgment()+"\"}";
-    const std::string result=Call(L"/party/tick",body.substr(0,body.size()-1)+",\"bell_notice\":true,\"bell_release\":true,\"host_check\":true}",300);
+    const std::string result=Call(L"/party/tick",body.substr(0,body.size()-1)+",\"bell_notice\":true,\"bell_release\":true,\"host_check\":true,\"roster_count\":true}",300);
     // Accept old two-field runners, but only an explicit generation can notify.
     const size_t generation_separator=result.find(' ',result.find(' ')+1);
     const std::string status=result.substr(0,generation_separator);
-    std::uint64_t generation=0, released=0; unsigned hint=0;
+    std::uint64_t generation=0, released=0; unsigned hint=0, members=0;
+    bool roster_confirmed=false;
     if(generation_separator!=std::string::npos) {
         const char* first=result.data()+generation_separator+1;
         const char* end=result.data()+result.size();
@@ -162,10 +167,20 @@ void PartyMaintain() {
                 else if(tail.ptr!=end) {
                     if(*tail.ptr==' ') {
                         const auto host=std::from_chars(tail.ptr+1,end,hint);
+                        const std::string_view extension(host.ptr,end);
+                        const bool has_members=extension.size()==4 &&
+                                               (extension.starts_with(" 1 ") || extension.starts_with(" 0 ")) &&
+                                               extension.back()>='0' && extension.back()<='5';
                         if(host.ec!=std::errc{} || hint>2 ||
-                           (host.ptr!=end && std::string_view(host.ptr,end)!=" 1")) {
+                           (!extension.empty() && extension!=" 1" && !has_members)) {
                             generation=0; released=0; hint=0;
-                        } else if(host.ptr!=end) generation|=CountedBellNotices;
+                        } else if(!extension.empty()) {
+                            if(extension[1]=='1') generation|=CountedBellNotices;
+                            if(has_members) {
+                                members=static_cast<unsigned>(extension.back()-'0');
+                                roster_confirmed=true;
+                            }
+                        }
                     } else { generation=0; released=0; }
                 }
             } else generation=0;
@@ -175,6 +190,9 @@ void PartyMaintain() {
     const std::string expected=std::to_string(cancel);
     const bool valid=separator!=std::string::npos && (status.substr(0,separator)=="0" || status.substr(0,separator)=="1") &&
                      (status.substr(separator+1)=="0" || status.substr(separator+1)==expected);
+    // An unavailable reply is not a roster change. An explicit zero clears
+    // the previous room once Party has confirmed that we no longer belong.
+    if(valid && roster_confirmed) room_members=members;
     can_beckon=valid && status[0]=='1'; host_hint=valid?hint:0; bell_generation=valid?generation:0; bell_released_generation=valid?released:0; refreshed=GetTickCount64();
     const bool ready=valid && awaiting && cancel && status.substr(separator+1)==expected;
     if(cancel_sequence.load()==cancel) {

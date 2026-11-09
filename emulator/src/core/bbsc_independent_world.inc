@@ -672,6 +672,10 @@ bool BbscWorldAllMembersReady() {
     if((!bbsc_independent_hooks.load() && !SessionTest::NativeNpcSync()) || !bbsc_independent_travel_hooks.load()) return false;
     const s32 count=GetBbscSessionMemberCount(GetGlobalState());
     if(count<2 || count>5) return false;
+#ifdef BBSC_MOD
+    const auto party_count=BbscMod::PartyRoomMemberCount();
+    if(party_count && party_count!=static_cast<unsigned>(count)) return false;
+#endif
     const auto tasks=GetMultiPlayerInsTasks();std::set<u32> peers;
     for(const auto task:tasks){
         const auto mode=ReadValue<s32>(task,0xE8);
@@ -832,7 +836,11 @@ void TickBbscWorldPlayers() {
         if(!here && ReadablePointer(activation,0x21) && !(ReadValue<u8>(activation,0x20)&1)){
             using Disable=void PS4_SYSV_ABI (*)(u64,u8);
             reinterpret_cast<Disable>(image_base+0x018C6390)(chr,1);
-            BBSC_TIMELINE("MODEL","native absent peer hidden peer={:08x} actor={:#x}",peer,chr);
+            BBSC_TIMELINE("MODEL","native absent peer hidden peer={:08x} actor={:#x} room={:#x} reason={} local_map={:#x} peer_map={:#x} local_visit={} peer_visit={} peer_phase={}",
+                peer,chr,local.world.room,it==members.end()?"missing_presence":"different_player_space",
+                local.map,it==members.end()?0:it->second.presence.map,local.visit,
+                it==members.end()?0:it->second.presence.visit,
+                it==members.end()?-1:static_cast<int>(it->second.presence.phase));
         }
     }
     if(local_bound_visit!=local.visit){
@@ -890,8 +898,9 @@ void TickBbscWorldPlayers() {
             // together. A render-node byte alone leaves a named phantom behind.
             using Disable=void PS4_SYSV_ABI (*)(u64,u8);
             reinterpret_cast<Disable>(image_base+0x018C6390)(chr,action.hide?1:0);
-            BBSC_TIMELINE("MODEL","native peer {} peer={:08x} local_map={:#x} peer_map={:#x}",
-                action.hide?"hidden":"enabled",peer,local.map,fresh?it->second.presence.map:0);
+            BBSC_TIMELINE("MODEL","native peer {} peer={:08x} room={:#x} local_map={:#x} peer_map={:#x} local_visit={} peer_visit={} presence={} here={} alive={} task_ready={}",
+                action.hide?"hidden":"enabled",peer,local.world.room,local.map,in.peer_map,
+                in.local_visit,in.peer_visit,fresh,in.here,in.alive,in.task_ready);
         }
         if(action.rebind && ReadablePointer(chr,0x410) && IsValidMemberId(task+0xC8)){
             const u64 child=ReadValue<u64>(chr,0x60),vt=ReadablePointer(child,8)?ReadValue<u64>(child,0):0;

@@ -22,7 +22,7 @@ import struct
 import threading
 import time
 
-from engine import MAX_FRAME, atomic_json, canonical, initial, transition, validate_invite
+from engine import MAX_FRAME, atomic_json, canonical, initial, remove_room_guest, transition, validate_invite
 from retirement import terminal, scope as native_scope, validate as validate_retirement
 
 
@@ -97,6 +97,7 @@ class DynamicEngine:
         self.bell_ring_seq = 0
         self.bell_ring_generation = 0
         self.bell_seen = {}
+        self.admitted_incarnations = {}
         self.bell_notices = 0
         self.bell_released_notice = 0
         self.yielding_search = None
@@ -105,9 +106,11 @@ class DynamicEngine:
         self.pending_local = None
         self.finished_commands = {}
         self.storage_error = None
+        self.diagnostic = None
         self.relay_error = None
         self.relay_peer_errors = {}
         self.relay_network_errors = {}
+        self.relay_reopening = set()
         self.relay_in = queue.Queue(128)
         self.relay_transport = 0
         self.relay_next_stream = 0
@@ -119,14 +122,6 @@ class DynamicEngine:
         self.relay_threads = []
         self.relay_enqueue = threading.Lock()
         self.blocked = set()  # Fault injection on isolated test networks.
-        if self.path.exists():
-            self.disk = json.loads(self.path.read_text(encoding='utf-8'))
-            if self.disk['group'] != cfg['group'] or self.disk['id'] != who:
-                raise ValueError('Dynamic journal identity mismatch')
-        else:
-            self.disk = dict(group=cfg['group'], id=who, incarnation=0, counter=0,
-                             home=initial(cfg), attachment=None, staged=None,
-                             retired=[], closed={}, receipts={}, identities={})
         # Bind before persisting anything; a second process cannot touch this journal.
         outer = self
 
@@ -164,11 +159,24 @@ class DynamicEngine:
                     pass
 
         self.server = Server((self.member['host'], self.member['port']), Handler)
-        self.disk['incarnation'] += 1
-        for peer in self.disk['identities'].values():
-            self.peers[peer['id']] = peer
-            self.members[peer['id']] = member(peer)
-        self.persist()
+        try:
+            previous = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else None
+            if previous and (previous['group'] != cfg['group'] or previous['id'] != who):
+                raise ValueError('Dynamic journal identity mismatch')
+            home = initial(cfg)
+            # Keep only the counters that fence old messages still in flight.
+            # Room membership, admissions, cached routes and receipts are per launch.
+            self.boot_generation = previous['home']['generation'] + 1 if previous else 0
+            home['generation'] = self.boot_generation
+            self.disk = dict(group=cfg['group'], id=who,
+                             incarnation=previous['incarnation'] + 1 if previous else 1,
+                             counter=previous['counter'] if previous else 0,
+                             home=home, attachment=None, staged=None,
+                             retired=[], closed={}, receipts={}, identities={})
+            self.persist()
+        except (OSError, ValueError, KeyError):
+            self.server.server_close()
+            raise
         self.refresh_peers()
 
     @property
@@ -210,8 +218,10 @@ class DynamicEngine:
                     if who not in self.peers and len(self.peers) >= 17:
                         continue
                     old = self.peers.get(who)
-                    # Active session identities/endpoints/names are pinned.
-                    if old and who in pinned:
+                    # The private directory can move an address, but cannot
+                    # replace an active identity, key, name or service ports.
+                    if old and who in pinned and (old['host'] == offer['host'] or
+                                                  old != dict(offer, host=old['host'])):
                         continue
                     rekey = old and old['seed'] != offer['seed']
                     # The local Player shortcuts write this directory from the
@@ -229,6 +239,8 @@ class DynamicEngine:
                         self.bell_seen.pop(who, None)
                     self.peers[who] = copy.deepcopy(offer)
                     self.members[who] = member(offer)
+                    if self.diagnostic and old and old['host'] != offer['host']:
+                        self.diagnostic('peer_address_changed', peer=who, name=offer['name'], pinned=who in pinned)
         except (OSError, ValueError):
             pass
 
@@ -331,6 +343,10 @@ class DynamicEngine:
         raise ValueError('Unknown dynamic RPC')
 
     def participant_view(self,sender,session_id):
+        if (isinstance(session_id, list) and len(session_id) == 2 and
+                session_id[0] == self.cfg['group'] and type(session_id[1]) is int and
+                0 <= session_id[1] < self.boot_generation):
+            return dict(session=session_id, ended_by_restart=True)
         world = self.world(session_id)
         state = world['state']
         if sender in state['roster']:
@@ -364,10 +380,12 @@ class DynamicEngine:
         with self.lock:
             if self.storage_error or self.stop_event.is_set():
                 raise OSError('Guest journal is not durable')
+            if body.get('target_incarnation', self.disk['incarnation']) != self.disk['incarnation']:
+                raise ValueError('Invitation belongs to a previous guest launch')
             attached = self.disk['attachment']
             if attached:
                 if attached['host'] == sender and attached['reservation'] == reservation:
-                    return True
+                    return self.disk['incarnation']
                 raise ValueError('Player already belongs to another world')
             if reservation in self.disk['retired']:
                 raise ValueError('Admission already retired')
@@ -385,7 +403,10 @@ class DynamicEngine:
                                            state=copy.deepcopy(state), confirmed=False)
             self.persist()  # Native never sees a claim before the host confirms it.
             self.reset_relay()
-            return True
+            if self.diagnostic:
+                self.diagnostic('admission_reserved', peer=sender, sequence=body['seq'],
+                                ticket=admission_ticket(state, self.id), room_id=(state['room'] or {}).get('id'))
+            return self.disk['incarnation']
 
     def apply(self, sender, seq, op):
         state = self.disk['home']
@@ -411,6 +432,10 @@ class DynamicEngine:
             next_state['completed'][sender][1] = room_id
             next_state['results'][sender][str(seq)] = room_id
         self.disk['home'] = next_state
+        if op['kind'] in ('admission_cancel', 'room_leave'):
+            self.admitted_incarnations.pop(sender, None)
+        if next_state['generation'] != state['generation']:
+            self.admitted_incarnations.clear()
         if op['kind'] == 'release':
             self.disk['closed'][canonical(session(self.cfg, next_state)).decode()] = copy.deepcopy(next_state)
             while len(self.disk['closed']) > 32:
@@ -446,7 +471,14 @@ class DynamicEngine:
             validate_invite(dict(version=1, secret='00'*32, members=[member(p) for p in peers]))
             self.disk['identities'].update({p['id']: copy.deepcopy(p) for p in peers if p['id'] != self.id})
             self.disk['staged'] = dict(seq=seq, target=target, state=next_state)
+            seen = self.signs.get(target)
+            if seen:
+                self.disk['staged']['target_incarnation'] = seen['stamp'][0]
             self.persist()
+            if self.diagnostic:
+                self.diagnostic('admission_staged', peer=target, sequence=seq,
+                                ticket=admission_ticket(next_state, target),
+                                room_id=(next_state['room'] or {}).get('id'))
 
     def finish_claim(self):
         with self.lock:
@@ -455,25 +487,65 @@ class DynamicEngine:
                 return
             world = dict(session=session(self.cfg, staged['state']), state=staged['state'],
                          peers=[copy.deepcopy(self.peers[p]) for p in staged['state']['roster']])
+        request = dict(kind='reserve', seq=staged['seq'], world=world)
+        if 'target_incarnation' in staged:
+            request['target_incarnation'] = staged['target_incarnation']
         try:
-            self.rpc(staged['target'], dict(kind='reserve', seq=staged['seq'], world=world))
-        except ValueError:
+            incarnation = self.rpc(staged['target'], request)
+        except ValueError as error:
             # A signed rejection guarantees that this reservation was not accepted.
             with self.lock:
                 self.disk['staged'] = None
                 self.persist()
+                if self.diagnostic:
+                    self.diagnostic('admission_rejected', peer=staged['target'], sequence=staged['seq'],
+                                    reason=str(error)[:160])
             raise
         with self.lock:
             self.disk['home'] = staged['state']
             self.disk['staged'] = None
+            if type(incarnation) is int and incarnation > 0:
+                self.admitted_incarnations[staged['target']] = incarnation
             self.reset_relay_peer(staged['target'])
             self.persist()
+            if self.diagnostic:
+                state = self.disk['home']
+                self.diagnostic('admission_committed', peer=staged['target'], sequence=staged['seq'],
+                                ticket=admission_ticket(state, staged['target']),
+                                room_id=(state['room'] or {}).get('id'))
+
+    def forget_restarted_guest(self, who, stamp):
+        admitted = self.admitted_incarnations.get(who)
+        if (admitted is None or not isinstance(stamp, list) or len(stamp) != 2 or
+                type(stamp[0]) is not int or stamp[0] <= admitted or
+                self.disk['staged'] or self.disk['home']['owner'] != self.id):
+            return
+        state = copy.deepcopy(self.disk['home'])
+        state['pending'].pop(who, None)
+        remove_room_guest(state, who)
+        state['revision'] += 1
+        self.disk['home'] = state
+        self.admitted_incarnations.pop(who)
+        self.reset_relay_peer(who)
+        self.persist()
+        if self.diagnostic:
+            self.diagnostic('guest_restarted', peer=who, incarnation=stamp[0], room_id=(state['room'] or {}).get('id'))
 
     def accept_world(self, world):
         with self.lock:
             attached = self.disk['attachment']
             if not attached or world['session'] != attached['session']:
                 raise ValueError('Unexpected world snapshot')
+            if world.get('ended_by_restart') is True:
+                self.retire_attachment(attached)
+                if self.pending_local:
+                    self.pending_local['error'] = 'Host restarted'
+                self.reset_relay()
+                self.persist()
+                if self.diagnostic:
+                    self.diagnostic('host_restarted', peer=attached['host'], previous_session=attached['session'],
+                                    room_id=(attached['state']['room'] or {}).get('id'))
+                return
             state = world['state']
             previous = attached['state']
             # During reserve, the host may still be persisting its commit.
@@ -501,6 +573,7 @@ class DynamicEngine:
                     self.members[peer] = member(offer)
                     self.disk['identities'][peer] = copy.deepcopy(offer)
             old_scope = (previous['owner'], previous['generation'])
+            first_confirmation = not attached['confirmed']
             attached['state'] = copy.deepcopy(state)
             attached['confirmed'] = True
             pending = self.pending_local
@@ -510,9 +583,7 @@ class DynamicEngine:
                     pending['result'] = receipts[str(pending['seq'])]
             room = state['room'] or {}
             if self.id not in state['pending'] and self.id not in state['joined'] and self.id not in room.get('members', {}) and self.id not in room.get('departing', {}):
-                self.disk['retired'].append(attached['reservation'])
-                self.disk['retired'] = self.disk['retired'][-64:]
-                self.disk['attachment'] = None
+                self.retire_attachment(attached)
             if not self.disk['attachment'] or old_scope != (state['owner'], state['generation']):
                 self.reset_relay()
             else:
@@ -521,6 +592,14 @@ class DynamicEngine:
                             admission_ticket(previous, peer) != admission_ticket(state, peer)):
                         self.reset_relay_peer(peer)
             self.persist()
+            if self.diagnostic and first_confirmation:
+                self.diagnostic('admission_confirmed', peer=attached['host'], sequence=attached['reservation'][-1],
+                                ticket=admission_ticket(state, self.id), room_id=room.get('id'))
+
+    def retire_attachment(self, attached):
+        self.disk['retired'].append(attached['reservation'])
+        self.disk['retired'] = self.disk['retired'][-64:]
+        self.disk['attachment'] = None
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -631,15 +710,14 @@ class DynamicEngine:
                     raise ValueError('No attached host')
                 # Retire this exact reservation locally even if its host crashed.
                 # A late view/reserve cannot attach it again or affect a new world.
-                self.disk['retired'].append(attached['reservation'])
-                self.disk['retired'] = self.disk['retired'][-64:]
-                self.disk['attachment'] = None
+                self.retire_attachment(attached)
             else:
                 staged = self.disk['staged']
                 base = staged['state'] if staged else self.disk['home']
                 closed = terminal(base)
                 self.disk['home'] = closed
                 self.disk['staged'] = None
+                self.admitted_incarnations.clear()
                 self.disk['closed'][canonical(session(self.cfg, closed)).decode()] = copy.deepcopy(closed)
                 while len(self.disk['closed']) > 32:
                     del self.disk['closed'][next(iter(self.disk['closed']))]
@@ -804,6 +882,7 @@ class DynamicEngine:
             thread.join()
 
     def poll_peer(self, who):
+        view_error = presence_error = None
         while not self.stop_event.is_set():
             with self.lock:
                 peer = self.peers.get(who)
@@ -814,17 +893,45 @@ class DynamicEngine:
             if session_id:
                 try:
                     self.accept_world(self.rpc(who, dict(kind='view', session=session_id)))
-                except (OSError, ValueError, KeyError):
-                    pass
+                except (OSError, ValueError, KeyError) as error:
+                    if self.diagnostic:
+                        failure = (tuple(session_id), str(error)[:160])
+                        if failure != view_error:
+                            self.diagnostic('host_view_failed', peer=who, session=session_id, reason=failure[1])
+                        view_error = failure
+                else:
+                    if view_error and self.diagnostic:
+                        self.diagnostic('host_view_resumed', peer=who, session=session_id)
+                    view_error = None
+            else:
+                view_error = None
             try:
                 reply = self.rpc(who, dict(kind='presence'))
                 with self.lock:
                     if peer == self.peers.get(who) and not self.stop_event.is_set():
+                        self.forget_restarted_guest(who, reply['stamp'])
+                        if (who in self.relay_peer_errors and who not in self.relay_reopening and
+                                admission_ticket(self.state, who) is not None):
+                            # Reopen once on authenticated contact. New traffic
+                            # starts at sequence one; discarded frames stay retired.
+                            self.reset_relay_peer(who)
+                            self.relay_reopening.add(who)
+                            if self.diagnostic:
+                                self.diagnostic('relay_reopened', peer=who, stream=self.relay_stream(who),
+                                                room_id=(self.state['room'] or {}).get('id'))
                         self.signs[who] = dict(body=reply['body'], stamp=reply['stamp'],
                                                host=reply.get('host'), at=time.monotonic())
                         self.observe_peer_bell(who, reply['stamp'], reply.get('bell'))
-            except (OSError, ValueError, KeyError):
-                pass
+            except (OSError, ValueError, KeyError) as error:
+                if self.diagnostic:
+                    failure = str(error)[:160]
+                    if failure != presence_error:
+                        self.diagnostic('peer_presence_failed', peer=who, reason=failure)
+                    presence_error = failure
+            else:
+                if presence_error is not None and self.diagnostic:
+                    self.diagnostic('peer_presence_resumed', peer=who)
+                presence_error = None
             self.stop_event.wait(.5)
 
     def reset_relay(self):
@@ -835,6 +942,7 @@ class DynamicEngine:
             self.relay_error = None
             self.relay_peer_errors.clear()
             self.relay_network_errors.clear()
+            self.relay_reopening.clear()
             self.relay_sequences.clear()
             self.relay_buffers.clear()
             self.relay_active.clear()
@@ -848,6 +956,7 @@ class DynamicEngine:
             self.relay_sequences.pop(who, None)
             self.relay_peer_errors.pop(who, None)
             self.relay_network_errors.pop(who, None)
+            self.relay_reopening.discard(who)
 
     def relay_stream(self, who):
         return self.relay_peer_streams.get(who, self.relay_transport)
@@ -919,12 +1028,16 @@ class DynamicEngine:
                     return False
         return False
 
-    def fail_relay_peer(self, who, message, stream=None):
+    def fail_relay_peer(self, who, message, stream=None, *, last_error=None):
         # A failed recipient cannot poison healthy streams or release membership.
         # Retain a fence until reset_relay starts a new stream; no silent seq gaps.
         with self.lock:
             if stream is not None and stream != self.relay_stream(who):
                 return
+            if self.diagnostic and who not in self.relay_peer_errors:
+                self.diagnostic('relay_fenced', peer=who, stream=self.relay_stream(who),
+                                room_id=(self.state['room'] or {}).get('id'), reason=message,
+                                last_error=last_error)
             self.relay_peer_errors[who] = message
             work = self.relay_workers.get(who)
             if work:
@@ -938,6 +1051,7 @@ class DynamicEngine:
                 at, body = work.get(timeout=.2)
             except queue.Empty:
                 continue
+            last_error = None
             while not self.stop_event.is_set():
                 with self.lock:
                     if body['session'] != self.current_session() or body['stream'] != self.relay_stream(who):
@@ -947,22 +1061,31 @@ class DynamicEngine:
                     if who in self.relay_peer_errors:
                         break
                     if time.monotonic()-at > 10:
-                        self.fail_relay_peer(who, 'Unacknowledged BBSC frame expired', body['stream'])
+                        self.fail_relay_peer(who, 'Unacknowledged BBSC frame expired', body['stream'],
+                                             last_error=last_error)
                         break
                 try:
                     reply = self.rpc(who, body)
+                    acknowledged = reply['ack'] >= body['seq']
                     with self.lock:
                         if body['stream'] == self.relay_stream(who):
                             self.relay_network_errors.pop(who, None)
-                    if reply['ack'] >= body['seq']:
+                            if acknowledged:
+                                if self.diagnostic and who in self.relay_reopening:
+                                    self.diagnostic('relay_recovered', peer=who, stream=body['stream'],
+                                                    room_id=(self.state['room'] or {}).get('id'))
+                                self.relay_reopening.discard(who)
+                    if acknowledged:
                         break
                     self.stop_event.wait(.05)
-                except OSError:
+                except OSError as error:
+                    if self.diagnostic: last_error = str(error)[:160]
                     with self.lock:
                         if body['stream'] == self.relay_stream(who):
                             self.relay_network_errors[who] = time.monotonic()
                     self.stop_event.wait(.1)
-                except (ValueError, KeyError):
+                except (ValueError, KeyError) as error:
+                    if self.diagnostic: last_error = str(error)[:160]
                     self.stop_event.wait(.1)
 
     def receive_relay(self, sender, body):

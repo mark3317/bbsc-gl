@@ -6,6 +6,18 @@ from engine import Engine,canonical
 from protobuf import encode,decode
 from chalices import Channels
 
+RUN_LOG_EVENTS = frozenset("""
+    run_log_attached sign_search http_reject np_reject final native_room_event native_roster_mismatch
+    beckoning_availability beckoning_denied host_search_acquired responder_released_empty_search
+    admission_staged admission_reserved admission_committed admission_confirmed admission_rejected
+    admission_delivered claim_confirmation_retry failed_admission_withdrawn
+    placement_from_game placement_queued placement_received placement_acknowledged
+    peer_address_changed peer_presence_failed peer_presence_resumed host_view_failed host_view_resumed
+    relay_native_binding relay_fenced relay_reopened relay_recovered
+    guest_restarted host_restarted native_retired guest_cancel_retired native_process_exited
+""".split())
+RUN_LOG_NP_COMMANDS = {0, 101, 102, 103, 105, 110}
+
 def blob(raw): return struct.pack('<I',len(raw))+raw
 def packet(kind,cmd,ident,raw): return struct.pack('<BHIQ',kind,cmd,15+len(raw),ident)+raw
 def account(who): return int.from_bytes(hashlib.sha256(who.encode()).digest()[:7],'little')+1000
@@ -110,7 +122,11 @@ class Compatibility:
         self.aimed_placements={}; self.received_placements={}; self.sent_placements=set()
         self.placement_sent_at={}
         self.search_diagnostic=None
-        self.diagnostics=os.environ.get('BB_PARTY_DIAGNOSTICS',os.environ.get('BB_DIAGNOSTICS','0'))=='1'
+        self.roster_mismatch=None
+        self.bell_diagnostic=None
+        self.file_diagnostics=os.environ.get('BB_PARTY_DIAGNOSTICS',os.environ.get('BB_DIAGNOSTICS','0'))=='1'
+        self.diagnostics=self.file_diagnostics
+        self.run_log=None
         self.logfile=engine.profile/'party-events.jsonl'; self.log_lock=threading.Lock()
         outer=self
         class NP(socketserver.BaseRequestHandler):
@@ -149,9 +165,12 @@ class Compatibility:
                                     authenticated=True
                                 reply=outer.np_command(cmd,req)
                             body=b'\0'+(blob(encode(spec[1],reply)) if spec[1] else b'')
-                            outer.log('np_reply',command=cmd,revision=engine.state['revision'])
+                            outer.log('np_reply',command=cmd,revision=engine.state['revision'],
+                                      room_id=req.get('room_id',reply.get('room_id')), target=req.get('target_npid'),
+                                      slot=reply.get('target_member_id',reply.get('member_id')))
                         except (ValueError,TimeoutError,KeyError) as ex:
-                            outer.log('np_reject',command=cmd,reason=str(ex)); body=b'\x20'
+                            outer.log('np_reject',command=cmd,reason=str(ex),room_id=req.get('room_id'),
+                                      target=req.get('target_npid')); body=b'\x20'
                         with outer.np_lock:
                             self.request.sendall(packet(1,cmd,ident,body))
                 except (OSError,EOFError,ValueError): pass
@@ -159,15 +178,20 @@ class Compatibility:
                     # Old EOF is transport cleanup only, never a room/member leave.
                     with outer.np_lock:
                         if outer.np and outer.np[1]==generation: outer.np=None
-        # Reserve TCP and its native-derived UDP neighbor; ephemeral UDP may already be busy.
-        for attempt in range(16):
-            self.np_server=TcpServer(('127.0.0.1',0),NP)
-            self.np_port=self.np_server.server_address[1]
+        # Windows can exclude different ranges for TCP and UDP. Spread the
+        # existing bounded attempts across the ephemeral range.
+        class NPServer(TcpServer):
+            allow_reuse_address=False
+        for port in secrets.SystemRandom().sample(range(49152,65535),16):
             self.stun=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
             try:
-                self.stun.bind(('127.0.0.1',self.np_port+1)); self.stun.settimeout(.25); break
-            except (OSError,OverflowError):
-                self.stun.close(); self.np_server.server_close()
+                self.stun.bind(('127.0.0.1',port+1)); self.stun.settimeout(.25)
+                self.np_server=NPServer(('127.0.0.1',port),NP)
+            except OSError:
+                self.stun.close()
+            else:
+                self.np_port=port
+                break
         else: raise OSError('Cannot reserve native compatibility ports')
         class HTTP(http.server.BaseHTTPRequestHandler):
             protocol_version='HTTP/1.1'
@@ -207,7 +231,7 @@ class Compatibility:
                         # log, without request bodies, account IDs or tokens.
                         logging.getLogger(__name__).warning('Chalice request rejected: %s: %s',
                             self.path.split('?')[0], str(ex))
-                    outer.log('http_reject',path=self.path,reason=str(ex)); self.send_error(409)
+                    outer.log('http_reject',path=self.path.split('?',1)[0],reason=str(ex)); self.send_error(409)
                 except (OSError,EOFError): self.close_connection=True
         self.http=PrivateHTTPServer(('127.0.0.1',0),HTTP)
         self.http_port=self.http.server_address[1]
@@ -236,6 +260,9 @@ class Compatibility:
                             if getattr(engine,'dynamic',False):
                                 aimed=outer.aimed_placement(raw)
                                 if aimed:
+                                    previous=outer.aimed_placements.get(aimed[0])
+                                    if outer.diagnostics and (not previous or previous[3]!=aimed[1]):
+                                        outer.log('placement_from_game',target_user=aimed[0])
                                     outer.aimed_placements[aimed[0]]=(time.monotonic(),raw,{'native_id':native_id,'connection':[engine.disk['incarnation'],gen]},aimed[1])
                                     continue # admission must attach the target before relay delivery
                             binding={'native_id':native_id,'connection':[engine.disk['incarnation'],gen]}
@@ -276,6 +303,8 @@ class Compatibility:
                 # bounded by placement expiry, until JoinRoom consumes admission.
                 if time.monotonic()-self.placement_sent_at.get(key,float('-inf'))<.5:continue
                 if self.e.relay(raw,binding,[peer]):
+                    if self.diagnostics and key not in self.sent_placements:
+                        self.log('placement_queued',peer=peer,ticket=key[1],room_id=(s['room'] or {}).get('id'))
                     self.sent_placements.add(key)
                     self.placement_sent_at[key]=time.monotonic()
     def maintain_command(self,kind,**kw):
@@ -304,6 +333,8 @@ class Compatibility:
             if ack!=expected and not (self.native_fresh and time.monotonic()-self.native_at<1.5 and
                                       self.native.get('aimed_placement')==expected):return False
             self.placement_acknowledged=key
+            self.log('placement_acknowledged',peer=s['owner'],ticket=pending['ticket'],
+                     room_id=(s['room'] or {}).get('id'))
             return True
     def relay_loop(self):
         while not self.closed:
@@ -323,6 +354,8 @@ class Compatibility:
             previous=self.native_bindings.get(sender)
             if previous and (connection<previous[0] or (connection==previous[0] and native_id!=previous[1])):continue
             self.native_bindings[sender]=(connection,native_id)
+            if self.diagnostics and self.native_bindings[sender]!=previous:
+                self.log('relay_native_binding',peer=sender,native_id=f'{native_id:08x}',connection=connection)
             with self.relay_lock:
                 aimed=self.aimed_placement(raw)
                 if aimed and aimed[0]==self.game_ids[self.e.id]:
@@ -331,22 +364,49 @@ class Compatibility:
                            pending['claim'].get('_bbsc_placement')==aimed[1])
                     if getattr(self.e,'dynamic',False) and not valid:continue
                     if valid:
-                        self.received_placements={sender:(aimed[1],raw,pending['ticket'])}
+                        placement=(aimed[1],raw,pending['ticket'])
+                        if self.diagnostics and self.received_placements.get(sender)!=placement:
+                            self.log('placement_received',peer=sender,ticket=pending['ticket'],
+                                     room_id=(s['room'] or {}).get('id'),native_connected=self.relay_sock is not None)
+                        self.received_placements={sender:placement}
                         raw+=self.placement_suffix(s,pending['ticket']).encode('ascii')
                 if self.relay_sock:
                     try:self.relay_sock.sendall(blob(raw))
                     except OSError:pass
     def log(self,event,**fields):
         if not self.diagnostics:return
+        mirror=self.run_log is not None and (event in RUN_LOG_EVENTS or
+               (event=='np_reply' and fields.get('command') in RUN_LOG_NP_COMMANDS))
+        if not self.file_diagnostics and not mirror:return
         with self.log_lock:
-            with self.logfile.open('a',encoding='utf-8') as f:
-                f.write(json.dumps(dict(fields,event=event,id=self.e.id,time=time.time(),generation=self.e.state['generation']))+'\n')
+            line=json.dumps(dict(fields,event=event,id=self.e.id,time=time.time(),
+                                 generation=self.e.state['generation']))+'\n'
+            if self.file_diagnostics:
+                try:
+                    with self.logfile.open('a',encoding='utf-8') as f:f.write(line)
+                except OSError:
+                    pass  # Diagnostic storage cannot interrupt Party.
+            if mirror:
+                try:
+                    self.run_log.write('[BBGL Party] '+line)
+                    self.run_log.flush()
+                except (OSError,ValueError):
+                    pass
+    def attach_run_log(self,stream):
+        self.run_log=stream
+        self.diagnostics=True
+        if getattr(self.e,'dynamic',False):self.e.diagnostic=self.log
+        s=self.state()
+        self.log('run_log_attached',group=self.e.cfg['group'],incarnation=self.e.disk['incarnation'],
+                 revision=s['revision'],owner=s['owner'],room_id=(s['room'] or {}).get('id'))
     def start(self):
+        self.log('start',group=self.e.cfg['group'],revision=self.e.state['revision'],
+                 incarnation=self.e.disk['incarnation'])
+        if self.diagnostics and getattr(self.e,'dynamic',False):self.e.diagnostic=self.log
         for server in (self.np_server,self.http,self.relay_server): threading.Thread(target=server.serve_forever,daemon=True).start()
         threading.Thread(target=self.stun_loop,daemon=True).start()
         threading.Thread(target=self.relay_loop,daemon=True).start()
         threading.Thread(target=self.monitor,daemon=True).start()
-        self.log('start',group=self.e.cfg['group'],revision=self.e.state['revision'])
         return self
     def close(self):
         self.closed=True
@@ -596,6 +656,12 @@ class Compatibility:
                 s=self.e.state; final=self.e.finalized(s)
                 remote=self.e.preferred_host() if getattr(self.e,'dynamic',False) else None
                 blocker=self.bell_blocker(s,final,remote)
+                if self.diagnostics:
+                    status=(blocker,s['owner'],remote)
+                    if status!=self.bell_diagnostic:
+                        self.log('beckoning_availability',reason=blocker,owner=s['owner'],remote_host=remote,
+                                 room_id=(s['room'] or {}).get('id'),native_state=body.get('state'))
+                        self.bell_diagnostic=status
                 available=int(blocker is None)
                 answer=f"{available} {int(body.get('cancel_seq',0)) if ready else 0}"
                 if body.get('bell_notice'):
@@ -620,6 +686,18 @@ class Compatibility:
                                 self.e.yielding_search=s['generation']
                             answer+=f" {role}"
                             if counted:answer+=' 1'
+                            if body.get('roster_count') and final:
+                                room=s['room']
+                                count=len(room['members']) if room and self.e.id in room['members'] else 0
+                                if not counted:answer+=' 0'
+                                answer+=f" {count}"
+                                if self.diagnostics:
+                                    native=body.get('members',0)
+                                    mismatch=(room['id'],count,native) if (count and native and count!=native and
+                                               body.get('fresh') and not body.get('loading')) else None
+                                    if mismatch and mismatch!=self.roster_mismatch:
+                                        self.log('native_roster_mismatch',room_id=room['id'],host_members=count,native_members=native)
+                                    self.roster_mismatch=mismatch
                 return answer
         if path=='/party/acquire':
             with self.gate_lock:
@@ -821,15 +899,23 @@ class Compatibility:
             except (OSError,UnicodeError): pass
     def notify(self,event,member=None,room=None,cause=1,error=0):
         s=room or self.state(); r=s['room']
-        if not r or not self.ctx: return
+        if not r: return
+        trace=self.diagnostics and event in (0x1101,0x1102,0x1103,0x1104)
+        if not self.ctx:
+            if trace:self.log('native_room_event',code=event,room_id=r['id'],delivered=False,reason='no_context')
+            return
         obj={'ctx_id':self.ctx,'room_id':r['id'],'event':event,'event_cause':cause,'error_code':error}
         if member: obj['member']=self.member_data(*member)
         else: obj['bin_attrs']=native_bins(r['bins']); obj['flags']=r['flags']
         raw=packet(2,10,0,blob(encode('NotifyRoomEvent',obj)))
+        delivered=False
         with self.np_lock:
             if self.np:
-                try: self.np[0].sendall(raw)
+                try: self.np[0].sendall(raw); delivered=True
                 except OSError: pass
+        if trace:
+            self.log('native_room_event',code=event,room_id=r['id'],peer=member[0] if member else None,
+                     slot=member[1]['slot'] if member else None,delivered=delivered)
     def monitor(self):
         while not self.closed:
             time.sleep(.05)
@@ -934,7 +1020,7 @@ def start_from_environment(env,port):
         from dynamic import DynamicEngine
         engine=DynamicEngine(cfg,member,state_dir,env['BB_PARTY_PEERS']).start()
     else:
-        engine=Engine(cfg,member,state_dir).start()
+        engine=Engine(cfg,member,state_dir,fresh=bool(env.get('BB_LOCAL_PARTY_RUN'))).start()
     compat=Compatibility(engine,channel_path=profile/'coop/party/chalices.json').start()
     native=Path(port)/'coop/client/bbsc/bbsc-launch.exe'
     probe=Path(port)/'bin/bb-probe.exe'

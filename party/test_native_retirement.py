@@ -2,9 +2,10 @@
 import base64
 import copy
 import json
+import socket
 import time
 import unittest
-from engine import atomic_json
+from engine import Engine, atomic_json, invite
 from retirement import scope
 import test_compat as native_tests
 import test_dynamic as dynamic_tests
@@ -74,6 +75,27 @@ class NativeHelpers:
 
 class StaticRetirement(NativeHelpers, unittest.TestCase):
     setUp = process_tests.Tests.setUp
+
+    def test_coordinated_start_overwrites_old_room_and_relay_receipts(self):
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        cfg = invite([dict(id='A', host='127.0.0.1', port=port, p2p=3658)])
+        profile = self.root/'A'
+        old = Engine(cfg, 'A', profile).start()
+        try:
+            old.command(dict(kind='acquire'))
+            old.command(dict(kind='room_create', room=dict(max_slots=3, world=1, flags=0, bins=[])))
+        finally:
+            old.close()
+        atomic_json(old.relay_path, dict(group=cfg['group'], id='A', received={'old':[1,1,5]}))
+        fresh = Engine(cfg, 'A', profile, fresh=True).start()
+        try:
+            self.assertIsNone(fresh.state['owner'])
+            self.assertIsNone(fresh.state['room'])
+            self.assertEqual(json.loads(fresh.relay_path.read_text())['received'], {})
+        finally:
+            fresh.close()
     tearDown = process_tests.Tests.tearDown
     group = process_tests.Tests.group
     start = process_tests.Tests.start
@@ -190,16 +212,28 @@ class DynamicRetirement(NativeHelpers, dynamic_tests.DynamicHelpers, unittest.Te
             if client.p.poll() is None: client.kill()
         super().tearDown()
 
-    def group_dynamic(self):
-        a,b=self.client('A'),self.client('B')
-        for who in 'AB':atomic_json(self.root/(who+'-peers.json'),self.offers)
+    def group_dynamic(self, order='AB'):
+        host, *guests = [self.client(who) for who in order]
+        for who in order:
+            atomic_json(self.root/(who+'-peers.json'), self.offers)
         # Dynamic claims require the guest's own search sign.
-        self.assertEqual(self.http(a,'/party/acquire',control=True),b'1')
-        self.http(b,'/summon_messenger/create',dict(UserId=game_user_id('B'),CharaId=12,AreaId=23,
-                  SummonData=base64.b64encode(bytes(224)).decode()))
-        self.until(lambda:bool(json.loads(self.http(a,'/summon_messenger/get'))['SummonDataList']))
-        self.room(a,[b],dict(A='HunterA',B='HunterB'))
-        return a,b
+        self.assertEqual(self.http(host, '/party/acquire', control=True), b'1')
+        for guest in guests:
+            self.publish_sign(guest)
+        self.until(lambda: len(json.loads(self.http(host, '/summon_messenger/get'))['SummonDataList']) == len(guests))
+        self.room(host, guests, {who:'Hunter'+who for who in order})
+        return host, *guests
+
+    def publish_sign(self, guest):
+        self.http(guest, '/summon_messenger/create', dict(UserId=game_user_id(guest.info['ready']),
+                  CharaId=12, AreaId=23, SummonData=base64.b64encode(bytes(224)).decode()))
+
+    def restart(self, client):
+        who = client.info['ready']
+        client.kill()
+        restarted = process_tests.Client(self.root/(who+'-config.json'), who, self.root/who, compat=True)
+        self.clients.append(restarted)
+        return restarted
 
     def test_host_empty_releases_room_and_guest_attachment(self):
         a,b=self.group_dynamic()
@@ -219,16 +253,67 @@ class DynamicRetirement(NativeHelpers, dynamic_tests.DynamicHelpers, unittest.Te
         self.travel_keeps_world(a,[b])
 
     def test_host_crash_detaches_guest_and_rejects_old_reservation(self):
-        a,b=self.group_dynamic()
-        path=self.root/'B/dynamic-journal.json'
-        attached=json.loads(path.read_text())['attachment']
+        a,b,c=self.group_dynamic('ABC')
+        guests=(b,c)
+        paths=[self.root/guest.info['ready']/'dynamic-journal.json' for guest in guests]
+        reservations=[json.loads(path.read_text())['attachment']['reservation'] for path in paths]
         a.kill()
-        self.until(lambda:b.state()['state']['owner'] is None,clients=[b],timeout=12)
-        disk=json.loads(path.read_text())
-        self.assertIsNone(disk['attachment'])
-        self.assertIn(attached['reservation'],disk['retired'])
-        self.assertEqual(self.http(b,'/party/acquire',control=True),b'1')
-        self.assertEqual(b.state()['state']['owner'],'B')
+        self.until(lambda:all(guest.state()['state']['owner'] is None for guest in guests),
+                   clients=guests,timeout=12)
+        for guest,path,reservation in zip(guests,paths,reservations):
+            disk=json.loads(path.read_text())
+            self.assertIsNone(disk['attachment'])
+            self.assertIn(reservation,disk['retired'])
+            self.assertEqual(self.http(guest,'/party/acquire',control=True),b'1')
+            self.assertEqual(guest.state()['state']['owner'],guest.info['ready'])
+            self.assertNotIn('error',guest.op('release'))
+
+    def test_restarted_host_ends_old_room_for_both_guests(self):
+        a, c, b = self.group_dynamic('ACB')
+        old = a.state()['state']
+        a = self.restart(a)
+        self.assertIsNone(a.state()['state']['owner'])
+        self.assertGreater(a.state()['state']['generation'], old['generation'])
+        self.until(lambda: all(client.state()['state']['owner'] is None for client in (b, c)))
+        for guest in (b, c):
+            self.observe(guest, responder=False)
+        new_room = self.room(b, [], {'B':'HunterB'})
+        self.assertNotEqual(new_room, old['room']['id'])
+        for guest in (c, a):
+            self.observe(guest, responder=True)
+            self.publish_sign(guest)
+        self.until(lambda:len(json.loads(self.http(b, '/summon_messenger/get'))['SummonDataList']) == 2)
+        for who, guest in (('C', c), ('A', a)):
+            self.assertNotIn('error', b.op('claim', target=who, claim={}))
+            self.until(lambda: guest.state()['state']['owner'] == 'B' and guest.state()['final'] >= 0)
+            with self.np_connect(guest, 'Hunter'+who) as sock:
+                self.np_call(sock, 102, 'JoinRoomRequest', {'room_id':new_room}, 'JoinRoomReply')
+        self.assertEqual(set(b.state()['state']['joined']), {'A', 'C'})
+
+    def test_restarted_guest_rejoins_without_removing_the_other_guest(self):
+        a, b, c = self.group_dynamic('ABC')
+        old = a.state()['state']
+        old_slot = old['room']['members']['B']['slot']
+        b = self.restart(b)
+        self.until(lambda: set(a.state()['state']['joined']) == {'C'} and
+                   set(c.state()['state']['joined']) == {'C'})
+        self.assertIsNone(b.state()['state']['owner'])
+        self.assertEqual(c.state()['state']['room']['id'], old['room']['id'])
+        self.publish_sign(b)
+        self.until(lambda: bool(json.loads(self.http(a, '/summon_messenger/get'))['SummonDataList']))
+        self.assertNotIn('error', a.op('claim', target='B', claim={}))
+        self.until(lambda: b.state()['state']['owner'] == 'A' and b.state()['final'] >= 0)
+        with self.np_connect(b, 'HunterB') as sock:
+            reply = self.np_call(sock, 102, 'JoinRoomRequest', {'room_id':old['room']['id']}, 'JoinRoomReply')
+        self.assertNotEqual(reply['member_id'], old_slot)
+        self.until(lambda: set(c.state()['state']['joined']) == {'B', 'C'})
+        # B's game still reports one local hunter during loading. Its confirmed
+        # view must already agree with A and C on the three room members.
+        for client in (a, b, c):
+            status = self.http(client, '/party/tick', dict(
+                state=6, members=1, loading=True, fresh=True, bell_notice=True,
+                bell_release=True, host_check=True, bell_ring_seq=0, roster_count=True), True)
+            self.assertEqual(status.split()[-1], b'3')
 
 
 class ScopeTests(dynamic_tests.DynamicHelpers, unittest.TestCase):

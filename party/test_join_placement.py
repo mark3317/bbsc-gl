@@ -69,12 +69,25 @@ class JoinPlacementTests(DynamicHelpers, unittest.TestCase):
             self.assertEqual(self.request(guest,'create',sign)['TargetUserId'],target)
             # No permanent stream of bootstrap replays after delivery.
             self.assertEqual(len(host.sent_placements),1)
+            if host.diagnostics:
+                for bridge, expected in (
+                    (host, ('placement_from_game', 'admission_staged', 'admission_committed', 'placement_queued')),
+                    (guest, ('admission_reserved', 'admission_confirmed', 'placement_received',
+                             'placement_acknowledged', 'admission_delivered')),
+                ):
+                    log = bridge.logfile.read_text(encoding='utf-8')
+                    events = [json.loads(line)['event'] for line in log.splitlines()]
+                    self.assertEqual([event for event in events if event in expected], list(expected))
+                    self.assertNotIn(placement, log)
+                    self.assertNotIn(bridge.token, log)
         finally:
             for sock in sockets:sock.close()
             for bridge in bridges:bridge.close()
             self.engines.clear()
 
-    def test_aimed_packet_before_dynamic_claim(self):self.run_order(True)
+    def test_aimed_packet_before_dynamic_claim(self):
+        with patch.dict('os.environ', BB_PARTY_DIAGNOSTICS='1'):
+            self.run_order(True)
     def test_aimed_packet_after_dynamic_claim(self):self.run_order(False)
 
     def test_repeat_direct_join_waits_for_native_placement_without_sign_poll(self):

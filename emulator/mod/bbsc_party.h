@@ -16,6 +16,7 @@ void PartyBellRang(); // successful native Beckoning action
 std::uint64_t PartyBellGeneration(bool& counted); // dynamic notice count or legacy world generation
 std::uint64_t PartyBellReleasedGeneration(); // finalized release of a previously announced bell
 unsigned PartyHostHint(); // 1: remote host, 2: yield an empty competing search
+unsigned PartyRoomMemberCount(); // confirmed host roster including self, or zero if unavailable
 void PartyObserve(std::int32_t state, bool loading, bool bell, std::int32_t members, bool alive, bool responder = false);
 void PartyMaintain(); // existing mod maintenance worker, not the frame thread
 }

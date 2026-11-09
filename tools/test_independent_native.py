@@ -40,6 +40,8 @@ std::mutex bbsc_world_presence_mutex;
 World::PresenceBook bbsc_world_presence_book;
 World::Presence bbsc_world_presence_local;
 int session=3,remote_mode=1,member_count=2;
+unsigned party_member_count=0;
+namespace BbscMod { unsigned PartyRoomMemberCount(){return party_member_count;} }
 u64 GetGlobalState(){return 1;}
 int GetBbscSessionMemberCount(u64){return member_count;}
 int GetSessionState(){return session;}
@@ -73,6 +75,8 @@ int main(){
     assert(bbsc_world_presence_book.Hear(22,{11,99},remote,10000));
     assert(BbscWorldAllMembersReady()); // host: mode3 self, mode1 remote guest
     session=6;remote_mode=2;assert(BbscWorldAllMembersReady()); // guest: mode0 self, mode2 remote host
+    party_member_count=3;assert(!BbscWorldAllMembersReady()); // host expects a second remote
+    party_member_count=2;assert(BbscWorldAllMembersReady());
     member_count=3;assert(!BbscWorldAllMembersReady());member_count=2;
     GuestRegisterSnapshot r;r.rsi=100;r.rdx=0x27;r.rax=77;
     BbscWorldPacketSend(0,&r);assert(r.rax==77&&!bbsc_independent_send_skip);
@@ -211,7 +215,8 @@ def main():
     compiler=os.environ.get('CXX') or shutil.which('clang++') or r'C:/msys64/clang64/bin/clang++.exe'
     with tempfile.TemporaryDirectory(prefix='bbsc-independent-native-') as tmp:
         cpp=Path(tmp)/'native.cpp';exe=Path(tmp)/('native.exe' if os.name=='nt' else 'native')
-        cpp.write_text(PREFIX+''.join(function(s) for s in signatures)+MAIN,encoding='utf-8')
+        roster='#define BBSC_MOD\n'+function(signatures[0])+'#undef BBSC_MOD\n'
+        cpp.write_text(PREFIX+roster+''.join(function(s) for s in signatures[1:])+MAIN,encoding='utf-8')
         subprocess.run([compiler,'-std=c++20','-Wall','-Wextra','-Werror','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=dict(env,BBSC_NATIVE_NPC_SYNC_TEST='0'))
