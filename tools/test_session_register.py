@@ -49,6 +49,8 @@ u32 SendRegisterPacket(const void* p,u32 n){sent.emplace_back((const u8*)p,(cons
 }
 ''' + header + wait_header + r'''
 namespace Core::Bloodborne {
+int identity_changes = 0;
+void OnBbscWorldMemberIdentityChanged(){++identity_changes;}
 bool GiveSessionBloodDreg(){if(!can_give)return false;++grants;return true;}
 void InstallSessionDregHooks(){}
 }
@@ -65,6 +67,15 @@ int main(){using namespace BbscMod;
  auto ambiguous=p.identity;ambiguous.room=0;ambiguous.member=0;
  assert(FindSessionRegisterPeer(ambiguous)==0);
  ReceiveSessionRegister(5,42,&p,sizeof p);assert(Snapshot().size()==5);
+ assert(Core::Bloodborne::identity_changes==4); // ordinary heartbeat is not a visit
+ strcpy(p.identity.name,"OtherName");
+ ReceiveSessionRegister(5,42,&p,sizeof p);
+ assert(Core::Bloodborne::identity_changes==5);
+ auto relative=p.identity;relative.room=99;
+ assert(FindSessionRegisterPeer(relative)==5); // unique NpId, different local endpoint
+ strcpy(relative.name,"SameName");
+ assert(FindSessionRegisterPeer(relative)==0);
+ strcpy(p.identity.name,"SameName");ReceiveSessionRegister(5,42,&p,sizeof p);
  p.identity.member=6;ReceiveSessionRegister(6,42,&p,sizeof p);assert(Snapshot().size()==5);
  Rank rows[100];u64 date;u32 total;
  assert(Range(1,20,1,rows,sizeof rows,nullptr,0,nullptr,0,100,&date,&total,nullptr)==5);

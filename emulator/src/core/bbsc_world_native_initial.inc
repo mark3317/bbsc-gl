@@ -23,7 +23,9 @@ void BbscWorldNativeInitialOnce(const World::Scope& scope) {
     const u64 load=bbsc_world_native_load.load();
     if(once.scope==scope && once.load==load)return;
     once={};once.scope=scope;once.load=load;
-    if(!World::Valid(scope) || !BbscIndependentActive())return;
+    // A coordinated wipe starts a new native encounter. A peer's previous
+    // visit is not a resident world from which to import historical deaths.
+    if(!World::Valid(scope) || !BbscIndependentActive() || BbscIsBossWipeLoad(scope))return;
     {std::scoped_lock lock{bbsc_world_presence_mutex};
         const auto* lease=bbsc_independent_owners.Find(scope);
         if(!lease || !lease->owner || lease->owner==BbscMod::RegisterOwnId())return;

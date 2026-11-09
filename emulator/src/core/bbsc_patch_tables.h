@@ -38,7 +38,7 @@ enum class Group : u8 {
     HostDead,    // guest ignores the host's death instead of being sent home through a load
     NoFogWalls,  // co-op area fog walls never appear
     LeaveLimit,  // leaving the co-op area does not send a guest home
-    Spectate,    // the death steps run in full except for the reload they request at the end
+    Spectate,    // kept death and boss-clear sessions
     Echoes,      // a summoned guest keeps the whole blood echo reward, not half of it
     GuestItems,  // a summoned guest sees, picks up and keeps the items of the host's world
     SolidNpcs,   // a guest sees the host world's NPCs as they are, not as grey wandering ghosts
@@ -69,7 +69,7 @@ struct CallRetarget {
 // success; MatchingExists returns true exactly when a room is active, so callers keep their
 // native success branch without the session being torn down. The paired cleanup call is
 // redirected to a return-only function.
-constexpr std::array<CallRetarget, 27> Retargets{{
+constexpr std::array<CallRetarget, 28> Retargets{{
     // SoloPlayDeath_2 (0x01381DE0) and PartyGhostDeath_2 (0x013824C0) are the last step of the
     // death script. Both end with `0x01332BC0()` (pick the reload destination) and
     // `0x013CDE30()` (request the StageTransition that rebuilds the world). BBSC used to skip the
@@ -81,6 +81,11 @@ constexpr std::array<CallRetarget, 27> Retargets{{
     {"SoloPlayDeath_2.Reload", 0x01381EDE, 0xE8, DeathReloadRequestOffset, PersistNoOpOffset,
      Group::Spectate},
     {"PartyGhostDeath_2.Reload", 0x01382663, 0xE8, DeathReloadRequestOffset, PersistNoOpOffset,
+     Group::Spectate},
+    // BlockClear2 closes native admission and kicks pending guests. Keeping the room alive
+    // after victory leaves CSMultiPlayMan+0x118 set, so later joins are kicked at 0x01ED1227.
+    // Remove only the boss-clear call. The native admission check and manual kick remain intact.
+    {"BlockClear2.KeepAdmissionOpen", 0x01384B89, 0xE8, 0x0178D7B0, PersistNoOpOffset,
      Group::Spectate},
     {"Lamp.CharacterGate", 0x012F83BC, 0xE8, LampCharacterGateOffset, ReturnZeroOffset, Group::Lamp},
     {"StageTransition.Stop", 0x013CDEF6, 0xE8, MultiPlayStopOffset, MatchingExistsOffset, Group::Stage},

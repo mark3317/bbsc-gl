@@ -599,10 +599,14 @@ class Compatibility:
                 available=int(blocker is None)
                 answer=f"{available} {int(body.get('cancel_seq',0)) if ready else 0}"
                 if body.get('bell_notice'):
+                    counted = (getattr(self.e,'dynamic',False) and 'bell_ring_seq' in body and
+                               body.get('bell_release') and body.get('host_check'))
                     generation=s['generation'] if final and s['owner'] not in (None,self.e.id) else 0
+                    if counted:generation=self.e.bell_notices
                     answer+=f" {generation}"
                     if body.get('bell_release'):
                         released=s['generation'] if final and s['owner'] is None and available else 0
+                        if counted:released=self.e.bell_released_notice
                         answer+=f" {released}"
                         if body.get('host_check'):
                             # 2 requests native cancellation of an EMPTY competing
@@ -615,6 +619,7 @@ class Compatibility:
                                 # cancel a room constructed after this snapshot.
                                 self.e.yielding_search=s['generation']
                             answer+=f" {role}"
+                            if counted:answer+=' 1'
                 return answer
         if path=='/party/acquire':
             with self.gate_lock:

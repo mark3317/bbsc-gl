@@ -16,6 +16,12 @@ const std::vector<BbscNativeJoinFlagGroup>& BbscNativeJoinFlagGroups() {
             BbscNativeJoinFlagGroup entry{0, key, {}};
             entry.shared_mask.fill(0xFF);
             MaskBbscSharedFlagGroup(key, entry.shared_mask.data());
+            // Share the initial position, but keep the receiving event's own
+            // movement/lever interlocks during the native FirstSync.
+            if (area != 29) {
+                for (const auto& lift : World::LiftFlags(key))
+                    entry.shared_mask[lift.offset] &= ~lift.temporary;
+            }
             if (std::ranges::all_of(entry.shared_mask, [](u8 mask) { return mask == 0xFF; })) return;
             entry.slot = native_slot(kind, area, block, group);
             if (entry.slot != ~u32{0}) result.push_back(entry);

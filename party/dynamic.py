@@ -94,6 +94,11 @@ class DynamicEngine:
         self.local_status = {'sign': None}
         self.native_status = {}
         self.native_at = 0
+        self.bell_ring_seq = 0
+        self.bell_ring_generation = 0
+        self.bell_seen = {}
+        self.bell_notices = 0
+        self.bell_released_notice = 0
         self.yielding_search = None
         self.host_intent_generation = None
         self.update_seq = 0
@@ -206,13 +211,22 @@ class DynamicEngine:
                         continue
                     old = self.peers.get(who)
                     # Active session identities/endpoints/names are pinned.
-                    active = who in pinned
-                    if old and (old['seed'] != offer['seed'] or active):
+                    if old and who in pinned:
+                        continue
+                    rekey = old and old['seed'] != offer['seed']
+                    # The local Player shortcuts write this directory from the
+                    # profiles on this PC. A previous world may have cached an
+                    # older key for the same local endpoint.
+                    if rekey and (self.member['host'] != '127.0.0.1' or
+                                  offer['host'] != '127.0.0.1' or member(old) != member(offer)):
                         continue
                     if any(p['name'].casefold() == offer['name'].casefold()
                            or (p['host'], p['port']) == (offer['host'], offer['port'])
                            for ident, p in self.peers.items() if ident != who):
                         continue
+                    if rekey:
+                        self.signs.pop(who, None)
+                        self.bell_seen.pop(who, None)
                     self.peers[who] = copy.deepcopy(offer)
                     self.members[who] = member(offer)
         except (OSError, ValueError):
@@ -280,9 +294,17 @@ class DynamicEngine:
         if kind == 'presence':
             with self.lock:
                 attached = self.disk['attachment']
-                eligible = self.disk['home']['owner'] is None and (not attached or attached['host'] == sender)
+                home = self.disk['home']
+                eligible = home['owner'] is None and (not attached or attached['host'] == sender)
+                host = self.host_presence()
+                active = bool(host and host['generation'] == self.bell_ring_generation and
+                              self.native_status.get('bell'))
+                released = (not self.storage_error and self.bell_ring_seq > 0 and
+                            (home['generation'] > self.bell_ring_generation or
+                             (home['generation'] == self.bell_ring_generation and home['owner'] is None)))
                 return dict(body=copy.deepcopy(self.local_status) if eligible else {'sign': None},
-                            stamp=[self.disk['incarnation'], self.update_seq], host=self.host_presence())
+                            stamp=[self.disk['incarnation'], self.update_seq], host=host,
+                            bell=[self.bell_ring_seq, active, released])
         if kind == 'reserve':
             return self.reserve(sender, body)
         if kind == 'view':
@@ -611,8 +633,43 @@ class DynamicEngine:
         with self.lock:
             self.native_status = copy.deepcopy(body)
             self.native_at = time.monotonic()
+            home = self.disk['home']
+            seq = body.get('bell_ring_seq')
+            if (home['owner'] == self.id and body.get('fresh') is True and
+                    type(seq) is int and self.bell_ring_seq < seq < 1 << 63):
+                self.bell_ring_seq = seq
+                self.bell_ring_generation = home['generation']
             if body.get('bell'):
                 self.host_intent_generation = None
+
+    def observe_peer_bell(self, who, stamp, bell):
+        if (not isinstance(stamp, list) or len(stamp) != 2 or type(stamp[0]) is not int or
+                not isinstance(bell, list) or len(bell) != 3):
+            return
+        incarnation = stamp[0]
+        seq, active, released = bell
+        if type(seq) is not int or not 0 <= seq < 1 << 63 or type(active) is not bool or type(released) is not bool:
+            return
+        previous = self.bell_seen.get(who)
+        if previous and (incarnation, seq) < previous[:2]:
+            return
+        attached = self.disk['attachment']
+        eligible = attached['host'] == who if attached else self.disk['home']['owner'] is None
+        if previous and incarnation == previous[0]:
+            rings = seq - previous[1]
+            notice = previous[2] if not rings else 0
+        else:
+            # A newly discovered host advertises its current bell, not its history.
+            rings = 0
+            notice = 0
+        if not rings and not notice and seq > 0 and active:
+            rings = 1
+        if rings and eligible:
+            self.bell_notices += rings
+            notice = self.bell_notices
+        if released and notice and notice == self.bell_notices:
+            self.bell_released_notice = notice
+        self.bell_seen[who] = (incarnation, seq, notice)
 
     def empty_search(self):
         # Call under lock. An admitted/constructing room must never yield to
@@ -741,6 +798,7 @@ class DynamicEngine:
                     if peer == self.peers.get(who) and not self.stop_event.is_set():
                         self.signs[who] = dict(body=reply['body'], stamp=reply['stamp'],
                                                host=reply.get('host'), at=time.monotonic())
+                        self.observe_peer_bell(who, reply['stamp'], reply.get('bell'))
             except (OSError, ValueError, KeyError):
                 pass
             self.stop_event.wait(.5)

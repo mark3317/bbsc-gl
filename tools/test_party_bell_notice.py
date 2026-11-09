@@ -6,20 +6,23 @@ s=(ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 a=s.index('void TickBbscPartyBellNotice() {');b=s.index('\n}\n',a)+3
 prefix=r'''
 #include <cassert>
+#include <atomic>
 #include <cstdint>
 #include <string_view>
 using u64=std::uint64_t;using s64=std::int64_t;using u8=std::uint8_t;
 u64 released=0,generation=0,bbsc_notice_serial=0,player=1; s64 now=1000;
-bool quit=false,title=false,loading=false,ready=true;int attempts=0,shown=0;
-namespace BbscMod {u64 PartyBellGeneration(){return generation;}u64 PartyBellReleasedGeneration(){return released;}}
+bool quit=false,title=false,loading=false,curtain=false,ready=true,counted=false;int attempts=0,shown=0;
+std::atomic<bool> bbsc_world_load_pending=false,bbsc_reload_finish_pending=false;
+namespace BbscMod {u64 PartyBellGeneration(bool& mode){mode=counted;return generation;}u64 PartyBellReleasedGeneration(){return released;}}
 bool BbscQuitInProgress(){return quit;}bool BbscReturningToTitle(){return title;}
+bool BbscCurtainActive(){return curtain;}
 u64 GetGlobalState(){return 1;}bool ReadablePointer(u64,size_t){return true;}
 template<class T>T ReadValue(u64,size_t){return T(loading);}
 u64 GetLocalPlayerCharacter(){return player;}s64 SteadyNowMs(){return now;}
-const char16_t* BbscL(const char16_t* en,const char16_t*){return en;}
+const char16_t* BbscL(const char16_t*,const char16_t* ru){return ru;}
 void BbscAnnounce(const char16_t* text,std::string_view what){
- assert((what=="party bell started"&&std::u16string_view(text)==u"The chime of a beckoning bell resonates across the world") ||
-        (what=="party bell stopped"&&std::u16string_view(text)==u"The Beckoning Bell has fallen silent"));++attempts;if(ready){++shown;++bbsc_notice_serial;}
+ assert((what=="party bell started"&&std::u16string_view(text)==u"В мире раздаётся звон Зовущего колокола") ||
+        (what=="party bell stopped"&&std::u16string_view(text)==u"Звон Зовущего колокола прекращён"));++attempts;if(ready){++shown;++bbsc_notice_serial;}
 }
 '''
 main=r'''
@@ -42,6 +45,14 @@ int main(){
  for(int i=0;i<20;++i){now+=500;TickBbscPartyBellNotice();}assert(shown==3);
  released=0;TickBbscPartyBellNotice();released=2;TickBbscPartyBellNotice();assert(shown==3);
  generation=3;released=0;TickBbscPartyBellNotice();assert(shown==4);
+ counted=true;generation=5;released=5;curtain=true;now+=500;
+ TickBbscPartyBellNotice();assert(shown==4);
+ curtain=false;bbsc_world_load_pending=true;TickBbscPartyBellNotice();assert(shown==4);
+ bbsc_world_load_pending=false;TickBbscPartyBellNotice();assert(shown==5);
+ TickBbscPartyBellNotice();assert(shown==5);
+ now+=500;TickBbscPartyBellNotice();assert(shown==6);
+ now+=500;TickBbscPartyBellNotice();assert(shown==7);
+ now+=500;TickBbscPartyBellNotice();assert(shown==7);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-bell-notice-') as tmp:
@@ -49,4 +60,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-bell-notice-') as tmp:
  cpp.write_text(prefix+s[a:b]+main,encoding='utf-8')
  subprocess.run(['C:/msys64/clang64/bin/clang++.exe','-std=c++20',str(cpp),'-o',str(exe)],check=True)
  subprocess.run([str(exe)],check=True,timeout=10,env=dict(os.environ,PATH='C:/msys64/clang64/bin;'+os.environ['PATH']))
-print('PASS: once per generation, idle/network loss, load/title/quit, banner readiness retry')
+print('PASS: every counted ring, legacy generations, finalized stop, load/title/quit, banner readiness retry')

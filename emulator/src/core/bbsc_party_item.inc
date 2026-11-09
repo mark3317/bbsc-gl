@@ -75,6 +75,7 @@ void TickBbscPartyItem() {
     bbsc_party_item_replaying = false;
     BbscMod::PartyFinishAcquire(item.ticket);
     item = {};
-    if (!applied) BbscMod::PartyCancel();
+    if (applied) BbscMod::PartyBellRang();
+    else BbscMod::PartyCancel();
 }
 #endif

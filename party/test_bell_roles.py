@@ -58,6 +58,38 @@ class BellRoles(DynamicHelpers, unittest.TestCase):
             return condition()
         self.eventually(step)
 
+    def test_each_applied_beckoning_reaches_clients_before_and_after_admission(self):
+        a, b, c = (self.bridge(who) for who in 'ABC')
+        self.discover()
+
+        def notices(bridge, **changes):
+            return self.tick(bridge, bell_ring_seq=0, **changes)[2:4]
+
+        self.until(lambda: all('A' in bridge.e.bell_seen for bridge in (b, c)))
+        self.assertEqual(a.control('/party/acquire', {}), 1)
+        self.until(lambda: self.tick(b)[-1] == 1, [(a, dict(bell_ring_seq=0))])
+        self.assertEqual(notices(b), [0, 0])  # Reserving the host role is silent.
+        generation = a.e.state['generation']
+        self.until(lambda: notices(b) == notices(c) == [1, 0],
+                   [(a, dict(bell=True, bell_ring_seq=1))])
+        self.assertIsNone(b.e.state['owner'])
+        self.assertEqual(notices(a), [0, 0])
+
+        # Two successful applications can arrive in one discovery response.
+        self.until(lambda: notices(b) == notices(c) == [3, 0],
+                   [(a, dict(bell=True, bell_ring_seq=3))])
+        self.assertEqual(a.e.state['generation'], generation)
+        self.assertEqual(notices(b), [3, 0])
+        a.e.command(dict(kind='release'))
+        self.until(lambda: notices(b) == notices(c) == [3, 3])
+
+        self.assertEqual(c.control('/party/acquire', {}), 1)
+        self.assertEqual(c.e.state['generation'], generation)  # Independent world generation.
+        self.until(lambda: notices(b) == [4, 3], [(c, dict(bell=True, bell_ring_seq=1))])
+        self.claim(c.e, b.e)
+        self.assertEqual(notices(b), [4, 3])  # Joining must not announce the same ring again.
+        self.until(lambda: notices(b) == [5, 3], [(c, dict(bell=True, bell_ring_seq=2))])
+
     def test_switch_to_responder_releases_never_hosted_search_and_admits(self):
         a, b = self.bridge('A'), self.bridge('B')
         self.discover()

@@ -32,8 +32,11 @@ UNLOCKS=[(0x16000000,12200121,12200121),(0x18010000,12410330,12410330),
 # Map, movement events, position, busy, optional native lever interlock.
 MOVEMENT = [
     (0x16000000, (12200122, 12200123), 12200125, 12200126, 0),
+    (0x18000000, (12400148, 12400147), 12400150, 12400151, 0),
+    (0x18000000, (12400825, 12400824), 12400827, 12400828, 0),
     (0x18010000, (12410322, 12410323), 12410350, 12415350, 12410351),
     (0x18020000, (12420151, 12420152), 12420154, 12420155, 0),
+    (0x19000000, (12500077, 12500076), 12500074, 12505074, 0),
     (0x1B000000, (12700131, 12700132), 12700134, 12700135, 0),
     (0x1B000000, (12700141, 12700142), 12700144, 12700145, 0),
     (0x1C000000, (12800602, 12800604), 12800610, 12804700, 12800611),
@@ -43,6 +46,11 @@ MOVEMENT = [
     (0x23000000, (13501122, 13501123), 13501126, 13504120, 0),
     (0x24000000, (13601102, 13601103), 13601106, 13604100, 0),
 ]
+GATES = [
+    (0x18000000, (12400125, 12400126), 12400177, 12400178, 0),
+    (0x18000000, (12400155, 12400156), 12400157, 12405179, 0),
+    (0x1B000000, (12700172, 12700171), 12700173, 12700174, 0),
+]
 MENSIS_MOVEMENT = [
     (0x1A000000, (12601320, 12601330), 12601250, 12605250, 0),
     (0x1A000000, (12601320, 12601330), 12601251, 12605251, 0),
@@ -50,6 +58,16 @@ MENSIS_MOVEMENT = [
     (0x1A000000, (12601320, 12601330), 12601256, 12605256, 0),
     (0x1A000000, (12601320, 12601330), 12601254, 12605253, 0),
     (0x1A000000, (12601320, 12601330), 12601255, 12605254, 0),
+]
+
+LOCAL_REGIONS = [
+    ('m23_00_00_00', 12300750, 12300751),
+    ('m26_00_00_00', 12604740, 12604741),
+    ('m26_00_00_00', 12604742, 12604743),
+    ('m32_00_00_00', 13200100, 13200101),
+    *((f'm{area}_00_00_00', 10000000 + area * 100000 + event,
+       10000000 + area * 100000 + event + 1)
+      for area in (34, 35, 36) for event in (4740, 4742)),
 ]
 
 def resolved_instructions(emevd, event, slot=0):
@@ -90,7 +108,7 @@ def original(game):
         else:
             assert any(b==2003 and i==2 and a==struct.pack('<II',flag,1) for b,i,a in ins)
     print('PASS original 1.09: 10 permanent unlock flags, region/lever paths, implicit completion, parameter substitutions, no NoNetSync')
-    lifts = [(0, movement) for movement in MOVEMENT] + list(enumerate(MENSIS_MOVEMENT))
+    lifts = [(0, movement) for movement in MOVEMENT + GATES] + list(enumerate(MENSIS_MOVEMENT))
     for slot, (packed, events, position, busy, interlock) in lifts:
         name = f'm{packed>>24:02d}_{packed>>16&255:02d}_00_00'
         evd = Emevd(game/'event'/(name+'.emevd.dcx'))
@@ -103,7 +121,35 @@ def original(game):
         if interlock:
             init = {12410351: 12410321, 12800611: 12800600}[interlock]
             assert (2003, 2, struct.pack('<II', interlock, 0)) in resolved_instructions(evd, init)
-    print('PASS original 1.09: movement and temporary flags for 17 lifts, including six Mensis slots')
+    print('PASS original 1.09: movement and temporary flags for 20 lifts and three paired gate events')
+    for name, event, flag in LOCAL_REGIONS:
+        ins = dict(Emevd(game/'event'/(name+'.emevd.dcx')).events)[event]
+        for value in (0, 1):
+            assert (2003, 2, struct.pack('<II', flag, value)) in ins
+        assert any((b, i) in ((3, 2), (11, 2)) for b, i, _ in ins)
+
+    cathedral = dict(Emevd(game/'event/m24_00_00_00.emevd.dcx').events)
+    hall = dict(Emevd(game/'event/m35_00_00_00.emevd.dcx').events)
+    for flag, ins in ((12400167, cathedral[12400175]), (12400168, cathedral[12400175]),
+                      (12400169, cathedral[12400175]), (12405175, cathedral[12400175]),
+                      (13505500, hall[13500100])):
+        for value in (0, 1):
+            assert (2003, 2, struct.pack('<II', flag, value)) in ins
+
+    cup = dict(Emevd(game/'event/m29.emevd.dcx').events)
+    root = dict(Emevd(game/'event/m29_00_01_00/m29_00_01_00.emevd.dcx').events)
+    for events, position, busy in (((12900351, 12900354), 12900450, 12900455),
+                                   ((12900353, 12900356), 12900460, 12900465)):
+        for event, value in zip(events, (0, 1)):
+            (args,) = [struct.unpack('<10I', args) for bank, op, args in root[0]
+                       if (bank, op) == (2000, 0) and len(args) == 40 and
+                       struct.unpack_from('<I', args, 4)[0] == event]
+            assert args[8:10] == (position, busy)
+            writes = [struct.unpack('<II', a) for b, i, a in cup[event] if (b, i) == (2003, 2)]
+            assert writes == [(0, value), (0, 1), (0, 0)]
+    other_root = dict(Emevd(game/'event/m29_02_00_00/m29_02_00_00.emevd.dcx').events)
+    assert 12900450 in other_root # this ID is not exclusive to the root lift's position
+    print('PASS original 1.09: 10 local region flags, fourth reversible gate, staircase and fixed chalice movement arguments')
 
 PREFIX=r'''
 #include <algorithm>
@@ -129,6 +175,8 @@ bool BbscOwnNpcQuestsEnabled(){return own_npc;}
 int GetSessionState(){return session;}
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 World::OwnerBook bbsc_independent_owners;
+std::optional<World::Scope> wipe_scope;
+bool BbscIsBossWipeLoad(const World::Scope& scope){return wipe_scope==scope;}
 std::optional<World::Scope> bbsc_world_requested_scope;
 struct TestAltar {
     struct { bool occupied = false; u64 ritual = 0; } entry;
@@ -142,7 +190,7 @@ s32 BbscWorldHostAltarSlot(const World::Scope&){return -1;}
 u64 BbscWorldNativeAltarGroup(s32,u32,u32){return 0;}
 void KeepBbscOwnWorldGroup(u32 k,const u8* p){if(!own.contains(k))std::memcpy(own[k].data(),p,125);}
 void KeepBbscGuestTalkBits(u32,const u8*,u8*){}
-void KeepBbscNpcOwnBits(u32,const u8*,u8*){}
+void KeepBbscNpcOwnBits(u32 key,const u8* before,u8* live){QuestRules::KeepLocalNpcCompletion(key,before,live);}
 '''
 
 def production():
@@ -154,6 +202,7 @@ def production():
                 'bool IsBbscKidnapEvent(s64 event)','bool IsBbscPersonalMapEvent(s64 event)',
                 'bool BbscSharedMapProgressAllowed(u32 flag)','u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)',
                 'void BbscMergeSharedProgressGroup(u32 key, u8* live, const u8* incoming)',
+                'void KeepBbscEncounterFlags(u32 key, const u8* before, u8* live)',
                 'u32 BbscWorldGroupKey(u32 packed_map, size_t index)',
                 'void MaskBbscSharedFlagGroup(u32 key, u8* outgoing)'):
         code+=function(sig)
@@ -169,10 +218,22 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
 '''
     code+=function('BbscWorldState BbscWorldCaptureFlags(const World::Scope& scope)',STATE)
     code+=function('void BbscWorldPublishFlags(const World::Scope& scope,const BbscWorldState& state,u32 owner,u64 epoch,u64 seq)',STATE)
-    code+=function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)',STATE)
+    code+=function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state,bool live_dungeon = false)',STATE)
     code+=function('bool BbscWorldFlagsReady(const World::Scope& scope)',STATE)
     code+=function('void BbscWorldSeedLiftFlags(u32 map)',STATE)
     code+=r'''int main(){
+ const World::Scope cathedral{.map=0x18000000};
+ wipe_scope=cathedral;
+ BbscWorldState before_wipe;
+ before_wipe.flags_ready=true;before_wipe.present=(1<<4)|(1<<1);
+ before_wipe.groups[4][100]=0xe0; // 12404800/801/802, encounter start
+ before_wipe.groups[4][27]=0x03; // 12404223 setup plus an unrelated bit
+ before_wipe.groups[1][100]=0xa0; // 12401800/802, persistent victory/intro
+ BbscWorldApplyFlags(cathedral,before_wipe);
+ assert(groups[12404][100]==0 && groups[12404][27]==0x02 && groups[12401][100]==0xa0);
+ wipe_scope.reset();
+ BbscWorldApplyFlags(cathedral,before_wipe);
+ assert(groups[12404][100]==0xe0); // ordinary resident arrival keeps the current encounter
  const auto scope=World::Scope{.map=0x18010000};
  auto& live=groups[12410];
  const auto set=[&](u32 flag){live[flag%1000/8]|=0x80u>>(flag%8);};
@@ -221,8 +282,55 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
  const auto read = [](const auto& group, u32 flag) {
     return (group[flag % 1000 / 8] & (0x80u >> (flag % 8))) != 0;
  };
+ {
+    constexpr u32 map = 0x1A000000, position = 12601254, local_region = 12604741;
+    const World::Scope destination{.world = {22, 99}, .map = map};
+    bbsc_world_presence_local.world = destination.world;
+    bbsc_independent_owners.Bind(destination.world);
+    session = 6;
+    groups.clear();
+    auto& snapshot = bbsc_independent_states[destination];
+    snapshot.flags_ready = true;
+    snapshot.present = 0x1F;
+    write(snapshot.groups[1], position, true);
+    snapshot.epoch = 1; // an old owner revision is not an initial seed
+    BbscWorldSeedLiftFlags(map);
+    assert(!read(groups[12601], position));
+    snapshot.epoch = 0;
+    BbscWorldSeedLiftFlags(map);
+    assert(read(groups[12601], position));
+    for (bool local : {false, true}) {
+        write(groups[12604], local_region, local);
+        write(snapshot.groups[4], local_region, !local);
+        BbscWorldApplyFlags(destination, snapshot);
+        assert(read(groups[12604], local_region) == local);
+    }
+    auto wire = snapshot.groups[4];
+    write(wire, local_region, true);
+    MaskBbscSharedFlagGroup(12604, wire.data());
+    assert(!read(wire, local_region) && !BbscSharedMapProgressAllowed(local_region));
+ }
+ for (u32 flag : {12300751u,12401803u,12604741u,12604743u,12805920u,12805921u,
+                  12805922u,12805923u,13200101u,13201803u,13404741u,13404743u,
+                  13504741u,13504743u,13604741u,13604743u}) {
+    const World::Scope destination{.map = (flag / 100000 % 100) << 24};
+    const u32 key = flag / 1000;
+    const size_t index = key - BbscWorldGroupKey(destination.map, 0);
+    BbscWorldState snapshot;
+    snapshot.flags_ready = true;
+    snapshot.present = u64{1} << index;
+    for (bool local : {false, true}) {
+        write(groups[key], flag, local);
+        write(snapshot.groups[index], flag, !local);
+        BbscWorldApplyFlags(destination, snapshot);
+        assert(read(groups[key], flag) == local);
+    }
+    const u8 mask = 0x80u >> (flag % 8);
+    assert(BbscSharedProgressByte(key, flag % 1000 / 8, mask) == 0);
+ }
  '''
-    for packed, _, position, busy, interlock in MOVEMENT + MENSIS_MOVEMENT:
+    for packed, _, position, busy, interlock in MOVEMENT + MENSIS_MOVEMENT + GATES + [
+            (0x18000000, (), 12400168, 12405175, 12400169)]:
         code+=f'''
  {{
     const u32 position = {position}, busy = {busy}, interlock = {interlock};
@@ -298,7 +406,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
     print('PASS production: all 10 events shared, channel31 same-place policy, capture/apply host+guest, late-arrival snapshot, additive unlock/no rollback, incomplete/owner/off-map fences')
-    print('PASS production: 17 lifts, native live bits preserved, exact arrival position, no additive replay')
+    print('PASS production: 20 lifts and four reversible gates, live bits preserved, exact arrival position, no additive replay')
 
 if __name__=='__main__':
     original(Path(sys.argv[1]))

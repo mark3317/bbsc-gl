@@ -35,8 +35,8 @@ constexpr bool TalkAllowed(std::uint32_t talk, bool ending, bool occupied_altar)
 }
 constexpr bool EventAllowed(std::int64_t event) {
     if (event <= 0) return false; // unresolved identity cannot bypass the deny list
-    // Retain both role predicates in host fog events: a guest must neither
-    // hide the first-encounter barrier as a host nor use the host's action.
+    // Keep host traversal restricted. The fog geometry's first-encounter
+    // skip is handled separately at the exact native branch.
     if (BossFogRetryEnableStep(event)) return false;
     switch (event) {
     case 3503: // native cycle progression

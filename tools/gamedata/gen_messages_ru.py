@@ -49,6 +49,7 @@ RU = {
     "Stop the Beckoning Bell": "Заглушить Зовущий Колокол",
     "Stop the Small Resonant Bell": "Заглушить Малый звонкий колокол",
     "Stop the Sinister Resonant Bell": "Заглушить Зловещий звонкий колокол",
+    "Leave the co-op session?": "Выйти из совместной сессии?",
     "Beckoning Bell rung.\nWaiting for players to join...":
         "Поиск звона Малого звонкого колокола...",
     "Small Resonant Bell rung.\nLooking for a host to join...":

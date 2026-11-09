@@ -793,7 +793,7 @@ void TickBbscWorldPlayers() {
     // ordinary heartbeats and frames do not inspect actors at all. Waiting for
     // a native task to settle is bounded to the current loading admission.
     const bool once=SessionTest::NativeNpcSync();
-    using Visit=std::tuple<u64,u64,u64,bool>;
+    using Visit=std::tuple<u64,u64,u64,bool,bool>;
     static std::map<u32,Visit> completed;
     static u64 observed_revision=0;
     static s64 waiting_until=0;
@@ -817,7 +817,9 @@ void TickBbscWorldPlayers() {
     const auto tasks=GetMultiPlayerInsTasks();const auto players=BbscWorldPlayers(world);
     std::set<u32> waiting;
     if(once)for(const auto& [peer,member]:members){
-        const Visit visit{local.visit,member.presence.visit,bbsc_world_native_load.load(),World::SamePlayerSpace(local,member.presence)};
+        const bool here = World::SamePlayerSpace(local, member.presence);
+        const Visit visit{local.visit, member.presence.visit, bbsc_world_native_load.load(),
+                          here, here && member.presence.alive};
         const auto done=completed.find(peer);
         if(done==completed.end() || done->second!=visit)waiting.insert(peer);
     }
@@ -850,15 +852,20 @@ void TickBbscWorldPlayers() {
         in.here=fresh && World::SamePlayerSpace(local,it->second.presence);
         in.alive=fresh && it->second.presence.alive;
         in.task_ready=ReadValue<s32>(task,0x50)==6 && ReadValue<s32>(task,0x54)==6 && !(ReadValue<u8>(task,0xED)&2);
-        const Visit visit{local.visit,in.peer_visit,in.local_load,in.here};
+        const Visit visit{local.visit, in.peer_visit, in.local_load, in.here, in.here && in.alive};
         if(once && !waiting.contains(peer))continue;
-        if(once && in.here && !in.task_ready)continue;
+        if (once && in.here && (!in.task_ready || !IsValidMemberId(task + 0xC8) ||
+                                !ReadValue<u64>(task, 0xC8))) continue;
         const auto previous=completed.find(peer);
         in.admitted_load=once && previous!=completed.end() &&
             std::get<2>(previous->second)==in.local_load && std::get<3>(previous->second);
         if(once){completed[peer]=visit;waiting.erase(peer);}
         u64 chr=0;for(const auto candidate:BbscWorldPlayers(world))
             if(candidate && candidate!=GetLocalPlayerCharacter() && BbscWorldPeer(candidate+0x3D8)==peer){chr=candidate;break;}
+        // The native task can identify a retained PlayerIns even while the
+        // copy's relay registration is unavailable during the load.
+        const u64 native_actor = chr ? 0 : FindBbscRemotePlayer(world, task);
+        if (!chr) chr = native_actor;
         bool detached=false;
         u64 mesh=BbscWorldPlayerMesh(world,chr,detached);
         in.actor=chr;in.actor_alive=chr && GetCharacterHp(chr)>0;
@@ -903,7 +910,7 @@ void TickBbscWorldPlayers() {
             if(HasMemoryAccess(task+0xED,1,MemoryProt::CpuWrite) &&
                ReadablePointer(world,0x68) && IsValidMemberId(task+0xC8) &&
                ReadValue<u64>(task,0xC8)){
-                const u64 retiring = FindBbscRemotePlayer(world, task);
+                const u64 retiring = chr && !native_actor ? FindBbscRemotePlayer(world, task) : native_actor;
                 // The relay may temporarily lack a registration for an actor
                 // that still owns this native member's movement queue.
                 if ((chr && chr != retiring) || (!action.insert && retiring)) continue;

@@ -29,6 +29,7 @@ inline constexpr u32 PresenceCapability = 1;
 // alone must never open lamps, suppress follow, or authorize enemy ownership.
 inline constexpr u32 IndependentTravelCapability = 2;
 inline constexpr u32 NativeFinaleCapability = 1u << 16;
+inline constexpr u32 BossDeathReadyCapability = 1u << 17;
 
 #pragma pack(push,1)
 struct WorldId {

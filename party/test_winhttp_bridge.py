@@ -17,6 +17,7 @@ std::string AimedPlacementAcknowledgment(){return {};}
 int main(int argc,char** argv){
  if(argc>1 && std::string(argv[1])=="roles"){
   for(unsigned expected:{1u,2u,0u,0u}){
+   if(expected==2) BbscMod::PartyBellRang();
    BbscMod::PartyObserve(0,false,false,1,true,true);
    BbscMod::PartyMaintain();
    if(BbscMod::PartyHostHint()!=expected)return 40;
@@ -25,10 +26,11 @@ int main(int argc,char** argv){
   return 0;
  }
  if(argc>1 && std::string(argv[1])=="notices"){
-  const unsigned long long expected[][2]={{7,0},{0,7},{0,0},{8,0},{0,0},{0,0}};
+  const unsigned long long expected[][3]={{7,0,0},{0,7,0},{0,0,0},{8,0,0},{0,0,0},{0,0,0},{9,8,1},{0,0,0}};
   for(const auto& pair:expected){
    BbscMod::PartyMaintain();
-   if(BbscMod::PartyBellGeneration()!=pair[0] || BbscMod::PartyBellReleasedGeneration()!=pair[1])return 30;
+   bool counted=false;
+   if(BbscMod::PartyBellGeneration(counted)!=pair[0] || BbscMod::PartyBellReleasedGeneration()!=pair[1] || counted!=pair[2])return 30;
    Sleep(260);
   }
   return 0;
@@ -102,13 +104,14 @@ class BridgeTests(ProcessTests):
   try:
    subprocess.run([str(exe),'roles'],env=env,check=True,timeout=10)
    self.assertEqual(len(seen),4)
+   self.assertEqual([body['bell_ring_seq'] for body in seen],[0,1,1,1])
    for body in seen:
     self.assertTrue(body['host_check']);self.assertTrue(body['responder']);self.assertTrue(body['fresh'])
     self.assertTrue(body['placement_ticket'])
     self.assertEqual(body['members'],1);self.assertFalse(body['bell'])
   finally:server.shutdown();server.server_close();thread.join()
  def test_notice_reply_versions_and_malformed_release(self):
-  replies=iter([b'0 0 7 0',b'1 0 0 7',b'1 0',b'0 0 8',b'1 0 0 invalid',b'garbage'])
+  replies=iter([b'0 0 7 0',b'1 0 0 7',b'1 0',b'0 0 8',b'1 0 0 invalid',b'garbage',b'0 0 9 8 1 1',b'0 0 10 8 1 2'])
   class Handler(BaseHTTPRequestHandler):
    def log_message(self,*args):pass
    def do_POST(self):

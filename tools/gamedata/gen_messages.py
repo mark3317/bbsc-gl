@@ -5,8 +5,7 @@ the id must exist and must say what we expect before it is replaced, and boss me
 game's own boss-name tag (<?npcNameId@N?>) so each one still names its boss.
 
 Only messages that are wrong in seamless co-op are replaced (the guest is not sent home, the
-session goes on after deaths and bosses). Messages about really leaving - the Silencing Blank,
-a lost connection, an adversary - are left exactly as the game has them.
+session goes on after deaths and bosses), or clarified where an action is ambiguous.
 """
 import os
 import re
@@ -126,6 +125,10 @@ replace(14000, r'^Expend Insight', 'Ring the Beckoning Bell\nto call other playe
 replace(14003, r'^Silence the Beckoning Bell$', 'Stop the Beckoning Bell')
 replace(14004, r'^Silence the Small Resonant Bell$', 'Stop the Small Resonant Bell')
 replace(14005, r'^Silence the Sinister Resonant Bell$', 'Stop the Sinister Resonant Bell')
+# The Blank's Yes/No dialog uses these for guests and the BBSC confirmation fallback.
+for i in (14011, 14012):
+    replace(i, r'^Withdraw and return to own world\?$',
+            'Leave the co-op session?')
 replace(100001, r'^Searching for the chime of a Small Resonant Bell\.\.\.$',
         'Beckoning Bell rung.\nWaiting for players to join...')
 replace(100100, r'^Searching for the chime of a Beckoning Bell\.\.\.$',

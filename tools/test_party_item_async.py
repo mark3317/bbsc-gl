@@ -17,7 +17,7 @@ using u64=std::uint64_t;using u32=std::uint32_t;using s32=std::int32_t;using u8=
 #define PS4_SYSV_ABI
 struct GuestRegisterSnapshot {u64 rdi=17,rsi=200,rdx=17;};
 using Box=BbscMod::PartyAcquireMailbox;
-Box mailbox;int cancellations=0;
+Box mailbox;int cancellations=0,rings=0;
 bool responder=false,erase_ok=true;
 u64 BbscLocalEffectNode(int id){return id==9005&&responder;}
 bool BbscEraseLocalEffect(int id){assert(id==9005);if(!erase_ok)return false;responder=false;return true;}
@@ -25,6 +25,7 @@ namespace BbscMod {
 std::uint64_t PartyRequestAcquire(){return mailbox.Request();}
 Box::Result PartyAcquireResult(std::uint64_t t){return mailbox.Poll(t);}
 void PartyFinishAcquire(std::uint64_t t){mailbox.Finish(t);}
+void PartyBellRang(){++rings;}
 void PartyCancel(){++cancellations;mailbox.Cancel();}
 }
 u64 player=17,global=32;u32 map=0x17000000;s32 state=0,hp=10;bool loading=false,title=false,quit=false;
@@ -76,7 +77,8 @@ int main(){
   player=17;map=0x17000000;global=32;loading=title=quit=false;hp=10;state=0;bbsc_reload_finish_pending=false;
  }
  request();grant();native_ok=false;int before=cancellations;TickBbscPartyItem();
- assert(applied==3 && cancellations==before+1 && !bbsc_pending_party_item.ticket);
+ assert(applied==3 && rings==2 && cancellations==before+1 && !bbsc_pending_party_item.ticket);
+ native_ok=true;
  // Pending network work cannot block thousands of frame callbacks.
  request();auto blocked=mailbox.Take();std::promise<void> release;
  auto ready=release.get_future();auto worker=std::async(std::launch::async,[&]{ready.wait();return mailbox.Complete(blocked,true);});
@@ -88,7 +90,7 @@ int main(){
  auto press=[]{for(int i=0;i<1000;++i){GuestRegisterSnapshot r;assert(!GateBbscPartyItem(r));}};
  auto p1=std::async(std::launch::async,press),p2=std::async(std::launch::async,press);
  p1.get();p2.get();assert(bbsc_pending_party_item.ticket);
- grant();TickBbscPartyItem();assert(applied==4);
+ grant();TickBbscPartyItem();assert(applied==4 && rings==3);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-async-item-') as tmp:

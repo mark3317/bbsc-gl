@@ -208,7 +208,7 @@ void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& s
     if(rewards)RequestBbscRewardCheck();
 }
 
-void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) {
+void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state,bool live_dungeon = false) {
     if(!state.flags_ready) return;
     if(scope.map==BbscDreamStateMap)return; // dedicated host Dream phase, never guest map state
     const bool guest=GetSessionState()==6;
@@ -216,6 +216,7 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
     const bool host_cup=GetSessionState()==3 && dungeon;
     const s32 slot=host_cup?BbscWorldHostAltarSlot(scope):-1;
     if(host_cup && slot<0)return;
+    const bool wipe_load = BbscIsBossWipeLoad(scope);
     for(size_t i=0;i<30;++i) {
         if(!(state.present&(u64{1}<<i))) continue;
         const u32 key=BbscWorldGroupKey(scope.map,i);
@@ -224,21 +225,17 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
         auto* live=reinterpret_cast<u8*>(storage);
         std::array<u8,125> before;std::memcpy(before.data(),live,125);
         if(guest) KeepBbscOwnWorldGroup(key,live);
-        // Independent m29 state is already keyed by dungeon AND ritual. Its
-        // lamps must replace the previous mounted cup's runtime flags too.
+        // The scoped m29 snapshot also replaces lamp bits when mounting a cup.
         if(dungeon)std::memcpy(live,state.groups[i].data(),125);
-        else if (const auto flags = World::LiftFlags(key); !flags.empty()) {
-            // A running lift is owned by its native event. Replaying a
-            // flag from a snapshot would change its conditions without moving it.
-            auto incoming = state.groups[i];
-            for (const auto& lift : flags) {
+        else
+            Chalice::CopyHostFlagGroup(key,live,state.groups[i]);
+        if (!dungeon || live_dungeon) {
+            // Native events own a loaded mechanism's position and interlocks.
+            for (const auto& lift : World::LiftFlags(key)) {
                 const u8 mask = lift.position | lift.temporary;
-                auto& value = incoming[lift.offset];
+                auto& value = live[lift.offset];
                 value = (value & ~mask) | (before[lift.offset] & mask);
             }
-            Chalice::CopyHostFlagGroup(key,live,incoming);
-        } else {
-            Chalice::CopyHostFlagGroup(key,live,state.groups[i]);
         }
         // This is the SAME host cup's backing bank. An older owner snapshot
         // must not revoke an already recorded lamp discovery/menu unlock.
@@ -248,13 +245,7 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state) 
         // Keep permanent progress even if a resident peer's snapshot is older.
         if(i<10 && !dungeon)
             BbscMergeSharedProgressGroup(key,live,before.data());
-        if (key == 12401 || key == 13201) {
-            // 12401803 / 13201803 mark each player's native movie complete.
-            // An owner's snapshot can arrive while the local Remo is playing.
-            constexpr size_t byte = 803 / 8;
-            constexpr u8 mask = 0x80 >> (803 % 8);
-            live[byte] = (live[byte] & ~mask) | (before[byte] & mask);
-        }
+        if (wipe_load) KeepBbscEncounterFlags(key, before.data(), live);
         KeepBbscGuestTalkBits(key,before.data(),live);
         KeepBbscNpcOwnBits(key,before.data(),live);
 #ifdef BBSC_MOD
@@ -300,6 +291,9 @@ bool BbscWorldFlagsReady(const World::Scope& scope) {
 // Seed the destination before its EMEVDs start. The native initializer uses
 // the saved position and performs the object/lever setup itself.
 void BbscWorldSeedLiftFlags(u32 map) {
+    // Chalice positions come from the scoped ritual snapshot, before its
+    // original initializer resets the interlocks.
+    if (Chalice::IsMap(map)) return;
     const u32 base = BbscWorldGroupKey(map, 0);
     if (!base) return;
     const BbscWorldState* snapshot = nullptr;
@@ -323,8 +317,13 @@ void BbscWorldSeedLiftFlags(u32 map) {
                                            map & 0xFFFF0000, bbsc_world_requested_scope);
                 if (const auto* lease = bbsc_independent_owners.Find(scope)) owner = lease->owner;
             }
-            if (owner && owner != BbscMod::RegisterOwnId() && BbscWorldFlagsReady(scope))
-                snapshot = &bbsc_independent_states.at(scope);
+            if (BbscWorldFlagsReady(scope)) {
+                const auto& ready = bbsc_independent_states.at(scope);
+                // The host can seed the first arrival before anyone owns the
+                // destination. Only its initial epoch is valid without a lease.
+                const u32 source = owner ? owner : (ready.epoch == 0 ? scope.world.host : 0);
+                if (source && source != BbscMod::RegisterOwnId()) snapshot = &ready;
+            }
         }
         for (const auto& lift : flags) {
             auto& value = live[lift.offset];
@@ -371,7 +370,7 @@ void ApplyBbscIndependentAtLoad(u32 map) {
     World::Scope scope;
     {std::scoped_lock lock{bbsc_world_presence_mutex};scope=World::ScopeOf(bbsc_world_presence_local);}
     scope=World::ScopeForMap(scope,map,bbsc_world_requested_scope);
-    if(auto it=bbsc_independent_states.find(scope);it!=bbsc_independent_states.end()) BbscWorldApplyFlags(scope,it->second);
+    if(BbscWorldFlagsReady(scope)) BbscWorldApplyFlags(scope,bbsc_independent_states.at(scope));
     if(map==BbscDreamStateMap && GetSessionState()==6){
         // Older saves can have the native Mergo clear without its common 50
         // phase flag. Apply that single native SetEventFlag before m21 starts.
@@ -615,13 +614,16 @@ void TickBbscWorldSnapshots() {
             state.parts|=1u<<c.part;state.flags_ready=state.parts==15;
             if(host && !from_host) BbscWorldSend(c,{reinterpret_cast<const u8*>(&p),sizeof(p)});
         }else continue;
-        if(c.kind==World::ControlKind::Flags && state.flags_ready){
+        // A delayed host relay can complete after the owner has changed.
+        // Keep seed admission separate from applying a snapshot in play.
+        const bool current_flags=state.flags_ready && c.epoch>=owner.epoch;
+        if(current_flags){
             BbscWorldRememberProgress(c.scope,state);BbscWorldRememberLampSnapshot(c.scope,state);
         }
         if(BbscIndependentActive() &&
-           (World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,state.flags_ready) ||
-            (host && !from_host && Chalice::IsMap(c.scope.map) && state.flags_ready)))
-            BbscWorldApplyFlags(c.scope,state);
+           (World::ShouldApplyFlags(c,World::ScopeOf(local),self,owner.owner,host,current_flags) ||
+            (host && !from_host && Chalice::IsMap(c.scope.map) && current_flags)))
+            BbscWorldApplyFlags(c.scope,state,c.scope==World::ScopeOf(local));
     }
     if(!BbscIndependentActive() || local.phase!=World::Phase::Playing || !World::Valid(World::ScopeOf(local)) ||
        local.map!=GetCurrentPackedMap() || BbscCurtainActive() || bbsc_world_load_pending.load() || bbsc_reload_finish_pending.load() || !BbscWorldSceneReady())return;

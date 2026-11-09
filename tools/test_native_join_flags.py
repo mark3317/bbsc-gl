@@ -47,7 +47,10 @@ prefix = r'''
 #include <vector>
 #include "core/cpu_patches.h"
 #include "core/bbsc_quest_event_rules.h"
+#include "core/bbsc_local_map_flags.h"
+#include "core/bbsc_lift_flags.h"
 namespace QuestRules = Core::Bloodborne::QuestRules;
+namespace World = Core::Bloodborne::World;
 using Core::GuestRegisterSnapshot;
 using Core::InstallGuestCodeHook;
 constexpr size_t BbscWorldGroupBytes = 125;
@@ -220,19 +223,30 @@ main += r'''
     for (u32 flag : BbscNpcQuestFlags) all_private_groups.insert(flag / 1000);
     for (u32 flag : QuestRules::LocalEvents) all_private_groups.insert(flag / 1000);
     for (u32 flag : BbscDreamShopUnlockFlags) all_private_groups.insert(flag / 1000);
+    constexpr std::array local_map_flags{
+        9301u, 9303u, 12300751u, 12401803u, 12604741u, 12604743u, 12805920u, 12805921u,
+        12805922u, 12805923u, 13200101u, 13201803u, 13404741u, 13404743u,
+        13504741u, 13504743u, 13604741u, 13604743u};
+    const auto local_map_flag = [&](u32 flag) {
+        return std::ranges::binary_search(local_map_flags, flag);
+    };
+    for (u32 flag : local_map_flags) all_private_groups.insert(flag / 1000);
     for (u32 key : all_private_groups) {
         std::array<u8, 125> actual;
         actual.fill(0xFF);
         MaskBbscSharedFlagGroup(key, actual.data());
         for (u32 bit = 0; bit < 1000; ++bit) {
             const u32 flag = key * 1000 + bit;
-            const bool shared = !(npc_flag(flag) || completion_flag(flag) || shop_flag(flag));
+            const bool shared = !(npc_flag(flag) || completion_flag(flag) || shop_flag(flag) ||
+                                  local_map_flag(flag));
+            assert(World::IsLocalMapFlag(flag) == local_map_flag(flag));
             assert(((actual[bit / 8] & (0x80 >> (bit % 8))) != 0) == shared);
         }
     }
     printf("PASS shared snapshot mask: every bit in %zu catalogue groups\n", all_private_groups.size());
 
     std::set<u32> npc_on_wire, completions_on_wire, shops_on_wire;
+    std::set<u32> local_map_on_wire;
     for (u32 map_index = 0; map_index <= 17; ++map_index) {
         // The extra case exercises the original unknown-map fallback to 99/0.
         const u32 area = map_index == 17 ? 99 : ReadValue<u32>(image_base, 0x47314D0 + map_index * 8);
@@ -262,11 +276,17 @@ main += r'''
                     const bool npc = npc_flag(flag);
                     const bool completion = completion_flag(flag);
                     const bool shop = shop_flag(flag);
-                    if (!npc && !completion && !shop) continue;
+                    const bool local_map = local_map_flag(flag);
+                    const u8 mask = 0x80 >> (bit % 8);
+                    const bool motion_interlock = area != 29 &&
+                        std::ranges::any_of(World::LiftFlags(key), [=](const auto& lift) {
+                            return lift.offset == bit / 8 && (lift.temporary & mask);
+                        });
+                    if (!npc && !completion && !shop && !local_map && !motion_interlock) continue;
+                    if (local_map) local_map_on_wire.insert(flag);
                     if (npc) npc_on_wire.insert(flag);
                     if (completion) completions_on_wire.insert(flag);
                     if (shop) shops_on_wire.insert(flag);
-                    const u8 mask = 0x80 >> (bit % 8);
                     expected_send[offset + bit / 8] &= ~mask;
                     expected_apply[offset + bit / 8] = (expected_apply[offset + bit / 8] & ~mask) |
                         (guest_byte & mask);
@@ -282,6 +302,7 @@ main += r'''
             assert(applied == expected_apply);
         }
     }
+    assert(std::ranges::equal(local_map_on_wire, local_map_flags));
     printf("PASS 17 native maps and fallback, both bit polarities: %zu/%zu NPC flags, %zu/%zu completions, %zu/%zu shop flags occur in native join snapshots; remaining bits are unchanged\n",
         npc_on_wire.size(), BbscNpcQuestFlags.size(), completions_on_wire.size(), QuestRules::LocalEvents.size(),
         shops_on_wire.size(), BbscDreamShopUnlockFlags.size());

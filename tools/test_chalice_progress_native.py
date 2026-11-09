@@ -152,6 +152,18 @@ int main(){
  auto stale=cup;++bbsc_world_altars[1].entry.ritual;
  assert(!BbscWorldCaptureFlags(stale).flags_ready);
  const auto before=lamp_backing;BbscWorldApplyFlags(stale,progressed);assert(lamp_backing==before);
+ // A late coordinator relay can be complete but belong to a prior owner.
+ session=6;self=33;map=cup.map;bbsc_world_presence_local=guest;
+ bbsc_independent_states.clear();
+ lease.epoch=3;assert(bbsc_independent_owners.Take(11,lease,now));
+ flag(groups[12900].data(),93,false);
+ for(const auto& packet:initial)bbsc_independent_incoming.push_back(packet);
+ TickBbscWorldSnapshots();assert(!has(groups[12900].data(),93));
+ for(auto packet:initial){
+  packet.control.epoch=3;packet.control.sequence=30;
+  bbsc_independent_incoming.push_back(packet);
+ }
+ TickBbscWorldSnapshots();assert(has(groups[12900].data(),93));
  VirtualFree((void*)image_base,0,MEM_RELEASE);
 }
 '''
@@ -167,7 +179,7 @@ def run(negative=None):
     prefix+='void MaskBbscSharedFlagGroup(u32 key,u8* flags){if(key==12900)flags[124]&=0xFE;}\n'
     code=prefix+PREFIX+SOURCE[SOURCE.index('struct BbscWorldAltar {'):SOURCE.index('void BbscWorldRememberProgress(')]
     for sig in ('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)',
-                'void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)',
+                'void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state,bool live_dungeon = false)',
                 'BbscWorldState BbscWorldCaptureFlags(const World::Scope& scope)',
                 'bool BbscWorldFlagsReady(const World::Scope& scope)',
                 'void BbscWorldEnsureSeed(const World::Scope& scope)',
@@ -180,7 +192,7 @@ def run(negative=None):
     elif negative=='readiness':
         code=code.replace('if(Chalice::IsMap(scope.map)?(it->second.present&0x3FF)!=0x3FF:!(it->second.present&1))return false;', 'if(!(it->second.present&1) && !ritual_seed)return false;')
     elif negative=='persistence':
-        code=code.replace('(host && !from_host && Chalice::IsMap(c.scope.map) && state.flags_ready)', 'false')
+        code=code.replace('(host && !from_host && Chalice::IsMap(c.scope.map) && current_flags)', 'false')
     elif negative=='incomplete':
         code=code.replace('if(!next.flags_ready)return;', '')
     elif negative=='lamp_rollback':

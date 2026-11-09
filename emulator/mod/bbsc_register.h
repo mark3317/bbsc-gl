@@ -22,4 +22,5 @@ u32 SendRegisterPacket(const void* data, u32 size);
 namespace Core::Bloodborne {
 bool GiveSessionBloodDreg(); // called only from the game tick, never a network worker
 void InstallSessionDregHooks();
+void OnBbscWorldMemberIdentityChanged(); // wakes the existing visit admission
 }

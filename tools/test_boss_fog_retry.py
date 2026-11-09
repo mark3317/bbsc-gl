@@ -1,4 +1,4 @@
-"""Original 1.09 EMEVD retry branches, native bank/iterator and BBSC trampoline."""
+"""Original 1.09 first-encounter and retry branches through native fog gates."""
 import os
 from pathlib import Path
 import re
@@ -17,6 +17,8 @@ assert elf[0x12ef2e0:0x12ef2e6] == bytes.fromhex('55 48 89 e5 41 57')
 source = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
 production = source[source.index('bool RedirectBbscBossFogRetry(u64 instance)'):
                     source.index('// From an event\'s 2003 instruction')]
+production += source[source.index('u8 bbsc_guest_role_skip = 0;'):
+                     source.index('void PS4_SYSV_ABI BbscDreamTypeCheckHook(')]
 access = (ROOT / 'emulator/src/core/bbsc_guest_access.h').read_text(encoding='utf-8')
 targets = {int(event): int(step) for event, step in re.findall(r'\{(\d+), (\d+)\}', access)}
 
@@ -29,21 +31,27 @@ for script in (game / 'event').glob('*.emevd.dcx'):
             continue
         assert ins[0][:2] == (1003, 2) and ins[0][2][:4] == b'\0\1\0\0'
         assert ins[1][:2] == (1003, 101) and ins[1][2][:4] == b'\0\1\0\0'
+        hides_fog = ins[2] == (1003, 5, b'\2\1\0\0')
+        if hides_fog:
+            assert ins[3][:2] == (2005, 3) and ins[3][2][4:] == bytes(4)
+            assert ins[4][:2] == (2006, 1)
         label = ins.index((1014, 0, b''))
         enable = targets[event]
         assert ins[enable][:2] == (2005, 3) and ins[enable][2][4:] == b'\1\0\0\0'
         assert any((b, i) == (2006, 2) for b, i, _ in ins[enable:label])
         assert all((b, i) in ((2005, 3), (2006, 2), (2011, 1)) for b, i, _ in ins[enable:label])
         assert any((b, i) == (3, 24) for b, i, _ in ins[label:])
-        cases[event] = (script.stem, row, enable, label)
+        cases[event] = (script.stem, row, enable, label, hides_fog)
         scripts[script.stem] = evd.data
 assert set(cases) == set(targets)
+assert {event for event, case in cases.items() if not case[-1]} == {12104810, 12104880}
 
 fixture = r'''
 #include <windows.h>
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -62,6 +70,8 @@ bool introduced=true;
 u8 bbsc_chalice_reward_gate_skip=0;
 namespace BbscMod {u64 EbootAddress(){return image_base;} void LogPlain(const char*){}}
 bool ReadablePointer(u64 address, size_t) { return address > 0x10000; }
+enum class MemoryProt { CpuWrite };
+bool HasMemoryAccess(u64 address, size_t size, MemoryProt) { return ReadablePointer(address, size); }
 template<class T> T ReadValue(u64 p, size_t off) {
     T value; memcpy(&value, (void*)(p+off), sizeof(value)); return value;
 }
@@ -70,10 +80,12 @@ template<class T> bool WriteValue(u64 p, size_t off, T value) {
 }
 s32 GetSessionState() { return state; }
 s32 GetLocalPlayerType() { return type; }
+bool BbscGuestInHostWorld() { return state == 6; }
 bool PS4_SYSV_ABI NativeFlag(u64, u32 flag) { assert(flag==intro); return introduced; }
 bool BbscEventFlag(u32 flag) { return NativeFlag(0, flag); }
 struct Range {u64 first, end; s64 event;} range;
 const Range* LookupBbscQuestRange(u64) { return &range; }
+s64 BbscEventIdOf(u64) { return range.event; }
 void BbscChaliceRewardGateHook(u64, const GuestRegisterSnapshot*) {
     bbsc_chalice_reward_gate_skip=0;
 }
@@ -83,7 +95,8 @@ void Load(const char* path, u64 address) {
     assert(file);
     std::copy(std::istreambuf_iterator<char>(file), {}, (char*)address);
 }
-void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bool hooked) {
+void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bool hides_fog,
+           bool hooked) {
     assert(!GuestAccess::EventAllowed(event));
     std::ifstream script(path,std::ios::binary);
     std::vector<char> data(std::istreambuf_iterator<char>(script), {});
@@ -99,9 +112,11 @@ void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bo
     std::array<u32,2> resolved{256,intro};
     using Bank=u8 PS4_SYSV_ABI (*)(u64,u64);
     using Advance=u8 PS4_SYSV_ABI (*)(u64,u8*);
-    for (auto [role, player] : {std::pair{6,1},std::pair{3,0},std::pair{6,2}})
+    const u64 session = ReadValue<u64>(image_base,0x5540290);
+    for (auto [role, player] : {std::pair{6,1},std::pair{3,0},std::pair{6,2},std::pair{0,0}})
     for (bool seen : {false,true}) {
         state=role; type=player; introduced=seen;
+        WriteValue<s32>(session,0x124,role);
         std::array<u64,26> instance{};
         const u64 p=(u64)instance.data();
         WriteValue<u64>(p,0x80,(u64)ref.data());
@@ -118,6 +133,19 @@ void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bo
         const auto next=!seen ? 2 : hooked && role==6 && player==1 ? enable : label;
         assert(keep_running==1 && ReadValue<s32>(p,0xA0)==next);
         assert(ReadValue<u64>(p,0xB0)==first+next*0x20);
+        if (seen || !hides_fog) continue;
+
+        // Only the first-encounter path reaches the original multiplayer skip.
+        // The interpreter resolves +B8 anew; this skip has no slot parameters.
+        WriteValue<u64>(p,0xB8,0);
+        assert(((Bank)(image_base+0x17bedd0))(0,p)==1);
+        assert(((Advance)(image_base+0x12ef2e0))(p+0x80,&keep_running));
+        const auto first_geometry = role==6 && !(hooked && player==1) ? 5 : 3;
+        if (ReadValue<s32>(p,0xA0)!=first_geometry)
+            std::fprintf(stderr,"event %lld, role %d, type %d, hooked %d: step %d, expected %d\n",
+                         (long long)event,role,player,hooked,ReadValue<s32>(p,0xA0),first_geometry);
+        assert(keep_running==1 && ReadValue<s32>(p,0xA0)==first_geometry);
+        assert(ReadValue<u64>(p,0xB0)==first+first_geometry*0x20);
     }
 }
 void CheckAll(bool hooked) {
@@ -128,6 +156,14 @@ int main() {
     assert(image_base);
     Load("bank.bin",image_base+0x17bedd0);
     Load("iterator.bin",image_base+0x12ef2e0);
+    Load("role.bin",image_base+0x17b21a0);
+    std::array<u8,0x128> session{};
+    std::array<u8,0x1700> online{};
+    std::array<u8,0x9c> matchmaking{};
+    WriteValue<u64>(image_base,0x5540290,(u64)session.data());
+    WriteValue<u64>(image_base,0x5556678,(u64)online.data());
+    WriteValue<u64>((u64)online.data(),0x16f8,(u64)matchmaking.data());
+    WriteValue<s32>((u64)matchmaking.data(),0x98,-1);
     u64 canary=0;
     WriteValue<u64>(image_base,0x53e3be0,(u64)&canary);
     WriteValue<u64>(image_base,0x553b0d8,1);
@@ -140,6 +176,8 @@ int main() {
     const std::array<u8,6> prologue{0x55,0x48,0x89,0xe5,0x41,0x57};
     assert(Core::InstallGuestCodeHook((void*)(image_base+0x17bedd0),prologue,0,
         BbscEventBank1003Hook,&bbsc_chalice_reward_gate_skip));
+    assert(Core::InstallGuestCodeHook((void*)(image_base+0x17b21a0),prologue,0,
+        BbscGuestRoleGateHook,&bbsc_guest_role_skip));
     CheckAll(true);
 }
 '''
@@ -150,10 +188,11 @@ with tempfile.TemporaryDirectory(prefix='bbsc-fog-retry-') as directory:
         (tmp / script).write_bytes(data)
     (tmp / 'bank.bin').write_bytes(elf[0x17bedd0:0x17c0384])
     (tmp / 'iterator.bin').write_bytes(elf[0x12ef2e0:0x12ef50b])
+    (tmp / 'role.bin').write_bytes(elf[0x17b21a0:0x17b244c])
     cpp = tmp / 'fixture.cpp'
     cpp.write_text(fixture.replace('CASES', '\n'.join(
-        f'    Check("{script}",{event},{row},{enable},{label},hooked);'
-        for event, (script, row, enable, label) in cases.items())), encoding='utf-8')
+        f'    Check("{script}",{event},{row},{enable},{label},{str(hides).lower()},hooked);'
+        for event, (script, row, enable, label, hides) in cases.items())), encoding='utf-8')
     exe = tmp / 'fixture.exe'
     cxx = Path(os.environ.get('CXX', 'C:/msys64/clang64/bin/clang++.exe'))
     subprocess.run([str(cxx), '-std=c++20', '-DNOMINMAX', '-DWIN32_LEAN_AND_MEAN',
@@ -162,4 +201,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-fog-retry-') as directory:
                    check=True, cwd=tmp)
     subprocess.run([str(exe)], check=True, cwd=tmp, timeout=20,
                    env={**os.environ, 'PATH': str(cxx.parent) + os.pathsep + os.environ['PATH']})
-print(f'PASS {len(cases)} original boss fog branches: guest retries reach native enable; first entry, host and invader keep vanilla routing')
+print(f'PASS {len(cases)} original boss fog events: guest first entry reaches native disable and retries reach native enable')

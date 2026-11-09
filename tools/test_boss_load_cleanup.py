@@ -35,6 +35,9 @@ constexpr u64 BossGaugePointerOffset=0x10, SummonSessionRulesPointerOffset=0x18;
 std::array<int,3> handles{1,2,3};
 bool bbsc_boss_at_own_death=true;
 bool bbsc_boss_wipe_seen=true;
+bool bbsc_boss_death_ready=true;
+enum class BbscBossDeathGroup { Unavailable, Waiting, Ready };
+BbscBossDeathGroup bbsc_boss_death_group=BbscBossDeathGroup::Ready;
 s32 bbsc_encounter_lamp=2412952;
 u32 bbsc_encounter_map=24, bbsc_encounter_load_generation=1;
 s64 bbsc_boss_bar_seen_ms=100, bbsc_boss_killed_ms=50;
@@ -56,6 +59,7 @@ bool BossFightActive() { for(auto h:handles) if(h!=-1) return true; return false
 void NativeClear() { ++clears; handles.fill(-1); }
 void NotifyBbscHostDeathReload() { ++notified; }
 bool RequestBbscSharedLampReload() { return false; }
+void SelectBbscLocalDeathLamp() {}
 struct SummonPlacementDescriptor { u32 packed_region=24; float x=0,y=0,z=0; };
 namespace Chalice { bool IsMap(u32 map) { return map==29; } }
 bool PrepareBbscChaliceLoad(u32) { return chalice_ready; }

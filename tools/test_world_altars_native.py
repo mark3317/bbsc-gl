@@ -56,6 +56,8 @@ u64 BbscFlagGroupStorage(u32 key){auto it=groups.find(key);return it==groups.end
 bool BbscEventFlag(u32 flag){const u64 p=BbscFlagGroupStorage(flag/1000);return p&&(reinterpret_cast<u8*>(p)[flag%1000/8]&(0x80>>(flag%8)));}
 u32 BbscWorldGroupKey(u32 map,size_t i){return static_cast<u32>((Chalice::IsMap(map)?12900:20000)+i);}
 void BbscMergeSharedProgressGroup(u32,u8* live,const u8* incoming){for(size_t i=0;i<125;++i)live[i]|=incoming[i];}
+bool BbscIsBossWipeLoad(const World::Scope&){return false;}
+void KeepBbscEncounterFlags(u32,const u8*,u8*){}
 void KeepBbscOwnWorldGroup(u32 key,const u8* p){if(!own_kept.contains(key))std::memcpy(own_kept[key].data(),p,125);}
 void KeepBbscGuestTalkBits(u32,const u8*,u8*){}
 void KeepBbscNpcOwnBits(u32,const u8* before,u8* live){live[0]=(live[0]&0x7f)|(before[0]&0x80);}
@@ -138,9 +140,20 @@ int main(){
  // A scoped dungeon snapshot replaces a previously mounted cup's lamps;
  // the guest's original bits remain in its existing own-world journal.
  {World::Scope cup{{11,99},0x1D000000,altar.mount.key,12};
-  BbscWorldState mounted;mounted.flags_ready=true;mounted.present=1u<<7;
+  BbscWorldState mounted;mounted.flags_ready=true;mounted.present=1u|(1u<<7);
+  groups[12900]={};
+  for (u32 flag : {450,455,460,465}) mounted.groups[0][flag/8]|=0x80u>>(flag%8);
+  mounted.groups[0][450/8]|=0x80u>>(449%8); // a neighboring flag still follows the snapshot
+  BbscWorldApplyFlags(cup,mounted,true);
+  for (u32 flag : {455,460,465}) assert(!BbscEventFlag(12900000+flag));
+  assert(BbscEventFlag(12900449)&&BbscEventFlag(12900450));
   groups[12907].fill(0xFF);own_kept.erase(12907);
   BbscWorldApplyFlags(cup,mounted);
+  for (u32 flag : {450,455,460,465}) assert(BbscEventFlag(12900000+flag));
+  mounted.groups[0]={};
+  BbscWorldApplyFlags(cup,mounted,true);
+  for (u32 flag : {455,460,465}) assert(BbscEventFlag(12900000+flag));
+  assert(!BbscEventFlag(12900449)&&!BbscEventFlag(12900450));
   for(u32 flag:Chalice::LampUnlockFlags){
    assert(!(groups[12907][flag%1000/8]&(0x80u>>(flag%8))));
    assert(own_kept[12907][flag%1000/8]&(0x80u>>(flag%8)));
@@ -210,7 +223,7 @@ int main(){
 def main():
     section=SOURCE[SOURCE.index('struct BbscWorldAltar {'):SOURCE.index('struct BbscWorldState {')]
     state=SOURCE[SOURCE.index('struct BbscWorldState {'):SOURCE.index('std::map<World::Scope,BbscWorldState>')]
-    code=PREFIX+section+state+function('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+function('void TickBbscWorldAltars()')+MAIN
+    code=PREFIX+section+state+function('void BbscWorldRememberProgress(const World::Scope& scope,const BbscWorldState& state)')+function('void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state,bool live_dungeon = false)')+function('void BbscWorldReceiveAltar(const BbscWorldIncoming& message)')+function('void TickBbscWorldAltars()')+MAIN
     original=''
     if os.environ.get('BBSC_TEST_EBOOT'):
         import struct

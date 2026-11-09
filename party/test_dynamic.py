@@ -37,9 +37,9 @@ class DynamicHelpers:
             engine.close()
         self.tmp.cleanup()
 
-    def config(self, who):
+    def config(self, who, host=None):
         number = ord(who)-ord('A')
-        host=f'127.0.0.{101+number}'
+        host = host or f'127.0.0.{101+number}'
         with socket.socket() as sock:
             sock.bind((host,0))
             port=sock.getsockname()[1]
@@ -52,8 +52,8 @@ class DynamicHelpers:
         atomic_json(cfg['peers_file'], [offer])
         return cfg
 
-    def node(self, who):
-        cfg = self.config(who)
+    def node(self, who, host=None):
+        cfg = self.config(who, host)
         engine = DynamicEngine(cfg, who, self.root/who, cfg['peers_file']).start()
         self.engines.append(engine)
         return engine
@@ -82,6 +82,52 @@ class DynamicHelpers:
 
 
 class DynamicTests(DynamicHelpers, unittest.TestCase):
+    def test_restarted_guest_replaces_stale_local_journal_key_and_joins_open_room(self):
+        host, first, guest = [self.node(who, '127.0.0.1') for who in 'ABC']
+        self.discover()
+        room = self.host(host)
+        self.claim(host, first)
+        first.command(dict(kind='room_join', room_id=room))
+        with guest.lock:
+            guest.disk['identities'][host.id] = dict(host.identity, seed='ab'*32)
+            guest.persist()
+        guest.close()
+        self.engines.remove(guest)
+        guest = DynamicEngine(guest.cfg, guest.id, guest.profile, guest.peers_file).start()
+        self.engines.append(guest)
+
+        guest.publish(dict(sign={'UserId':game_user_id(guest.id)}))
+        self.eventually(lambda: host.signs.get(guest.id, {}).get('body', {}).get('sign'))
+        self.assertEqual(guest.rpc(host.id, {'kind':'presence'})['body'], {'sign':None})
+        self.claim(host, guest)
+        guest.command(dict(kind='room_join', room_id=room))
+        self.assertEqual(set(host.state['joined']), {first.id, guest.id})
+        self.assertEqual(guest.disk['identities'][host.id], host.identity)
+
+    def test_local_key_update_waits_for_confirmed_leave(self):
+        host, guest = [self.node(who, '127.0.0.1') for who in 'AB']
+        self.discover()
+        room = self.host(host)
+        self.claim(host, guest)
+        guest.command(dict(kind='room_join', room_id=room))
+        self.eventually(lambda: host.id in guest.signs)
+        replacement = dict(host.identity, seed='cd'*32)
+        atomic_json(guest.peers_file, [replacement, guest.identity])
+        guest.refresh_peers()
+        self.assertEqual(guest.peers[host.id], host.identity)
+        guest.command(dict(kind='room_leave'))
+        self.eventually(lambda: guest.disk['attachment'] is None)
+        self.eventually(lambda: guest.peers[host.id] == replacement)
+        self.assertNotIn(host.id, guest.signs)
+        self.assertEqual(host.state['room']['id'], room)
+
+    def test_network_directory_cannot_replace_known_key(self):
+        a, b = self.node('A'), self.node('B')
+        self.discover()
+        atomic_json(a.peers_file, [a.identity, dict(b.identity, seed='cd'*32)])
+        a.refresh_peers()
+        self.assertEqual(a.peers[b.id], b.identity)
+
     def test_native_login_with_expired_idle_roster_peer(self):
         from compat import Compatibility, account, packet
         a,b,c=self.node('A'),self.node('B'),self.node('C')

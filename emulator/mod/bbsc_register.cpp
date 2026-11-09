@@ -277,22 +277,42 @@ void ReceiveSessionRegister(u32 sender,u32 session,const void* data,u32 size) {
     Packet packet; std::memcpy(&packet,data,sizeof(packet));
     if(std::memcmp(packet.magic,"SHAD",4) || packet.type!=Core::Bloodborne::Protocol::Register || packet.version!=2 ||
        !packet.identity.name[0] || packet.identity.name[16] || packet.offered>99'999) return;
-    std::scoped_lock lock{mutex};
-    if(session!=current_session || (members.size()>=4 && !members.contains(sender))) return;
-    members[sender]={packet,GetTickCount64()};
+    const u64 now = GetTickCount64();
+    bool changed;
+    {
+        std::scoped_lock lock{mutex};
+        if(session!=current_session || (members.size()>=4 && !members.contains(sender))) return;
+        const auto previous = members.find(sender);
+        changed = previous == members.end() || now - previous->second.seen > 15'000 ||
+            std::memcmp(&previous->second.packet.identity, &packet.identity, sizeof(RegisterIdentity)) != 0;
+        members[sender] = {packet, now};
+    }
+    if (changed) Core::Bloodborne::OnBbscWorldMemberIdentityChanged();
 }
 u32 FindSessionRegisterPeer(const RegisterIdentity& identity) {
     const u32 session=RegisterSessionKey();
     const u64 now=GetTickCount64();
     std::scoped_lock lock{mutex};
     if(!session || session!=current_session) return 0;
-    u32 match=0;
+    u32 match = 0, named = 0;
+    bool ambiguous_name = false;
     for(const auto& [sender,entry]:members) {
-        if(now-entry.seen>15'000 || !SameMember(identity,entry.packet.identity)) continue;
-        if(match) return 0;
-        match=sender;
+        if (now - entry.seen > 15'000) continue;
+        const auto& remote = entry.packet.identity;
+        const bool same_name = identity.name[0] && std::memcmp(identity.name, remote.name, 16) == 0;
+        if (same_name) {
+            ambiguous_name |= named != 0;
+            named = sender;
+        }
+        // The native endpoint is relative to the local connection. A room
+        // participant can advertise a different endpoint for the same NpId.
+        if ((!identity.name[0] || same_name) && identity.room && identity.member &&
+            identity.room == remote.room && identity.member == remote.member) {
+            if (match) return 0;
+            match = sender;
+        }
     }
-    return match;
+    return match ? match : (ambiguous_name ? 0 : named);
 }
 void QueueRegisterKill(const RegisterIdentity& killer) {
     const u32 session=RegisterSessionKey();

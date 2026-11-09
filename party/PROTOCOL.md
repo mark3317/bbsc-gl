@@ -51,6 +51,23 @@ The ordinary durable release command retains admission serialization. The game
 thread also checks for a host after each world load, allowing3s for discovery and
 using native Small Resonant Bell once if ready and no manual search is active.
 
+## Beckoning notices in dynamic worlds — 09.11.2026
+
+The existing native item replay advances `bell_ring_seq` after each successful
+Beckoning application. The loopback tick carries the counter to Party. The
+authenticated `presence` response carries `[sequence, active, released]` in
+`bell`, independently of the responder sign. A peer remembers the sequence per
+host and Party incarnation, counts increases even before joining the room, and
+offers only the current active ring on first discovery. Attached guests count
+their own host's rings. An explicit durable world release can end the latest
+notice. Missing presence never implies release.
+
+The dynamic tick reply for DLLs that send `bell_ring_seq` and request all notice
+and host fields adds a sixth integer `1`. Its third and fourth fields then carry
+the local cumulative notice count and the count of the last confirmed release.
+The DLL presents each pending ring when the banner can draw. Fixed rosters and
+clients without this opt-in keep their previous world-generation fields.
+
 ## Explicit host-load follow metadata вЂ” 04.11.2026 (source only)
 
 Follow0x20 kind1 keeps the34-byte position/lamp prefix, optional24-byte chalice

@@ -255,7 +255,8 @@ def admission_source():
     return SOURCE[SOURCE.index('struct BbscWorldPlayerAdmission {'):SOURCE.index('// DrawModule+28')]
 def player_functions():
     core=(ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
-    return (function('u64 FindBbscRemotePlayer(u64 world_chr, u64 task)',core)+
+    return (function('u64 FindBbscRemotePlayerByMember(u64 world_chr, u64 member)',core)+
+            function('u64 FindBbscRemotePlayer(u64 world_chr, u64 task)',core)+
             function('u64 BbscWorldPlayerMesh(u64 world,u64 chr,bool& detached)')+
             function('bool DetachBbscWorldPlayerMember(u64 chr)')+
             function('void TickBbscWorldPlayers()'))

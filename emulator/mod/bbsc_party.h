@@ -12,8 +12,9 @@ void PartyCancel(); // explicit Blank, search cancellation or confirmed menu exi
 void PartyEndTitleWait(); // cancel the pending title ticket
 bool PartyTitleReady(); // current cancel acknowledged by final party membership
 bool PartyCanBeckon(); // cached availability; never grants a role
-std::uint64_t PartyBellGeneration(); // fresh finalized remote reservation
-std::uint64_t PartyBellReleasedGeneration(); // finalized unowned generation; zero if unknown/owned
+void PartyBellRang(); // successful native Beckoning action
+std::uint64_t PartyBellGeneration(bool& counted); // dynamic notice count or legacy world generation
+std::uint64_t PartyBellReleasedGeneration(); // finalized release of a previously announced bell
 unsigned PartyHostHint(); // 1: remote host, 2: yield an empty competing search
 void PartyObserve(std::int32_t state, bool loading, bool bell, std::int32_t members, bool alive, bool responder = false);
 void PartyMaintain(); // existing mod maintenance worker, not the frame thread

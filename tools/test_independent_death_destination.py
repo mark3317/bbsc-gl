@@ -36,6 +36,8 @@ prefix = r'''
 #include <cstdint>
 #include <mutex>
 #include <string_view>
+#include "core/bbsc_world_control.h"
+namespace World=Core::Bloodborne::World;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define LOG_INFO(...)
 #define BBSC_TIMELINE(...)
@@ -43,11 +45,23 @@ using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s
 bool kidnap=false,prison_ready=false;
 bool BbscKidnapDeathPending();bool BbscKidnapRespawnReady();
 bool BbscIndependentTravelAllowed();
+bool BbscIndependentActive();
 // Match live historical9421/9422 on an ordinary checkpoint by default.
 bool BbscEventFlag(u32 f){return f==9420?kidnap:(f==9421||f==9422);}
 
 bool independent=true,living=true,loop=false,revive_ok=true,bbsc_wipe_restock_pending=false;
 bool all_report_dead=false,bbsc_boss_wipe_seen=false;
+bool bbsc_boss_death_ready=false;
+std::mutex bbsc_world_presence_mutex;
+World::PresenceBook bbsc_world_presence_book;
+World::Presence bbsc_world_presence_local;
+int ready_sends=0,wipe_loads=0;
+bool boss_death_work=false;
+enum class BbscWork { BossDeath };
+void QueueBbscWork(BbscWork){boss_death_work=true;}
+constexpr s64 BbscLifeFreshMs=3000;
+void SendBbscLifeState(u8 state){assert(state==3);++ready_sends;}
+void MarkBbscBossWipeLoad(){++wipe_loads;}
 bool bbsc_request_death_reload=false,bbsc_spectate_active=true,bbsc_spectate_releasing=false;
 bool bbsc_spectate_waiting_host_reload=false,bbsc_spectate_saw_wipe=true,bbsc_spectate_wipe_warped=false;
 bool bbsc_spectate_logged_wait=false; s32 role=6;
@@ -97,6 +111,9 @@ bool ReadablePointer(u64 p,size_t){return p==0x10000;}
 '''
 main = r'''
 void reset(){warps=reloads=suspends=releases=revives=penalties=curtains=0;fade_ok=false;boss=false;
+ ready_sends=wipe_loads=0;bbsc_boss_death_ready=boss_death_work=false;
+ bbsc_boss_death_group=BbscBossDeathGroup::Unavailable;
+ bbsc_world_presence_local={};bbsc_world_presence_book.Clear();bbsc_peer_life.clear();
  invader=false;expected_penalties_at_reload=-1;bbsc_wipe_restock_pending=false;
  all_report_dead=false;bbsc_boss_wipe_seen=false;
  bbsc_dead_since_ms=0;bbsc_boss_killed_ms=0;bbsc_spectate_death_ms=100;
@@ -220,13 +237,58 @@ int main(){
  reset();role=6;revive_ok=false;TickBbscSpectate();TickBbscSpectate();
  assert(reloads==1&&warps==0&&penalties==1&&bbsc_wipe_restock_pending);
 
+ // Same-map hunters wait for the LAST native handoff. Each player may be
+ // first, middle or last to reach it, independently of the room host role.
+ for(u32 self:{11u,22u,33u})for(u32 last:{11u,22u,33u}){
+  reset();role=self==11?3:6;boss=true;bbsc_spectate_active=false;
+  auto& local=bbsc_world_presence_local;local.world={11,99};local.map=0x18000000;
+  local.phase=World::Phase::Playing;local.sequence=1;local.visit=7;
+  local.capabilities|=World::BossDeathReadyCapability;
+  bbsc_world_presence_book.Bind(local.world,self);
+  auto peer=local;
+  assert(bbsc_world_presence_book.Hear(44,local.world,[&]{auto p=peer;p.map=0x15000000;p.alive=1;return p;}(),now));
+  for(u32 id:{11u,22u,33u})if(id!=self){
+   assert(bbsc_world_presence_book.Hear(id,local.world,peer,now));
+   OnBbscLifePacket(id,id==last?u8{1}:u8{3},1,id==11,false);
+  }
+  assert(boss_death_work);
+  living=false;all_report_dead=true;bbsc_boss_wipe_seen=true;
+  BeginBbscCoopDeath("native final",role);TickBbscSpectate();
+  assert(ready_sends==1);
+  if(self!=last){
+   now+=2*BbscSpectateReleaseDebounceMs;TickBbscSpectate();
+   assert(!reloads&&!wipe_loads&&bbsc_spectate_active&&ready_sends==1);
+   // A readiness report for another visit or room cannot release this wipe.
+   auto& life=bbsc_peer_life[last];life.dead=3;--life.visit;RefreshBbscBossDeathGroup();
+   TickBbscSpectate();assert(!reloads);
+   ++life.visit;++life.world.room;RefreshBbscBossDeathGroup();
+   TickBbscSpectate();assert(!reloads);
+   --life.world.room;
+   peer.sequence=2;peer.alive=1;
+   assert(bbsc_world_presence_book.Hear(last,local.world,peer,now));
+   RefreshBbscBossDeathGroup();TickBbscSpectate();assert(!reloads);
+   peer.sequence=3;peer.alive=0;
+   if(self==11){
+    // The same death's native Loading observation also works if the final
+    // life datagram was lost. An alive player's lamp load is not that proof.
+    life.dead=1;peer.phase=World::Phase::Loading;
+   }
+   assert(bbsc_world_presence_book.Hear(last,local.world,peer,now));
+   RefreshBbscBossDeathGroup();TickBbscSpectate();
+  }
+  assert(reloads==1&&wipe_loads==1&&!bbsc_spectate_active&&ready_sends==1);
+  TickBbscSpectate();assert(reloads==1&&penalties==(role==6?1:0));
+ }
+
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-death-destination-') as tmp:
     cpp, exe = Path(tmp)/'death.cpp', Path(tmp)/'death.exe'
-    cpp.write_text(prefix+kidnap_production+entry+reload+production+main, encoding='utf-8')
+    group = source[source.index('struct BbscPeerLife {'):source.index('u64 BbscCharacterDrawState(')]
+    life_receive = function('void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence, bool /*host*/,\n                      bool model_visible)')
+    cpp.write_text(prefix+group+life_receive+kidnap_production+entry+reload+production+main, encoding='utf-8')
     compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
-    subprocess.run([compiler,'-std=c++20',str(cpp),'-o',str(exe)],check=True)
+    subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
     env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
     result=subprocess.run([str(exe)],env=env)
     if boss_negative or penalty_negative:
@@ -239,4 +301,4 @@ if penalty_negative:
 if boss_negative:
     print('PASS negative control: pre-fix boss timestamp comparison FAILS delayed-death regression')
     raise SystemExit(0)
-print('PASS production death controller: local loads for all roles, preserved room, one guest penalty, delayed boss victory, prison and actual departure')
+print('PASS production death controller: last native handoff for every role, scoped readiness, one local load and penalty, victory, prison and departure')

@@ -40,6 +40,7 @@ code = r'''
 #include <cassert>
 #include <cstdint>
 #include "core/bbsc_event_steps.h"
+#include "core/bbsc_local_map_flags.h"
 using u8=uint8_t;
 using u32=uint32_t;
 using namespace Core::Bloodborne;
@@ -58,7 +59,8 @@ int main() {
             for (u32 bit=0; bit<1000; ++bit) {
                 const bool phase = (group == 1 && bit < 40) || (group == 12601 && bit == 800) ||
                     (group == 9 && (bit == 462 || (800 <= bit && bit <= 802)));
-                const bool local = (independent && phase) || (group == 50000 && bit == 100);
+                const bool local = (independent && phase) || (group == 50000 && bit == 100) ||
+                    (group == 9 && (bit == 301 || bit == 303));
                 const u8 mask = 0x80 >> (bit % 8);
                 assert((live[bit / 8] & mask) == ((local ? value : value ^ 255) & mask));
             }
@@ -74,4 +76,4 @@ with tempfile.TemporaryDirectory() as tmp:
                     str(cpp), '-o', str(exe)], check=True)
     env = dict(os.environ, PATH=str(cxx.parent) + os.pathsep + os.environ.get('PATH', ''))
     subprocess.run([str(exe)], check=True, env=env)
-print('PASS: original burning Dream, native Gehrman placement, snapshot and restore keep local phases')
+print('PASS: original burning Dream, native Gehrman placement, snapshot and restore keep local phases and Insight receipts')

@@ -9,7 +9,10 @@ prefix = life.PREFIX.replace(
     'std::vector<u64> GetMultiPlayerInsTasks(){',
     'int task_queries=0,actor_queries=0;std::vector<u64> GetMultiPlayerInsTasks(){++task_queries;'
 ).replace('std::set<u64> BbscWorldPlayers(u64){',
-          'std::set<u64> BbscWorldPlayers(u64){++actor_queries;')
+          'std::set<u64> BbscWorldPlayers(u64){++actor_queries;'
+).replace('bool relay_member_known=true;', 'bool relay_member_known=true, task_identity_known=true;'
+).replace('|| member==reinterpret_cast<u64>(task.data())+0xc8?',
+          '|| (task_identity_known && member==reinterpret_cast<u64>(task.data())+0xc8)?')
 setup = life.MAIN[:life.MAIN.index(' // A valid DrawModule')].replace(
     '_putenv_s("BBSC_NATIVE_NPC_SYNC_TEST","0");', '_putenv_s("BBSC_NATIVE_NPC_SYNC_TEST","1");')
 main = setup + r'''
@@ -64,6 +67,20 @@ main = setup + r'''
  remote=reinterpret_cast<u64>(actor2.data());Actor(remote);relay_member_known=false;
  Hear();++bbsc_world_player_revision;TickBbscWorldPlayers();
  assert(inserts==4 && removals==3 && remote);
+ idle();
+ // Native membership still finds the retained actor when only its relay
+ // lookup is unavailable. The existing life edge admits it exactly once.
+ peer.alive=false;Hear();++bbsc_world_player_revision;TickBbscWorldPlayers();
+ assert(inserts==4 && remote);
+ peer.alive=true;Hear();++bbsc_world_player_revision;TickBbscWorldPlayers();
+ assert(inserts==5 && removals==4 && !remote);
+ idle();
+ // Registration can arrive after the original admission window. Only the
+ // structural identity update wakes the existing admission again.
+ task_identity_known=false;++peer.visit;Hear();++bbsc_world_player_revision;
+ TickBbscWorldPlayers();now+=15001;TickBbscWorldPlayers();idle();
+ task_identity_known=true;TickBbscWorldPlayers();assert(inserts==5);
+ ++bbsc_world_player_revision;TickBbscWorldPlayers();assert(inserts==6);
  idle();
  puts("PASS native load/reunion: one restart, pending native task, no repeated creation or idle actor polling, bounded admission");
 }

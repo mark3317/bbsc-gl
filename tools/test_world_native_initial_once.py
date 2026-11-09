@@ -57,9 +57,11 @@ int main(){
  BbscWorldNativeInitialControl({22,replies[0].control,replies[0].payload});assert(applied==1);
  for(int i=0;i<2000;++i)BbscWorldNativeInitialOnce(scope);
  assert(applied==1&&received.empty()&&native_sends==1);
- ++bbsc_world_native_load;sent.clear();BbscWorldNativeInitialOnce(scope);assert(sent.size()==1);
+ ++bbsc_world_native_load;sent.clear();wipe_scope=scope;
+ BbscWorldNativeInitialOnce(scope);assert(sent.empty()); // no previous-attempt deaths on a wipe
  for(const auto& reply:replies)BbscWorldNativeInitialControl({22,reply.control,reply.payload});
  assert(applied==1&&!bbsc_world_initial_once.received); // old load cannot satisfy new load
+ wipe_scope.reset();++bbsc_world_native_load;BbscWorldNativeInitialOnce(scope);assert(sent.size()==1);
  // Another guest follows exactly the same load path as the native room host.
  self=33;++bbsc_world_native_load;sent.clear();BbscWorldNativeInitialOnce(scope);
  assert(sent.size()==1&&sent.back().control.owner==33);

@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include "bbsc_party.h"
 #include "common/logging/log.h"
 namespace {
@@ -23,7 +24,9 @@ bool ExclusiveNative() {
 std::atomic<std::uint64_t> native{1u<<8};
 std::atomic<bool> can_beckon{false};
 std::atomic<unsigned> host_hint{0};
+constexpr std::uint64_t CountedBellNotices=std::uint64_t{1}<<63;
 std::atomic<std::uint64_t> bell_generation{0}, bell_released_generation{0};
+std::atomic<std::uint64_t> local_bell_rings{0};
 std::atomic<unsigned> cancel_sequence{0};
 std::atomic<ULONGLONG> refreshed{0}, leave_refreshed{0};
 std::atomic<unsigned> leave_confirmed{0};
@@ -97,9 +100,12 @@ bool PartyCanBeckon() {
 unsigned PartyHostHint() {
     return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500 ? host_hint.load() : 0;
 }
-std::uint64_t PartyBellGeneration() {
-    return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
+void PartyBellRang() { ++local_bell_rings; }
+std::uint64_t PartyBellGeneration(bool& counted) {
+    const auto value=PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
         ? bell_generation.load() : 0;
+    counted=(value & CountedBellNotices)!=0;
+    return value & ~CountedBellNotices;
 }
 std::uint64_t PartyBellReleasedGeneration() {
     return PartyEnabled() && ExclusiveNative() && GetTickCount64()-refreshed.load()<1500
@@ -137,6 +143,7 @@ void PartyMaintain() {
         ",\"responder\":"+((value&16384)?"true":"false")+
         ",\"fresh\":"+((snapshot>>15 && now-(snapshot>>15)<1500)?"true":"false")+
         ",\"cancel_seq\":"+std::to_string(cancel)+",\"await_title\":"+(awaiting?"true":"false")+
+        ",\"bell_ring_seq\":"+std::to_string(local_bell_rings.load())+
         ",\"placement_ticket\":true,\"aimed_placement\":\""+AimedPlacementAcknowledgment()+"\"}";
     const std::string result=Call(L"/party/tick",body.substr(0,body.size()-1)+",\"bell_notice\":true,\"bell_release\":true,\"host_check\":true}",300);
     // Accept old two-field runners, but only an explicit generation can notify.
@@ -147,7 +154,7 @@ void PartyMaintain() {
         const char* first=result.data()+generation_separator+1;
         const char* end=result.data()+result.size();
         const auto parsed=std::from_chars(first,end,generation);
-        if(parsed.ec!=std::errc{}) generation=0;
+        if(parsed.ec!=std::errc{} || generation>=CountedBellNotices) generation=0;
         else if(parsed.ptr!=end) {
             if(*parsed.ptr==' ') {
                 const auto tail=std::from_chars(parsed.ptr+1,end,released);
@@ -155,7 +162,10 @@ void PartyMaintain() {
                 else if(tail.ptr!=end) {
                     if(*tail.ptr==' ') {
                         const auto host=std::from_chars(tail.ptr+1,end,hint);
-                        if(host.ec!=std::errc{} || host.ptr!=end || hint>2) { generation=0; released=0; hint=0; }
+                        if(host.ec!=std::errc{} || hint>2 ||
+                           (host.ptr!=end && std::string_view(host.ptr,end)!=" 1")) {
+                            generation=0; released=0; hint=0;
+                        } else if(host.ptr!=end) generation|=CountedBellNotices;
                     } else { generation=0; released=0; }
                 }
             } else generation=0;

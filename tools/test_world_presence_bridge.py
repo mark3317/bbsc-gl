@@ -48,7 +48,7 @@ template<class T>T ReadValue(u64 p,size_t offset){
  return static_cast<T>(loading);
 }
 bool BbscCurtainActive(){return false;}
-enum class BbscWork { Finale };
+enum class BbscWork { Finale, BossDeath };
 void QueueBbscWork(BbscWork){}
 bool bbsc_finale_hooks_ready=false;
 Finale::Signal BbscFinalePresence(World::WorldId){return {};}
@@ -63,6 +63,7 @@ u32 GetCurrentPackedMap(){return map;}
 Chalice::Key dungeon;
 Chalice::Key ReadBbscChaliceKey(){return dungeon;}
 u32 BbscIndependentCapabilities(){return World::PresenceCapability;}
+bool BbscSpectateEnabled(){return true;}
 Chalice::Key BbscIndependentDungeonKey(const Chalice::Key& key){return key;}
 u64 BbscIndependentRitual(const Chalice::Key&){return 0;}
 void BbscWorldCoordinate(){}
@@ -83,7 +84,7 @@ int main(){
  TickBbscWorldPresence();assert(sent.size()==1);
  assert(sent.back().world==(World::WorldId{11,99}));
  assert(sent.back().phase==World::Phase::Playing&&sent.back().alive==1);
- assert(sent.back().capabilities==World::PresenceCapability);
+ assert(sent.back().capabilities==(World::PresenceCapability|World::BossDeathReadyCapability));
  assert(!(sent.back().capabilities&World::IndependentTravelCapability));
  const auto initial_visit=sent.back().visit;
  ++bbsc_load_generation;map=0x18010000;now++;TickBbscWorldPresence();assert(sent.back().map==map&&sent.back().visit>initial_visit);

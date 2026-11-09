@@ -40,6 +40,8 @@ std::atomic<u64> bbsc_world_native_load{1};s64 now=10000;s64 SteadyNowMs(){retur
 std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 World::PresenceBook bbsc_world_presence_book;World::OwnerBook bbsc_independent_owners;
 std::optional<World::Scope> bbsc_world_requested_scope;
+std::optional<World::Scope> wipe_scope;
+bool BbscIsBossWipeLoad(const World::Scope& scope){return wipe_scope==scope;}
 u32 current_map=0x18000000;u32 GetCurrentPackedMap(){return current_map;}
 thread_local std::vector<u8>* bbsc_world_initial_capture=nullptr;
 struct BbscWorldIncoming{u32 sender;World::Control control;std::vector<u8> payload;};

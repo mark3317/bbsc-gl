@@ -98,13 +98,13 @@ void incoming(Group& local,const Group& host,bool patched=true){
 }
 int main(){
  for(u32 f=12805900;f<12805970;++f)
-  assert(Chalice::IsLocalVisualFlag(f)==(f>=12805920&&f<=12805923));
+  assert(World::IsLocalMapFlag(f)==(f>=12805920&&f<=12805923));
  // Exhaustive bit preservation: exactly four initialization receipts stay local.
  for(unsigned l=0;l<256;++l)for(unsigned h=0;h<256;++h){
   Group local,host;local.fill(l);host.fill(h);auto before=local;
   incoming(local,host);
   for(u32 bit=0;bit<1000;++bit){u32 f=12805000+bit;
-   assert(flag(local,f)==flag(Chalice::IsLocalVisualFlag(f)?before:host,f));}
+   assert(flag(local,f)==flag(World::IsLocalMapFlag(f)?before:host,f));}
  }
  for(int slot=0;slot<4;++slot){
   Group host{},local{};for(int j=0;j<4;++j)set(host,12805920+j,true);

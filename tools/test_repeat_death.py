@@ -42,6 +42,7 @@ int hp=100,state=6,deletes=0,deaths=0,hps=0;
 bool enabled=true,quit=false,title=false,writable=true,death_ok=true,hp_ok=true;
 bool bbsc_spectate_active=false,bbsc_spectate_releasing=false;
 bool bbsc_boss_at_own_death=false,curtain=false;
+bool bbsc_boss_death_ready=false;
 bool bbsc_boss_wipe_seen=false,all_report_dead=false,living_partner=true;
 int handoffs=0,echoes=123,bbsc_echoes_at_death=-1;bool boss=false;
 int GetBloodEchoes(){return echoes;}
