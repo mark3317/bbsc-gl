@@ -346,6 +346,17 @@ class DynamicEngine:
                         epoch=state['epoch'],roster=[],results={sender:receipts})
         return dict(session=world['session'],state=departed,peers=[])
 
+    def world_offers(self, world, host):
+        peers = world['peers']
+        offered = {peer['id']: peer for peer in peers}
+        if (len(offered) != len(peers) or set(offered) != set(world['state']['roster']) or
+                offered.get(self.id) != self.identity or offered.get(host) != self.peers[host]):
+            raise ValueError('World identities disagree')
+        for peer in peers:
+            validate_offer(peer)
+        validate_invite(dict(version=1, secret='00'*32, members=[member(peer) for peer in peers]))
+        return offered
+
     def reserve(self, sender, body):
         world = body['world']
         state = world['state']
@@ -364,12 +375,7 @@ class DynamicEngine:
                 raise ValueError('Player is not searching as a guest')
             if state['owner'] != sender or self.id not in state['pending'] or len(state['roster']) > 5:
                 raise ValueError('Invalid world reservation')
-            offered = {p['id']: p for p in world['peers']}
-            if set(offered) != set(state['roster']) or offered.get(self.id) != self.identity or offered.get(sender) != self.peers[sender]:
-                raise ValueError('Reservation identities disagree')
-            for peer in offered.values():
-                validate_offer(peer)
-            validate_invite(dict(version=1, secret='00'*32, members=[member(p) for p in offered.values()]))
+            offered = self.world_offers(world, sender)
             for who, peer in offered.items():
                 self.peers[who] = copy.deepcopy(peer)
                 self.members[who] = member(peer)
@@ -469,14 +475,31 @@ class DynamicEngine:
             if not attached or world['session'] != attached['session']:
                 raise ValueError('Unexpected world snapshot')
             state = world['state']
-            # During reserve, the host may still be persisting its commit.
-            if state['revision'] < attached['state']['revision']:
-                return
-            if state['revision'] == attached['state']['revision'] and state != attached['state']:
-                raise ValueError('Conflicting world snapshot')
-            if state['revision'] == attached['state']['revision'] and attached['confirmed']:
-                return
             previous = attached['state']
+            # During reserve, the host may still be persisting its commit.
+            if state['revision'] < previous['revision']:
+                return
+            same_revision = state['revision'] == previous['revision']
+            if same_revision and state != previous:
+                raise ValueError('Conflicting world snapshot')
+            peer_updates = set()
+            if self.id in state['roster']:
+                for peer in state['roster']:
+                    ticket = admission_ticket(state, peer)
+                    if (peer != self.id and ticket is not None and
+                            (peer not in self.disk['identities'] or ticket != admission_ticket(previous, peer))):
+                        peer_updates.add(peer)
+            if same_revision and attached['confirmed'] and not peer_updates and not self.storage_error:
+                return
+            if peer_updates:
+                offered = self.world_offers(world, attached['host'])
+                # A guest already in the room may learn about a late guest
+                # only from the host. Install the route with its admission.
+                for peer in peer_updates:
+                    offer = offered[peer]
+                    self.peers[peer] = copy.deepcopy(offer)
+                    self.members[peer] = member(offer)
+                    self.disk['identities'][peer] = copy.deepcopy(offer)
             old_scope = (previous['owner'], previous['generation'])
             attached['state'] = copy.deepcopy(state)
             attached['confirmed'] = True
@@ -490,13 +513,14 @@ class DynamicEngine:
                 self.disk['retired'].append(attached['reservation'])
                 self.disk['retired'] = self.disk['retired'][-64:]
                 self.disk['attachment'] = None
-            self.persist()
             if not self.disk['attachment'] or old_scope != (state['owner'], state['generation']):
                 self.reset_relay()
             else:
                 for peer in state['roster']:
-                    if peer != self.id and admission_ticket(previous, peer) != admission_ticket(state, peer):
+                    if peer != self.id and (peer in peer_updates or
+                            admission_ticket(previous, peer) != admission_ticket(state, peer)):
                         self.reset_relay_peer(peer)
+            self.persist()
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True)

@@ -508,6 +508,63 @@ class DynamicTests(DynamicHelpers, unittest.TestCase):
         a.relay(b'new stream', recipients=['B'])
         self.assertEqual(b.relay_in.get(timeout=3)[1], b'new stream')
 
+    def test_existing_guest_can_exchange_presence_with_late_guest_known_only_to_host(self):
+        host, first, late = [self.node(who) for who in 'ABC']
+        atomic_json(host.peers_file, self.offers)
+        for guest in (first, late):
+            atomic_json(guest.peers_file, [host.identity, guest.identity])
+            guest.refresh_peers()
+        host.refresh_peers()
+        room = self.host(host)
+        self.claim(host, first)
+        first.command(dict(kind='room_join', room_id=room))
+        self.assertNotIn(late.id, first.peers)
+
+        self.claim(host, late)
+        late.command(dict(kind='room_join', room_id=room))
+        self.eventually(lambda: first.state == host.state and late.state == host.state)
+        self.assertEqual(first.disk['identities'].get(late.id), late.identity)
+        self.assertEqual(first.members.get(late.id), dynamic.member(late.identity))
+
+        for index, (sender, receiver) in enumerate(((late, first), (first, late)), 2):
+            raw = b'SHAD\x40' + struct.pack('<II', index, 1) + b'SHAD\x32'
+            self.assertTrue(sender.relay(raw, recipients=[receiver.id]))
+            who, received, _ = receiver.relay_in.get(timeout=3)
+            self.assertEqual((who, received), (sender.id, raw))
+
+    def test_native_guest_gets_leave_and_join_when_room_view_skips_rejoin(self):
+        from compat import Compatibility
+        host, observer, returning = [self.node(who) for who in 'ABC']
+        self.discover()
+        room = self.host(host)
+        for guest in (observer, returning):
+            self.claim(host, guest)
+            guest.command(dict(kind='room_join', room_id=room))
+        self.eventually(lambda: observer.state == host.state)
+        old_slot = observer.state['room']['members'][returning.id]['slot']
+
+        # Hold native notifications across both revisions. The observer can
+        # legitimately receive only the final view from the host.
+        bridge = Compatibility(observer)
+        with patch.object(bridge, 'notify', wraps=bridge.notify) as notify:
+            try:
+                with patch.object(observer, 'confirmed_state', return_value=(False, None)):
+                    bridge.start()
+                    self.engines.remove(observer)
+                    returning.command(dict(kind='room_leave'))
+                    self.eventually(lambda: returning.state['owner'] is None)
+                    self.claim(host, returning)
+                    returning.command(dict(kind='room_join', room_id=room))
+                    self.eventually(lambda: observer.state == host.state)
+                    new_slot = observer.state['room']['members'][returning.id]['slot']
+                self.assertNotEqual(old_slot, new_slot)
+                self.eventually(lambda: bridge.previous == host.state)
+                events = [(call.args[0], call.args[1][1]['slot']) for call in notify.call_args_list
+                          if len(call.args) > 1 and call.args[1][0] == returning.id]
+                self.assertEqual(events, [(0x1102, old_slot), (0x1101, new_slot)])
+            finally:
+                bridge.close()
+
 
     def test_reinvite_recovers_failed_peer_without_releasing_host(self):
         a,b,c=self.node('A'),self.node('B'),self.node('C')
@@ -614,7 +671,8 @@ class DynamicNativeProcesses(DynamicHelpers, unittest.TestCase):
         clients = {who: self.client(who) for who in 'ABCDE'}
         host = clients['A']
         for who in clients:
-            atomic_json(self.root/(who+'-peers.json'), self.offers)
+            visible = self.offers if who == 'A' else [p for p in self.offers if p['id'] in ('A', who)]
+            atomic_json(self.root/(who+'-peers.json'), visible)
 
         def publish(who):
             self.http(clients[who], '/summon_messenger/create', dict(
@@ -676,6 +734,18 @@ class DynamicNativeProcesses(DynamicHelpers, unittest.TestCase):
                 waiting.remove(who)
                 self.assertEqual({member['npid'] for member in joined['details']['members']}, members)
             self.assertTrue(search(False, ''))
+
+            # A guest already in the room can use the stock signaling request
+            # for every later guest, even without discovering them directly.
+            for sender in clients:
+                self.eventually(lambda: clients[sender].state()['state']['joined'] ==
+                                host.state()['state']['joined'])
+                for recipient in clients:
+                    if sender == recipient:
+                        continue
+                    signal = self.np_call(sockets[sender], 105, 'RequestSignalingInfosRequest',
+                                          dict(target_npid='Hunter'+recipient), 'RequestSignalingInfosReply')
+                    self.assertEqual(signal['target_ip'], f"127.0.0.{101+ord(recipient)-ord('A')}")
 
             self.np_call(sockets['E'], 103, 'LeaveRoomRequest', dict(room_id=room), 'LeaveRoomReply')
             self.eventually(lambda: clients['E'].state()['state']['owner'] is None)

@@ -856,7 +856,9 @@ class Compatibility:
                     self.maintain_command('release')
                     self.log('responder_released_empty_search')
                     continue
-                confirmed,changed=self.e.confirmed_state(self.previous['revision'])
+                with self.e.lock:
+                    confirmed,changed=self.e.confirmed_state(self.previous['revision'])
+                    if confirmed and changed is not None:self.refresh_identities()
                 if not confirmed:continue
                 self.flush_placements()
                 if changed is None and getattr(self.e,'dynamic',False):
@@ -872,7 +874,15 @@ class Compatibility:
                         if room.get('closing') and not oldroom.get('closing') and self.e.id!=s['owner']:
                             self.notify(0x1104,room=s)
                         for p,m in room['members'].items():
-                            if p!=self.e.id and p not in oldroom['members']: self.notify(0x1101,(p,m),s)
+                            if p==self.e.id: continue
+                            prior=oldroom['members'].get(p)
+                            if prior is None:
+                                self.notify(0x1101,(p,m),s)
+                            elif prior.get('incarnation',prior['slot'])!=m.get('incarnation',m['slot']):
+                                # A confirmed view may skip the leave revision.
+                                # Matching2 still holds the old native member.
+                                self.notify(0x1102,(p,prior),old)
+                                self.notify(0x1101,(p,m),s)
                         for p,m in oldroom['members'].items():
                             if p not in room['members']:
                                 kicked=p in room.get('departing',{})
