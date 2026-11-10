@@ -121,7 +121,15 @@ def original(game):
         if interlock:
             init = {12410351: 12410321, 12800611: 12800600}[interlock]
             assert (2003, 2, struct.pack('<II', interlock, 0)) in resolved_instructions(evd, init)
-    print('PASS original 1.09: movement and temporary flags for 20 lifts and three paired gate events')
+    mensis = Emevd(game/'event/m26_00_00_00.emevd.dcx')
+    abyss_init = resolved_instructions(mensis, 12601351)
+    abyss_move = dict(mensis.events)[12601352]
+    assert (1003, 1, struct.pack('<II', 3, 12601253)) in abyss_init
+    assert [struct.unpack('<II', a) for b, i, a in abyss_init if (b, i) == (2005, 7)][2:] == [
+        (2601260, 2), (2601261, 4), (2601260, 4), (2601261, 2)]
+    assert [struct.unpack('<II', a) for b, i, a in abyss_move if (b, i) == (2003, 2)] == [
+        (12601253, 1), (12601253, 0)]
+    print('PASS original 1.09: 21 lifts including the separate Abyss lift, and three paired gate events')
     for name, event, flag in LOCAL_REGIONS:
         ins = dict(Emevd(game/'event'/(name+'.emevd.dcx')).events)[event]
         for value in (0, 1):
@@ -330,6 +338,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
  }
  '''
     for packed, _, position, busy, interlock in MOVEMENT + MENSIS_MOVEMENT + GATES + [
+            (0x1A000000, (), 12601253, 0, 0),
             (0x18000000, (), 12400168, 12405175, 12400169)]:
         code+=f'''
  {{
@@ -354,7 +363,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
         snapshot.epoch = owner.epoch;
         snapshot.present = 1; // required main bank
         const auto index = [&](u32 flag) {{return flag / 1000 - BbscWorldGroupKey(destination.map, 0);}};
-        const auto flag = [&](u32 id) {{return read(groups[id / 1000], id);}};
+        const auto flag = [&](u32 id) {{return id && read(groups[id / 1000], id);}};
         for (bool desired : {{false,true}}) {{
             for (u32 id : {{position,busy,interlock}}) {{
                 if (!id) continue;
@@ -368,16 +377,18 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
             BbscWorldApplyFlags(destination, snapshot);
             assert(flag(position) != desired && !flag(busy));
             if (interlock) assert(!flag(interlock));
-            write(groups[busy / 1000], busy, true);
+            if (busy) write(groups[busy / 1000], busy, true);
             if (interlock) write(groups[interlock / 1000], interlock, true);
             BbscWorldSeedLiftFlags(destination.map);
             assert(flag(position) == desired && !flag(busy));
             if (interlock) assert(!flag(interlock));
             write(groups[position / 1000], position, !desired);
-            write(snapshot.groups[index(busy)], busy, false);
-            write(groups[busy / 1000], busy, true);
+            if (busy) {{
+                write(snapshot.groups[index(busy)], busy, false);
+                write(groups[busy / 1000], busy, true);
+            }}
             BbscWorldApplyFlags(destination, snapshot);
-            assert(flag(position) != desired && flag(busy));
+            assert(flag(position) != desired && flag(busy) == (busy != 0));
         }}
         snapshot.flags_ready = false;
         BbscWorldSeedLiftFlags(destination.map);
@@ -406,7 +417,7 @@ void BbscWorldSend(const World::Control& c,std::span<const u8> body){
         env=os.environ.copy();env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')
         subprocess.run([str(exe)],check=True,env=env)
     print('PASS production: all 10 events shared, channel31 same-place policy, capture/apply host+guest, late-arrival snapshot, additive unlock/no rollback, incomplete/owner/off-map fences')
-    print('PASS production: 20 lifts and four reversible gates, live bits preserved, exact arrival position, no additive replay')
+    print('PASS production: 21 lifts and four reversible gates, live bits preserved, exact arrival position, no additive replay')
 
 if __name__=='__main__':
     original(Path(sys.argv[1]))

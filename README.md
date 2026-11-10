@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. Version **1.5.0**, bundled with BBGL 1.5.0, updates boss retries, late summons in cleared Chalice Dungeons, guest respawns and the Silencing Blank. [Release notes and standalone ZIP installation](docs/release-1.5.0.md).
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.5** includes BBSC-GL 1.5.5. In Nightmare of Mensis, the world snapshot sets the Abyss lift position before map events start. After loading, the original lift event controls its position. [Release notes](docs/release-1.5.5.md).
 
 Hunters can travel independently within a party, use their own Dream and meet again on another map. The host’s Chalice lamp list and progress are synchronized with guests.
 

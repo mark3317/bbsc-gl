@@ -46,7 +46,7 @@ inline std::span<const LiftFlagByte> LiftFlags(std::uint32_t group) {
     // second lift. 12900450 is also an event ID in m29_02_00_00.
     static constexpr F chalice_root[]{F::Temporary(455), F::Position(460), F::Temporary(465)};
     static constexpr F mensis[]{F::Position(250), F::Position(251), F::Position(252),
-                                    F::Position(254), F::Position(255), F::Position(256)};
+        F::Position(253), F::Position(254), F::Position(255), F::Position(256)};
     static constexpr F mensis_busy[]{F::Temporary(250), F::Temporary(251), F::Temporary(252),
                                          F::Temporary(253), F::Temporary(254), F::Temporary(256)};
     static constexpr F frontier[]{F::Position(115, 116)};
