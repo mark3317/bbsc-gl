@@ -17921,10 +17921,40 @@ void PS4_SYSV_ABI BbscChaliceRewardGateHook(u64, const GuestRegisterSnapshot* re
     bbsc_chalice_reward_gate_skip = 1; // completed no-op; native interpreter advances normally
 }
 
+void UseBbscLudwigFogVictoryFlag(const BbscQuestRange& range, u64 args_base) {
+    const auto replace = [&](u32 step, u32 condition) {
+        const u64 instruction = range.first + step * 0x20;
+        if (instruction + 0x20 > range.end || !ReadablePointer(instruction, 0x20) ||
+            ReadValue<s32>(instruction, 0) != 3 || ReadValue<s32>(instruction, 4) != 0 ||
+            ReadValue<u64>(instruction, 8) != 8) return;
+        const u64 args = args_base + ReadValue<u64>(instruction, 0x10);
+        if (ReadablePointer(args, 8) && ReadValue<u32>(args, 0) == condition &&
+            ReadValue<u32>(args, 4) == 13401800 && HasMemoryAccess(args + 4, 4, MemoryProt::CpuWrite))
+            WriteValue<u32>(args, 4, 9471);
+    };
+    // The native first step already uses 9471 to end on victory. Use the same
+    // flag for the live conditions. Guest completion of 13401800 can differ.
+    if (range.event == 13404800) {
+        replace(5, 1);
+        replace(11, 2);
+        replace(14, 259);
+    } else {
+        replace(2, 1); // 13404801
+    }
+}
+
 void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range) {
     if (!ReadablePointer(instance, 0xC0)) return;
     const s32 step = ReadValue<s32>(instance, 0xA0);
     if (step < 0 || step > 1) return; // before the native condition group is compiled
+
+    const u64 ref = ReadValue<u64>(instance, 0xA8);
+    const u64 file = ReadablePointer(ref, 0x10) ? ReadValue<u64>(ref, 8) : 0;
+    if (!ReadablePointer(file, 0x80)) return;
+    const u64 args_base = file + ReadValue<u64>(file, 0x78);
+    if (step == 0 && (range.event == 13404800 || range.event == 13404801) &&
+        BbscEventFlag(13401800) && !BbscEventFlag(9471))
+        UseBbscLudwigFogVictoryFlag(range, args_base);
 
     if (range.event == 13404800) {
         if (!BbscTimelineEnabled()) return;
@@ -17948,10 +17978,6 @@ void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range) {
 
     const auto* gate = GuestAccess::FindGuestFogGate(range.event);
     if (!gate || range.first + (gate->step + 1) * 0x20 > range.end) return;
-    const u64 ref = ReadValue<u64>(instance, 0xA8);
-    const u64 file = ReadablePointer(ref, 0x10) ? ReadValue<u64>(ref, 8) : 0;
-    if (!ReadablePointer(file, 0x80)) return;
-    const u64 args_base = file + ReadValue<u64>(file, 0x78);
     const u64 battle = range.first + gate->step * 0x20;
     const u64 prior = battle - 0x20;
     if (!ReadablePointer(prior, 0x40) || ReadValue<s32>(prior, 0) != 3 ||

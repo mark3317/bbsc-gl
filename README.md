@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.5** includes BBSC-GL 1.5.5. In Nightmare of Mensis, the world snapshot sets the Abyss lift position before map events start. After loading, the original lift event controls its position. [Release notes](docs/release-1.5.5.md).
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.6** includes BBSC-GL 1.5.6. When Ludwig’s arena loads, BBSC-GL checks the local and global defeat flags. If the flags disagree, the fog entrance uses the game’s global victory flag. Targeted tests passed. In-game verification is pending. [Release notes](docs/release-1.5.6.md).
 
 Hunters can travel independently within a party, use their own Dream and meet again on another map. The host’s Chalice lamp list and progress are synchronized with guests.
 

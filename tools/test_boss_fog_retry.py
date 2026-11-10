@@ -15,7 +15,7 @@ elf = Path(sys.argv[1]).read_bytes()[0x4000:]
 assert elf[0x17bedd0:0x17bedd6] == bytes.fromhex('55 48 89 e5 41 57')
 assert elf[0x12ef2e0:0x12ef2e6] == bytes.fromhex('55 48 89 e5 41 57')
 source = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
-production = source[source.index('void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range) {'):
+production = source[source.index('void UseBbscLudwigFogVictoryFlag('):
                     source.index('// From an event\'s 2003 instruction')]
 production += source[source.index('u8 bbsc_guest_role_skip = 0;'):
                      source.index('void PS4_SYSV_ABI BbscDreamTypeCheckHook(')]
@@ -61,6 +61,11 @@ assert set(cases) == set(targets)
 assert set(guest_cases) == set(guest_targets)
 assert {event for event, case in cases.items() if not case[-1]} == {12104810, 12104880}
 
+ludwig = dict(Emevd(game / 'event/m34_00_00_00.emevd.dcx').events)
+victory = (9471).to_bytes(4, 'little')
+assert ludwig[13404800][0] == ludwig[13404801][1] == (1003, 2, b'\0\1\0\0' + victory)
+assert ludwig[13401800][42] == (2003, 2, victory + b'\1\0\0\0')
+
 fixture = r'''
 #include <windows.h>
 #include <algorithm>
@@ -83,6 +88,7 @@ u64 image_base=0;
 s32 state=6, type=1;
 u32 intro=0;
 bool introduced=true;
+bool ludwig_defeat_event=false, ludwig_victory=false;
 u8 bbsc_chalice_reward_gate_skip=0;
 namespace BbscMod {u64 EbootAddress(){return image_base;} void LogPlain(const char*){}}
 bool ReadablePointer(u64 address, size_t) { return address > 0x10000; }
@@ -100,7 +106,12 @@ bool BbscGuestInHostWorld() { return state == 6; }
 bool BbscTimelineEnabled() { return false; }
 #define BBSC_TIMELINE(...) ((void)0)
 std::atomic<u32> bbsc_load_generation{0};
-bool PS4_SYSV_ABI NativeFlag(u64, u32 flag) { assert(flag==intro); return introduced; }
+bool PS4_SYSV_ABI NativeFlag(u64, u32 flag) {
+    if (flag==13401800) return ludwig_defeat_event;
+    if (flag==9471) return ludwig_victory;
+    assert(flag==intro);
+    return introduced;
+}
 bool BbscEventFlag(u32 flag) { return NativeFlag(0, flag); }
 struct BbscQuestRange {u64 first, end, row; s64 event;} range;
 const BbscQuestRange* LookupBbscQuestRange(u64) { return &range; }
@@ -114,6 +125,12 @@ void Load(const char* path, u64 address) {
     assert(file);
     std::copy(std::istreambuf_iterator<char>(file), {}, (char*)address);
 }
+void ExpectLudwigVictoryOperand(std::vector<char>& expected, u64 file, u64 first, u32 step) {
+    const u64 args=ReadValue<u64>(file,0x78)+ReadValue<u64>(first+step*0x20,0x10);
+    const u64 operand=(u64)expected.data()+args+4;
+    assert(ReadValue<u32>(operand,0)==13401800);
+    WriteValue<u32>(operand,0,9471);
+}
 void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bool hides_fog,
            bool hooked) {
     assert(!GuestAccess::EventAllowed(event));
@@ -125,6 +142,26 @@ void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bo
     const u64 first=file+ReadValue<u64>(file,0x28)+ReadValue<u64>(row,0x10);
     range={first, first+ReadValue<u64>(row,8)*0x20, row, event};
     std::array<u64,2> ref{0,file};
+    if (event==13404800 && hooked) {
+        auto expected=data;
+        for (u32 step : {5u,11u,14u}) ExpectLudwigVictoryOperand(expected,file,first,step);
+        std::array<u64,26> instance{};
+        const u64 p=(u64)instance.data();
+        WriteValue<u64>(p,0xA8,(u64)ref.data());
+        const auto original=data;
+        PrepareBbscBossFogEvent(p,range);
+        assert(data==original); // undefeated, with both flags clear
+        ludwig_defeat_event=true;
+        ludwig_victory=true;
+        PrepareBbscBossFogEvent(p,range);
+        assert(data==original); // confirmed victory
+        ludwig_victory=false;
+        PrepareBbscBossFogEvent(p,range);
+        assert(data==expected); // preparation runs with detailed logging disabled
+        PrepareBbscBossFogEvent(p,range);
+        assert(data==expected);
+        ludwig_defeat_event=false;
+    }
     const u64 args=file+ReadValue<u64>(file,0x78)+ReadValue<u64>(first+0x20,0x10);
     // The common Chalice event substitutes a per-ritual flag into +B8.
     intro=event/100000==129 ? 12906792 : ReadValue<u32>(args,4);
@@ -185,29 +222,34 @@ void CheckGuest(const char* path, s64 event, u64 row_index, s32 step, u32 flag) 
     const u64 prior=args+ReadValue<u64>(first+(step-1)*0x20,0x10);
     const u64 battle=args+ReadValue<u64>(first+step*0x20,0x10);
     const auto original=data;
+    auto expected=original;
+    if (event==13404801) {
+        ludwig_defeat_event=true;
+        ExpectLudwigVictoryOperand(expected,file,first,2);
+    }
     state=0;type=0; // Load in solo, then join in the same map.
     WriteValue<s32>(p,0xA0,2);
     PrepareBbscBossFogEvent(p,range);
     assert(data==original);
     WriteValue<s32>(p,0xA0,0);
     PrepareBbscBossFogEvent(p,range);
-    size_t changed;
+    const u64 expected_base=(u64)expected.data();
     if (flag) {
         assert(ReadValue<u64>(battle,0)==ReadValue<u64>(prior,0));
-        changed=battle-file;
+        WriteValue<u64>(expected_base,battle-file,ReadValue<u64>(prior,0));
     } else {
         const u64 count=ReadValue<u64>(row,0x18);
         const u64 param=file+ReadValue<u64>(file,0x58)+ReadValue<u64>(row,0x20)+(count-2)*0x20;
         assert(ReadValue<u64>(param,0x10)==12);
-        changed=param+0x10-file;
+        WriteValue<u64>(expected_base,param+0x10-file,12);
     }
     assert(data!=original);
-    for (size_t i=0;i<data.size();++i)
-        if (i<changed || i>=changed+8) assert(data[i]==original[i]);
+    assert(data==expected);
     const auto prepared=data;
     state=6;type=1;
     PrepareBbscBossFogEvent(p,range);
     assert(data==prepared);
+    ludwig_defeat_event=false;
 }
 void CheckAll(bool hooked) {
 CASES
@@ -266,4 +308,5 @@ with tempfile.TemporaryDirectory(prefix='bbsc-fog-retry-') as directory:
     subprocess.run([str(exe)], check=True, cwd=tmp, timeout=20,
                    env={**os.environ, 'PATH': str(cxx.parent) + os.pathsep + os.environ['PATH']})
 print(f'PASS {len(cases)} original boss fog events: guest first entry reaches native disable and retries reach native enable')
-print(f'PASS {len(guest_cases)} original guest fog events: only current-fight dependency replaced at event start')
+print(f'PASS {len(guest_cases)} original guest fog events: current-fight dependency replaced at event start')
+print('PASS Ludwig fog: original victory flag used by both entrances, only the intended operands changed')
