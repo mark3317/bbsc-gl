@@ -1,8 +1,10 @@
 # BBSC-GL — Bloodborne Seamless Co-op Game Launcher
 
+**BBSC-GL 1.5.10** targets **BBGL 1.5.10**. Fixes Silencing Blank item context and restores native collision after in-place respawn. See [release notes](docs/release-1.5.10.md) for installation and verification limits.
+
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.9** includes BBSC-GL 1.5.9. The mod waits for known party members during boss deaths, rechecks readiness when presence or the roster changes, and rejects death messages from earlier visits. Targeted tests passed. In-game verification is pending. [Release notes](docs/release-1.5.9.md).
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.10** includes BBSC-GL 1.5.10. The mod waits for known party members during boss deaths, rechecks readiness when presence or the roster changes, and rejects death messages from earlier visits. Targeted tests passed. In-game verification is pending. [Release notes](docs/release-1.5.10.md).
 
 Hunters can travel independently within a party, use their own Dream and meet again on another map. The host’s Chalice lamp list and progress are synchronized with guests.
 

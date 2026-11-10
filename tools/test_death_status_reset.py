@@ -25,6 +25,10 @@ respawn = function('bool BbscRespawnInPlace(std::string_view why)')
 assert respawn.index('if (!target.has_value())') < respawn.index('BbscResetDeathStatuses(player)')
 assert respawn.index('BbscResetDeathStatuses(player)') < respawn.index('reinterpret_cast<Warp>')
 assert respawn.index('BbscResetDeathStatuses(player)') < respawn.index('reinterpret_cast<SetHp>')
+warp = respawn.index('reinterpret_cast<Warp>(warp)(player, position.data(), rotation.data(), 1)')
+physics = respawn.index('reinterpret_cast<PhysicsReset>(image_base + 0x018BCF30)(player, 1)')
+assert warp < physics < respawn.index('reinterpret_cast<Reset>(reset)(player)')
+assert respawn.count('reinterpret_cast<PhysicsReset>') == 1
 assert 'return false;' in respawn[respawn.index('if (!BbscResetDeathStatuses(player))'):][:210]
 # Intercept only the native erase boundary. The actual native resistance reset
 # executes from the read-only original ELF when available, including its real

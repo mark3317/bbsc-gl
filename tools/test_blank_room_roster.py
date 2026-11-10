@@ -129,7 +129,9 @@ int main(){
 for address, size in [(0x016E6FB0, 0x168), (0x016E7150, 6), (0x01BC4F90, 0x77),
                       (0x015BE2A0, 6), (0x018FF760, 0x2A),
                       (0x01332B60, 0x17), (0x015C9850, 0xE3), (0x0178D9C0, 0xCA),
-                      (0x01939470, 0x72)]:
+                      (0x01939470, 0x72), (0x01BC3D10, 0x12),
+                      (0x01BC69C0, 0x12), (0x01BC6AD0, 0x12),
+                      (0x018F74DF, 0x13)]:
     source += copy_original(address, size)
 
 source += r'''
@@ -152,7 +154,7 @@ source += r'''
     std::array<u8,0x68> world{};
     std::array<u8,0x560> player{};
     std::array<u8,0x474> action{};
-    std::array<u8,0x20> modules{};
+    std::array<u8,0xB8> modules{};
     std::array<u8,0x820> animation{};
     std::array<u8,0x10> callback{};
     WriteValue(image_base+MatchingStatePointerOffset,0,Addr(manager));
@@ -213,8 +215,51 @@ source += r'''
         WriteValue(Addr(members[i]),24,s32{i==2?2:coop_type});
         WriteValue(Addr(roster[i]),0,Addr(members[i]));
     }
+    // Execute the original item-metadata call before its later +1C0 refresh.
+    // Stop immediately after the call; its argument remains the native module.
+    image[0x18F74F2]=0xC3;
+    // Wrapper supplies the original update's R13 = local actor.
+    const u8 metadata_entry[]{0x41,0x55,0x49,0x89,0xFD,0xE8,0,0,0,0,0x41,0x5D,0xC3};
+    memcpy(image+0x2000,metadata_entry,sizeof(metadata_entry));
+    WriteValue(image_base+0x2006,0,s32{0x18F74DF-0x200A});
+    // A stand-in for metadata lookup records the goods seen at that exact call.
+    link(0x1A50AD0,+[](u64 module) PS4_SYSV_ABI {
+        WriteValue<s32>(module,0,ReadValue<s32>(ReadValue<u64>(module,8),0x1C0));
+    });
+    std::array<u64,2> metadata{}; metadata[1]=Addr(player);
+    WriteValue(Addr(modules),0xB0,Addr(metadata));
+    const auto read_metadata=reinterpret_cast<void PS4_SYSV_ABI (*)(u64)>(image+0x2000);
+    const auto general_yes=reinterpret_cast<void PS4_SYSV_ABI (*)()>(image+0x1BC3D10);
+    WriteValue<s32>(Addr(player),0x47C,111);WriteValue<s32>(Addr(player),0x490,2);
+    WriteValue<s32>(Addr(player),0x1C0,1000);
+    general_yes(); read_metadata(Addr(player));
+    assert(metadata[0]==1000); // reproduces stale Blood Vial context before the fix
     InstallBbscBlankRoster();
     assert(bbsc_blank_roster_ready);
+    for (s32 state : {0,3,6}) {
+        role=state;
+        for (u64 address : {0x1BC3D10ull,0x1BC69C0ull,0x1BC6AD0ull}) {
+            for (s32 previous : {1000,1010,200}) {
+                WriteValue<s32>(Addr(player),0x1C0,previous);
+                WriteValue<s32>(Addr(player),0x478,previous);
+                reinterpret_cast<void PS4_SYSV_ABI (*)()>(image+address)();
+                read_metadata(Addr(player));
+                assert(metadata[0]==111 && ReadValue<s32>(Addr(player),0x478)==111);
+                assert(ReadValue<s32>(Addr(player),0x47C)==111 && ReadValue<s32>(Addr(player),0x490)==2);
+            }
+        }
+    }
+    role=3;
+    WriteValue<s32>(Addr(player),0x47C,1010);
+    WriteValue<s32>(Addr(player),0x1C0,1010);
+    general_yes();assert(ReadValue<s32>(Addr(player),0x1C0)==1010);
+    WriteValue<s32>(Addr(player),0x47C,111);
+    for(s32 phase : {0,1,3,5,7}) {
+        WriteValue<s32>(Addr(player),0x490,phase);general_yes();
+        assert(ReadValue<s32>(Addr(player),0x1C0)==1010);
+    }
+    WriteValue<s32>(Addr(player),0x490,2);
+    puts("PASS Blank confirmation: reproduced stale vial metadata; host/guest/solo, native Yes and silence stores, other goods and phases");
     using List=bool PS4_SYSV_ABI (*)(s32*);
     using Name=u64 PS4_SYSV_ABI (*)(u64,u32);
     using Yes=void PS4_SYSV_ABI (*)(u64);
@@ -230,7 +275,9 @@ source += r'''
     assert(name(Addr(text),1)==Addr(text) &&
            std::u16string_view(reinterpret_cast<char16_t*>(text.data()))==u"Away");
     WriteValue(Addr(callback),8,away);
+    WriteValue<s32>(Addr(player),0x1C0,1000);
     yes(Addr(callback));
+    read_metadata(Addr(player));assert(metadata[0]==111);
     assert(ReadValue<s32>(Addr(player),0x55C)==away && ReadValue<u8>(Addr(animation),0x818)==8);
     assert(!room_kicks && !resident_kicks);
     effect(Addr(player));

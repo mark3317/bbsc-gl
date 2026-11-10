@@ -9331,13 +9331,23 @@ bool BbscRespawnInPlace(std::string_view why) {
         LOG_WARNING(Debug, "BBSC respawn in place ({}): character vtable unexpected", why);
         return false;
     }
+    static constexpr std::array<u8, 16> RestoreCollisionSignature{
+        0x55, 0x48, 0x89, 0xE5, 0x53, 0x50, 0x80, 0x7A,
+        0x08, 0x00, 0xBB, 0x10, 0x27, 0x00, 0x00, 0x74};
+    const u64 restore_collision = image_base + 0x01386410;
+    if (!ReadablePointer(restore_collision, RestoreCollisionSignature.size()) ||
+        std::memcmp(reinterpret_cast<const void*>(restore_collision),
+                    RestoreCollisionSignature.data(), RestoreCollisionSignature.size()) != 0) {
+        LOG_WARNING(Debug, "BBSC respawn in place ({}): native collision restore unavailable -> real reload", why);
+        return false;
+    }
     if (!BbscResetDeathStatuses(player)) {
         LOG_WARNING(Debug, "BBSC respawn in place ({}): death status reset unavailable -> real reload", why);
         return false;
     }
     // 1. opacity / scale back to normal
     WriteValue<u64>(player, 0x208, 0x3F8000003F800000ull);
-    // 2. warp
+    // 2. warp and synchronize the physics proxy with the new transform
     alignas(16) std::array<float, 4> position = target->position;
     alignas(16) std::array<float, 4> rotation = target->rotation;
     position[3] = 1.0f;
@@ -9354,6 +9364,17 @@ bool BbscRespawnInPlace(std::string_view why) {
     using Warp = void PS4_SYSV_ABI (*)(u64 chr, float* position, float* rotation, u32 flag);
     reinterpret_cast<Warp>(warp)(player, position.data(), rotation.data(), 1);
     WriteValue<u8>(player, 0x1E4, static_cast<u8>(ReadValue<u8>(player, 0x1E4) | 0x02));
+    // OnEvent_4019 restores map collision, gravity and control+0x111.
+    // Its zeroed argument block selects the local player (byte +8 == 0).
+    const std::array<u8, 16> collision_args{};
+    using RestoreCollision = void PS4_SYSV_ABI (*)(u64, u64, const u8*);
+    reinterpret_cast<RestoreCollision>(restore_collision)(0, 0, collision_args.data());
+    BBSC_TIMELINE("RESPAWN", "native OnEvent_4019 restored map collision={} gravity={}",
+                  (ReadValue<u8>(player, 0x1E1) & 0x40) == 0,
+                  (ReadValue<u16>(control, 0x114) & 0x10) == 0);
+    // Native respawn placement (0x01939E01) and F8 both use this after setting the position.
+    using PhysicsReset = void PS4_SYSV_ABI (*)(u64 chr, u8 flag);
+    reinterpret_cast<PhysicsReset>(image_base + 0x018BCF30)(player, 1);
 
     // 3. leave the death animation
     const u64 behaviour = ReadValue<u64>(modules, 0x30);
@@ -21728,7 +21749,10 @@ s64 bbsc_host_blank_requested_ms = 0;
 std::atomic<bool> bbsc_beckoning_silenced{false};
 void PS4_SYSV_ABI BbscSilenceBeckoningHook(u64, const GuestRegisterSnapshot* registers) {
 #ifdef BBSC_MOD
-    if (registers && BbscMod::PartyEnabled()) bbsc_beckoning_silenced = true;
+    if (registers && BbscMod::PartyEnabled()) {
+        BindBbscConfirmedBlank();
+        bbsc_beckoning_silenced = true;
+    }
 #endif
 }
 

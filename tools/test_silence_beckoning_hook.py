@@ -15,6 +15,7 @@ using namespace Core;
 #define BBSC_MOD
 u64 image_base=0;bool enabled=true;
 std::atomic<bool> bbsc_beckoning_silenced{false};
+int bindings=0;void BindBbscConfirmedBlank(){++bindings;}
 namespace BbscMod {u64 EbootAddress(){return image_base;}void LogPlain(const char*){}bool PartyEnabled(){return enabled;}}
 FUNCTION
 int main(){
@@ -28,7 +29,7 @@ int main(){
  using Run=void PS4_SYSV_ABI (*)();auto run=(Run)p;
  assert(!bbsc_beckoning_silenced);run();assert(bbsc_beckoning_silenced&&*(u32*)(target+0x474)==1);
  enabled=false;bbsc_beckoning_silenced=false;*(u32*)(target+0x474)=0;run();
- assert(!bbsc_beckoning_silenced&&*(u32*)(target+0x474)==1);
+ assert(!bbsc_beckoning_silenced&&*(u32*)(target+0x474)==1&&bindings==1);
 }
 '''.replace('FUNCTION',source[a:b])
 with tempfile.TemporaryDirectory(prefix='bbsc-target-kick-') as tmp:

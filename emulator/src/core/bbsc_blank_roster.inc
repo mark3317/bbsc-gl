@@ -1,6 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // The original Kickout list has two rows. A row carries an opaque selection
 // token in place of a PlayerIns handle, which may disappear on independent travel.
+// Confirmation must keep the native pending goods bound to its action. The
+// update at 018F74DF refreshes item metadata BEFORE 018F759F refreshes +1C0.
+// If +1C0 still names a quick-slot consumable, the forced use can start that
+// consumable's animation. Bind only an already pending Blank; native flags,
+// state transitions, goodsUseAnim=15, effects and replication remain unchanged.
+void BindBbscConfirmedBlank() {
+    const u64 world = ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0);
+    if (!ReadablePointer(world, 0x68)) return;
+    const u64 player = ReadValue<u64>(world, 0x60);
+    if (!ReadablePointer(player, 0x494) || ReadValue<s32>(player, 0x47C) != 111 ||
+        ReadValue<s32>(player, 0x490) != 2) return;
+    WriteValue<s32>(player, 0x1C0, 111);
+    WriteValue<s32>(player, 0x478, 111);
+}
+
+void PS4_SYSV_ABI BbscBlankConfirmHook(u64, const GuestRegisterSnapshot* registers) {
+    if (registers) BindBbscConfirmedBlank();
+}
+
 struct BbscBlankTarget {
     u64 member_id = 0;
     u64 member = 0;
@@ -131,10 +150,14 @@ void PS4_SYSV_ABI BbscBlankNameHook(u64, const GuestRegisterSnapshot* registers)
 void PS4_SYSV_ABI BbscBlankSelectHook(u64, const GuestRegisterSnapshot* registers) {
     if (!registers || !ReadablePointer(registers->rdi, 12)) return;
     const s32 token = ReadValue<s32>(registers->rdi, 8);
-    if (!BbscBlankToken(static_cast<u32>(token))) return;
+    if (!BbscBlankToken(static_cast<u32>(token))) {
+        BindBbscConfirmedBlank();
+        return;
+    }
     // The native Yes callback stores this token on the local actor and starts
     // the original item animation. A stale selection must never start it.
     if (!ResolveBbscBlankTarget(token)) bbsc_blank_select_skip = 1;
+    else BindBbscConfirmedBlank();
 }
 
 void PS4_SYSV_ABI BbscBlankDispatchHook(u64, const GuestRegisterSnapshot* registers) {
@@ -168,6 +191,17 @@ void PS4_SYSV_ABI BbscBlankDispatchHook(u64, const GuestRegisterSnapshot* regist
 
 void InstallBbscBlankRoster() {
     if (!BbscMod::PartyEnabled()) return;
+    // Native Yes stores: general item confirmation and the Small/Sinister
+    // silence options. Beckoning's store is hooked by InstallBbscBanners.
+    static constexpr std::array<u8, 10> confirmed{0xC7,0x80,0x70,0x04,0,0,1,0,0,0};
+    static constexpr std::array<u8, 10> silence{0xC7,0x80,0x74,0x04,0,0,1,0,0,0};
+    if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01BC3D17),
+                              confirmed, 0, BbscBlankConfirmHook) ||
+        !InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01BC69C7),
+                              silence, 0, BbscBlankConfirmHook) ||
+        !InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x01BC6AD7),
+                              silence, 0, BbscBlankConfirmHook))
+        LOG_ERROR(Debug, "BBSC Blank: native confirmation binding unavailable");
     static constexpr std::array<u8, 6> entry{0x55,0x48,0x89,0xE5,0x41,0x57};
     static constexpr std::array<u8, 6> select{0x55,0x48,0x89,0xE5,0x41,0x56};
     bbsc_blank_roster_ready =
