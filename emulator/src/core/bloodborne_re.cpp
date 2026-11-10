@@ -6751,6 +6751,7 @@ void ObserveBbscNativeWorldCommand(u64 instance,s32 bank);
 void HideBbscNativeKitGift(u64 instance);
 void EnableBbscKidnapEvent(u64 instance);
 void EnableBbscRomJumpEvent(u64 instance);
+void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range);
 bool GuardBbscSharedFinaleEvent(u64 instance);
 u8 bbsc_transition_event_skip = 0;
 bool bbsc_npc_pass_due = false;
@@ -6771,6 +6772,7 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
     if(steps & EventSteps::RomTransition)EnableBbscRomNativeTransition(registers->rdi);
     if(steps & EventSteps::Kidnap)EnableBbscKidnapEvent(registers->rdi);
     if(steps & EventSteps::RomJump)EnableBbscRomJumpEvent(registers->rdi);
+    if(range && (steps & EventSteps::BossFog))PrepareBbscBossFogEvent(registers->rdi,*range);
     if ((steps & EventSteps::DreamPhase) && BbscIndependentActive() && GetSessionState() == 6) {
         // These m21 events derive and stage the local Dream from native progress.
         // The host still owns the audience, encounter and ending triggers.
@@ -15178,13 +15180,16 @@ bool bbsc_progress_merged_at_load = false; // merged during the trip home (check
 bool bbsc_progress_backed_up = false;      // saves backed up for this trip home
 
 // Temporary boss-attempt flags from EMEVD, CUSA03173 1.09. This includes
-// the boss gauge event IDs and the Cathedral Ward entry/setup conditions.
-constexpr std::array<u32, 65> BbscEncounterProgressFlags{
+// the boss gauge event IDs and the Amelia and Micolash attempt conditions.
+constexpr std::array<u32, 85> BbscEncounterProgressFlags{
     12104800, 12104802, 12104850, 12104852, 12204800, 12204802, 12204807, 12304700,
     12304702, 12304800, 12304802, 12404223, 12404800, 12404801, 12404802, 12414700,
     12414702, 12414800,
     12414802, 12414807, 12415400, 12424700, 12424702, 12424790, 12424800, 12424802,
-    12504800, 12504802, 12604800, 12604802, 12604850, 12604852, 12604856, 12604986,
+    12504800, 12504802, 12604800, 12604802,
+    12604850, 12604851, 12604852, 12604856, 12604940, 12604941, 12604942, 12604943,
+    12604944, 12604945, 12604946, 12604949, 12604950, 12604951, 12604952, 12604953,
+    12604954, 12604955, 12604956, 12604957, 12604958, 12604959, 12604985, 12604986,
     12704800, 12704802, 12804800, 12804802, 12904776, 12904863, 12904877, 12904881,
     12904887, 12904890, 12904891, 12906791, 12906795, 12906806, 12906825, 13204800,
     13204802, 13304800, 13304802, 13404802, 13404808, 13404824, 13404825, 13404852,
@@ -15193,23 +15198,31 @@ constexpr std::array<u32, 65> BbscEncounterProgressFlags{
 
 void ResetBbscWipeEncounterAtSpawn(u32 destination) {
     constexpr u32 CathedralWard = 0x18000000;
-    if ((destination & 0xFFFF0000) != CathedralWard) return;
+    constexpr u32 Mensis = 0x1A000000;
+    constexpr u32 MicolashDefeated = 12601850;
+    const u32 map = destination & 0xFFFF0000;
+    if (map != CathedralWard && map != Mensis) return;
     World::Scope scope;
     {
         std::scoped_lock lock{bbsc_world_presence_mutex};
         scope = World::ScopeOf(bbsc_world_presence_local);
     }
-    if (scope.map != CathedralWard || !BbscIsBossWipeLoad(scope)) return;
+    if (scope.map != map || !BbscIsBossWipeLoad(scope)) return;
     const u64 manager = ReadValue<u64>(image_base + EventFlagManPointerOffset, 0);
     if (!ReadablePointer(manager, 0x40)) return;
+    if (map == Mensis && BbscEventFlag(MicolashDefeated)) return;
+
+    // In Mensis the earlier 12604800/02 flags belong to the Wet Nurse.
+    const u32 first = map == CathedralWard ? 12404000 : 12604850;
+    const u32 last = map == CathedralWard ? 12404999 : 12604986;
     using SetFlag = void PS4_SYSV_ABI (*)(u64, u32, u32);
     const auto set_flag = reinterpret_cast<SetFlag>(image_base + 0x013CFCC0);
     size_t cleared = 0;
-    // The kept guest bank can still contain the previous attempt. Clear only
-    // Amelia's verified attempt flags before the original EMEVD reads them.
+    // The kept guest bank can still contain the previous attempt. Clear it
+    // before the original EMEVD reads the entry and phase conditions.
     for (auto flag = std::lower_bound(BbscEncounterProgressFlags.begin(),
-                                    BbscEncounterProgressFlags.end(), 12404000u);
-         flag != BbscEncounterProgressFlags.end() && *flag < 12405000u; ++flag) {
+                                    BbscEncounterProgressFlags.end(), first);
+         flag != BbscEncounterProgressFlags.end() && *flag <= last; ++flag) {
         if (BbscEventFlag(*flag)) {
             set_flag(manager, *flag, 0);
             ++cleared;
@@ -17908,6 +17921,74 @@ void PS4_SYSV_ABI BbscChaliceRewardGateHook(u64, const GuestRegisterSnapshot* re
     bbsc_chalice_reward_gate_skip = 1; // completed no-op; native interpreter advances normally
 }
 
+void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range) {
+    if (!ReadablePointer(instance, 0xC0)) return;
+    const s32 step = ReadValue<s32>(instance, 0xA0);
+    if (step < 0 || step > 1) return; // before the native condition group is compiled
+
+    if (range.event == 13404800) {
+        if (!BbscTimelineEnabled()) return;
+        static u32 last_load = ~u32{0};
+        static s32 last_state = -1;
+        const u32 load = bbsc_load_generation.load();
+        const s32 state = GetSessionState();
+        if (last_load == load && last_state == state) return;
+        last_load = load;
+        last_state = state;
+        const u64 lua_manager = ReadValue<u64>(image_base + 0x0553B0C8, 0);
+        const u64 lua = ReadablePointer(lua_manager, 0x10) ? ReadValue<u64>(lua_manager, 8) : 0;
+        const bool load_wait = ReadablePointer(lua, 0x90) && ReadValue<u8>(lua, 0x8D) != 0;
+        BBSC_TIMELINE("FOG", "Ludwig entrance initialized state={} type={} load={} victory={} "
+                      "defeat_event={} intro={} approach={} fight_started={} leaving={} load_wait={}", state,
+                      GetLocalPlayerType(), load, BbscEventFlag(9471), BbscEventFlag(13401800),
+                      BbscEventFlag(13401801), BbscEventFlag(13404811), BbscEventFlag(13404808),
+                      BbscEventFlag(4047), load_wait);
+        return;
+    }
+
+    const auto* gate = GuestAccess::FindGuestFogGate(range.event);
+    if (!gate || range.first + (gate->step + 1) * 0x20 > range.end) return;
+    const u64 ref = ReadValue<u64>(instance, 0xA8);
+    const u64 file = ReadablePointer(ref, 0x10) ? ReadValue<u64>(ref, 8) : 0;
+    if (!ReadablePointer(file, 0x80)) return;
+    const u64 args_base = file + ReadValue<u64>(file, 0x78);
+    const u64 battle = range.first + gate->step * 0x20;
+    const u64 prior = battle - 0x20;
+    if (!ReadablePointer(prior, 0x40) || ReadValue<s32>(prior, 0) != 3 ||
+        ReadValue<s32>(prior, 4) != 0 || ReadValue<u64>(prior, 8) != 8 ||
+        ReadValue<s32>(battle, 0) != 3 || ReadValue<s32>(battle, 4) != 0 ||
+        ReadValue<u64>(battle, 8) != 8) return;
+    const u64 battle_args = args_base + ReadValue<u64>(battle, 0x10);
+    const u64 prior_args = args_base + ReadValue<u64>(prior, 0x10);
+    if (!ReadablePointer(battle_args, 8) || !ReadablePointer(prior_args, 8) ||
+        ReadValue<u32>(battle_args, 0) != 257 ||
+        ReadValue<u32>(battle_args, 4) != gate->battle_flag) return;
+
+    // Repeat the preceding required predicate so the original AND group,
+    // character role, interact action and animation can all run unchanged.
+    if (gate->battle_flag != 0) {
+        const u32 previous = ReadValue<u32>(prior_args, 0);
+        if ((previous != 1 && previous != 257) || !HasMemoryAccess(battle_args, 8, MemoryProt::CpuWrite))
+            return;
+        WriteValue<u64>(battle_args, 0, ReadValue<u64>(prior_args, 0));
+        return;
+    }
+    // Chalice guest events resolve flag IDs from per-ritual arguments. Point
+    // the current-fight operand at the existing intro operand for every slot.
+    if (ReadValue<u32>(prior_args, 0) != 257 || ReadValue<u32>(prior_args, 4) != 0 ||
+        !ReadablePointer(range.row, 0x30)) return;
+    const u64 count = ReadValue<u64>(range.row, 0x18);
+    if (count != (range.event == 12906790 ? 8u : 7u)) return;
+    const u64 param = file + ReadValue<u64>(file, 0x58) + ReadValue<u64>(range.row, 0x20) +
+                      (count - 2) * 0x20;
+    if (!ReadablePointer(param - 0x20, 0x40) || ReadValue<u64>(param - 0x20, 0) != 3 ||
+        ReadValue<u64>(param - 0x20, 8) != 4 || ReadValue<u64>(param - 0x20, 0x10) != 12 ||
+        ReadValue<u64>(param - 0x20, 0x18) != 4 || ReadValue<u64>(param, 0) != 4 ||
+        ReadValue<u64>(param, 8) != 4 || ReadValue<u64>(param, 0x10) != 16 ||
+        ReadValue<u64>(param, 0x18) != 4 || !HasMemoryAccess(param + 0x10, 8, MemoryProt::CpuWrite)) return;
+    WriteValue<u64>(param, 0x10, 12);
+}
+
 // The boss entrance retry branch jumps over the native
 // object/collision and SFX enable commands, assuming a fresh map. A guest can
 // retain the open first-encounter geometry. Land on the original enable block
@@ -17916,11 +17997,16 @@ bool RedirectBbscBossFogRetry(u64 instance) {
     if (!ReadablePointer(instance, 0xC4) || ReadValue<s32>(instance, 0xA0) != 1) return false;
     const u64 instruction = ReadValue<u64>(instance, 0xB0);
     if (!ReadablePointer(instruction, 0x20) || ReadValue<s32>(instruction, 0) != 1003 ||
-        ReadValue<s32>(instruction, 4) != 101 || ReadValue<u64>(instruction, 8) != 8 ||
-        GetSessionState() != 6 || GetLocalPlayerType() != 1) return false;
+        ReadValue<s32>(instruction, 4) != 101 || ReadValue<u64>(instruction, 8) != 8) return false;
 
     const auto* range = LookupBbscQuestRange(instance);
     if (!range || instruction != range->first + 0x20) return false;
+    const s32 state = GetSessionState(), type = GetLocalPlayerType();
+    const bool guest = state == 6 && type == 1;
+    // Ludwig can keep the same map across a role change. Run the original
+    // geometry/SFX enable block on retries for an own-world player as well.
+    if (!guest && !(range->event == 13404800 && (state == 0 || state == 3)))
+        return false;
     const s32 enable_step = GuestAccess::BossFogRetryEnableStep(range->event);
     if (!enable_step) return false;
     const u64 enable = range->first + enable_step * 0x20;

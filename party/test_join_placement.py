@@ -90,6 +90,80 @@ class JoinPlacementTests(DynamicHelpers, unittest.TestCase):
             self.run_order(True)
     def test_aimed_packet_after_dynamic_claim(self):self.run_order(False)
 
+    @patch.dict('os.environ', BB_PARTY_DIAGNOSTICS='1')
+    def test_one_way_party_connection_still_delivers_placement_and_joins(self):
+        a,b=self.node('A'),self.node('B')
+        self.discover(); room=self.host(a)
+        host,guest=bridges=[Compatibility(e).start() for e in (a,b)]
+        sockets=[]
+        try:
+            for bridge in bridges:
+                sock=socket.create_connection(('127.0.0.1',bridge.relay_port),timeout=3)
+                sockets.append(sock)
+                size,=struct.unpack('<I',recv_exact(sock,4));recv_exact(sock,size)
+            target=game_user_id('B')
+            sign=dict(UserId=target,AreaId=23)
+            placement='1,18010000,c33f16c9,c24a6a5f,43158c4c,3da56540,241000'
+            raw=b'SHAD\x40'+struct.pack('<II',111,111)+b'SHAD\x31'+f'{target}|{placement}'.encode()
+            with patch.object(b,'rpc',side_effect=TimeoutError('Reverse connection timed out')):
+                self.request(guest,'create',sign)
+                sockets[0].sendall(blob(raw))
+                self.request(host,'request',dict(TargetUserId=target),placement)
+                self.eventually(lambda:b.finalized() and b.state['owner']=='A')
+                self.eventually(lambda:'A' in guest.received_placements)
+                self.assertEqual(self.request(guest,'create',sign,ack=placement)['TargetUserId'],target)
+                self.assertEqual(guest.np_command(102,dict(room_id=room))['room_id'],room)
+                self.assertIn('B',a.state['joined'])
+                self.assertIn('B',b.state['joined'])
+                events=[json.loads(line) for line in guest.logfile.read_text(encoding='utf-8').splitlines()]
+                self.assertIn('presence',[row.get('route') for row in events if row['event']=='admission_confirmed'])
+                guest.np_command(103,dict(room_id=room))
+                self.assertNotIn('B',a.state['joined'])
+                self.assertIsNone(b.disk['attachment'])
+        finally:
+            for sock in sockets:sock.close()
+            for bridge in bridges:bridge.close()
+            self.engines.clear()
+
+    def test_join_timeout_retires_only_the_failed_ticket_and_unblocks_bell(self):
+        a,b,c=self.node('A'),self.node('B'),self.node('C')
+        self.discover(); room=self.host(a)
+        self.claim(a,c)
+        c.command(dict(kind='room_join',room_id=room))
+        host,guest=bridges=[Compatibility(e).start() for e in (a,b)]
+        try:
+            target=game_user_id('B')
+            sign=dict(UserId=target,AreaId=23)
+            placement='1,18010000,c33f16c9,c24a6a5f,43158c4c,3da56540,241000'
+            self.request(guest,'create',sign)
+            with patch.object(b,'rpc',side_effect=TimeoutError('Reverse connection timed out')), \
+                 patch.object(b,'reverse_request',return_value=None,create=True):
+                self.request(host,'request',dict(TargetUserId=target),placement)
+                ticket=a.state['pending']['B']['ticket']
+                reservation=b.disk['attachment']['reservation']
+                b.signs['A']=dict(at=time.monotonic(),host=dict(owner='A',generation=a.state['generation']))
+                self.assertFalse(guest.control('/party/can_beckon',{}))
+                with self.assertRaisesRegex(TimeoutError,'Native join placement not acknowledged'):
+                    guest.np_command(102,dict(room_id=room))
+                self.assertIsNone(b.disk['attachment'])
+                self.assertIn(reservation,b.disk['retired'])
+                b.signs['A']['at']=time.monotonic()
+                self.assertTrue(guest.control('/party/can_beckon',{}))
+                self.eventually(lambda:'B' not in a.state['pending'])
+                self.assertEqual(list(a.state['joined']),['C'])
+                self.request(host,'request',dict(TargetUserId=target),placement)
+                self.assertNotEqual(a.state['pending']['B']['ticket'],ticket)
+                b.retire_failed_join(('A',a.state['generation'],room,ticket))
+                self.assertIsNotNone(b.disk['attachment'])
+                guest.control('/party/native',dict(cancel_seq=1,state=0,fresh=True,loading=False))
+                self.assertIsNone(b.disk['attachment'])
+                self.assertTrue(guest.control('/party/can_beckon',{}))
+                self.eventually(lambda:'B' not in a.state['pending'])
+                self.assertEqual(list(a.state['joined']),['C'])
+        finally:
+            for bridge in bridges:bridge.close()
+            self.engines=[c]
+
     def test_repeat_direct_join_waits_for_native_placement_without_sign_poll(self):
         a,b=self.node('A'),self.node('B')
         self.discover();rid=self.host(a)

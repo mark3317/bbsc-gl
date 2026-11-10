@@ -97,7 +97,9 @@ class DynamicEngine:
         self.bell_ring_seq = 0
         self.bell_ring_generation = 0
         self.bell_seen = {}
-        self.admitted_incarnations = {}
+        self.admissions = {}
+        self.failed_join_hosts = {}
+        self.reverse_view = None
         self.bell_notices = 0
         self.bell_released_notice = 0
         self.yielding_search = None
@@ -154,7 +156,16 @@ class DynamicEngine:
                         result = {'ok': True, 'result': outer.dispatch(sender, request['body'])}
                     except (ValueError, KeyError) as error:
                         result = {'ok': False, 'error': str(error)}
+                    reverse = None
+                    body = request['body']
+                    if result['ok'] and body['kind'] == 'presence' and body.get('reverse') is True:
+                        reverse = outer.reverse_request(sender)
+                    if reverse:
+                        result['reverse'] = reverse[1]
                     write_frame(self.request, outer.signed(sender, dict(result, nonce=request['nonce'])))
+                    if reverse:
+                        reply = outer.read_reply(self.request, sender, request['nonce'])
+                        outer.accept_reverse_reply(reverse, reply)
                 except (OSError, ValueError, KeyError, TypeError):
                     pass
 
@@ -207,6 +218,7 @@ class DynamicEngine:
                         continue
                     del self.peers[who], self.members[who]
                     self.signs.pop(who, None)
+                    self.failed_join_hosts.pop(who, None)
                 for offer in offers:
                     try:
                         validate_offer(offer)
@@ -266,26 +278,91 @@ class DynamicEngine:
             peer = copy.deepcopy(self.peers[who])
             nonce = secrets.token_hex(16)
             request = self.signed(who, dict(nonce=nonce, body=body))
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1.5)
-            sock.bind((self.member['host'], 0))
-            sock.connect((peer['host'], peer['port']))
-            write_frame(sock, request)
-            try:
-                reply = read_frame(sock)
-                with self.lock:
-                    self.verify(who, reply)
-                if reply.get('nonce') != nonce or type(reply.get('ok')) is not bool:
-                    raise ValueError('Unexpected RPC reply')
-                if ('result' if reply['ok'] else 'error') not in reply:
-                    raise ValueError('Incomplete RPC reply')
-            except (ValueError, AttributeError, TypeError) as error:
-                # The peer may have committed. Only its authenticated rejection
-                # for this nonce lets the owner roll back a staged reservation.
-                raise OSError('Unconfirmed dynamic RPC reply') from error
+        phase = 'bind'
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(1.5)
+                sock.bind((self.member['host'], 0))
+                phase = 'connect'
+                sock.connect((peer['host'], peer['port']))
+                phase = 'send'
+                write_frame(sock, request)
+                phase = 'read reply'
+                reply = self.read_reply(sock, who, nonce)
+                reverse = reply.get('reverse')
+                if reply['ok'] and body['kind'] == 'presence' and body.get('reverse') is True and isinstance(reverse, dict):
+                    self.answer_reverse(sock, who, nonce, reverse)
+        except OSError as error:
+            raise OSError(f'{phase}: {error}') from error
         if reply['ok'] is False:
             raise ValueError(reply['error'])
         return reply['result']
+
+    def read_reply(self, sock, who, nonce):
+        try:
+            reply = read_frame(sock)
+            with self.lock:
+                self.verify(who, reply)
+            if reply.get('nonce') != nonce or type(reply.get('ok')) is not bool:
+                raise ValueError('Unexpected RPC reply')
+            if ('result' if reply['ok'] else 'error') not in reply:
+                raise ValueError('Incomplete RPC reply')
+        except (ValueError, AttributeError, TypeError) as error:
+            # The peer may have committed. Only its authenticated rejection
+            # for this nonce lets the owner roll back a staged reservation.
+            raise OSError('Unconfirmed dynamic RPC reply') from error
+        return reply
+
+    def answer_reverse(self, sock, who, nonce, request):
+        # Use the already authenticated presence socket when the guest cannot
+        # open its own connection. Dispatch uses the same authority and receipts.
+        try:
+            if request.get('kind') not in ('view', 'command'):
+                raise ValueError('Invalid reverse Party request')
+            result = {'ok': True, 'result': self.dispatch(who, request)}
+        except (ValueError, KeyError, TypeError) as error:
+            result = {'ok': False, 'error': str(error)}
+        except OSError:
+            return
+        try:
+            write_frame(sock, self.signed(who, dict(result, nonce=nonce)))
+        except OSError:
+            pass  # The next existing presence exchange can carry the request.
+
+    def remote_command(self, pending):
+        destination = pending['destination']
+        return dict(kind='command', session=destination['session'],
+                    admission=admission_ticket(destination['state'], self.id),
+                    seq=pending['seq'], op=pending['op'])
+
+    def reverse_request(self, sender):
+        with self.lock:
+            attached = self.disk['attachment']
+            if not attached or attached['host'] != sender:
+                return None
+            reservation = attached['reservation']
+            pending = self.pending_local
+            if (pending and pending['destination'] and
+                    pending['destination']['reservation'] == reservation and
+                    'error' not in pending and 'result' not in pending and
+                    (pending.get('reverse') or self.reverse_view == reservation)):
+                return reservation, self.remote_command(pending)
+            if self.reverse_view == reservation:
+                return reservation, dict(kind='view', session=attached['session'])
+            return None
+
+    def accept_reverse_reply(self, reverse, reply):
+        reservation, request = reverse
+        with self.lock:
+            attached = self.disk['attachment']
+            if not attached or attached['reservation'] != reservation:
+                return
+            if reply['ok']:
+                self.accept_world(reply['result'], route='presence')
+            elif request['kind'] == 'command':
+                pending = self.pending_local
+                if pending and pending['seq'] == request['seq'] and 'result' not in pending:
+                    pending['error'] = reply['error']
 
     def world(self, expected=None):
         if self.storage_error or self.stop_event.is_set():
@@ -314,9 +391,13 @@ class DynamicEngine:
                 released = (not self.storage_error and self.bell_ring_seq > 0 and
                             (home['generation'] > self.bell_ring_generation or
                              (home['generation'] == self.bell_ring_generation and home['owner'] is None)))
-                return dict(body=copy.deepcopy(self.local_status) if eligible else {'sign': None},
-                            stamp=[self.disk['incarnation'], self.update_seq], host=host,
-                            bell=[self.bell_ring_seq, active, released])
+                reply = dict(body=copy.deepcopy(self.local_status) if eligible else {'sign': None},
+                             stamp=[self.disk['incarnation'], self.update_seq], host=host,
+                             bell=[self.bell_ring_seq, active, released])
+                reservation = body.get('reservation')
+                if isinstance(reservation, list) and reservation in self.disk['retired']:
+                    reply['withdrawn'] = True
+                return reply
         if kind == 'reserve':
             return self.reserve(sender, body)
         if kind == 'view':
@@ -433,9 +514,9 @@ class DynamicEngine:
             next_state['results'][sender][str(seq)] = room_id
         self.disk['home'] = next_state
         if op['kind'] in ('admission_cancel', 'room_leave'):
-            self.admitted_incarnations.pop(sender, None)
+            self.admissions.pop(sender, None)
         if next_state['generation'] != state['generation']:
-            self.admitted_incarnations.clear()
+            self.admissions.clear()
         if op['kind'] == 'release':
             self.disk['closed'][canonical(session(self.cfg, next_state)).decode()] = copy.deepcopy(next_state)
             while len(self.disk['closed']) > 32:
@@ -505,7 +586,7 @@ class DynamicEngine:
             self.disk['home'] = staged['state']
             self.disk['staged'] = None
             if type(incarnation) is int and incarnation > 0:
-                self.admitted_incarnations[staged['target']] = incarnation
+                self.admissions[staged['target']] = (incarnation, staged['seq'])
             self.reset_relay_peer(staged['target'])
             self.persist()
             if self.diagnostic:
@@ -515,23 +596,27 @@ class DynamicEngine:
                                 room_id=(state['room'] or {}).get('id'))
 
     def forget_restarted_guest(self, who, stamp):
-        admitted = self.admitted_incarnations.get(who)
+        admitted = self.admissions.get(who)
         if (admitted is None or not isinstance(stamp, list) or len(stamp) != 2 or
-                type(stamp[0]) is not int or stamp[0] <= admitted or
+                type(stamp[0]) is not int or stamp[0] <= admitted[0] or
                 self.disk['staged'] or self.disk['home']['owner'] != self.id):
             return
+        state = self.remove_admission(who)
+        if self.diagnostic:
+            self.diagnostic('guest_restarted', peer=who, incarnation=stamp[0], room_id=(state['room'] or {}).get('id'))
+
+    def remove_admission(self, who):
         state = copy.deepcopy(self.disk['home'])
         state['pending'].pop(who, None)
         remove_room_guest(state, who)
         state['revision'] += 1
         self.disk['home'] = state
-        self.admitted_incarnations.pop(who)
+        self.admissions.pop(who, None)
         self.reset_relay_peer(who)
         self.persist()
-        if self.diagnostic:
-            self.diagnostic('guest_restarted', peer=who, incarnation=stamp[0], room_id=(state['room'] or {}).get('id'))
+        return state
 
-    def accept_world(self, world):
+    def accept_world(self, world, route='direct'):
         with self.lock:
             attached = self.disk['attachment']
             if not attached or world['session'] != attached['session']:
@@ -592,14 +677,37 @@ class DynamicEngine:
                             admission_ticket(previous, peer) != admission_ticket(state, peer)):
                         self.reset_relay_peer(peer)
             self.persist()
-            if self.diagnostic and first_confirmation:
-                self.diagnostic('admission_confirmed', peer=attached['host'], sequence=attached['reservation'][-1],
-                                ticket=admission_ticket(state, self.id), room_id=room.get('id'))
+            if first_confirmation:
+                self.failed_join_hosts.pop(attached['host'], None)
+                if self.diagnostic:
+                    self.diagnostic('admission_confirmed', peer=attached['host'], sequence=attached['reservation'][-1],
+                                    ticket=admission_ticket(state, self.id), room_id=room.get('id'), route=route)
 
     def retire_attachment(self, attached):
         self.disk['retired'].append(attached['reservation'])
         self.disk['retired'] = self.disk['retired'][-64:]
         self.disk['attachment'] = None
+        self.reverse_view = None
+
+    def retire_failed_join(self, scope=None):
+        with self.lock:
+            attached = self.disk['attachment']
+            if not attached or self.pending_local or (scope is None and attached['confirmed']):
+                return
+            state = attached['state']
+            room = state['room'] or {}
+            pending = state['pending'].get(self.id)
+            if not pending or self.id in state['joined'] or self.id in room.get('members', {}):
+                return
+            current = (state['owner'], state['generation'], room.get('id'), pending['ticket'])
+            if scope is not None and scope != current:
+                return
+            self.failed_join_hosts[attached['host']] = state['generation']
+            self.retire_attachment(attached)
+            self.reset_relay()
+            self.persist()
+            if self.diagnostic:
+                self.diagnostic('failed_join_retired', peer=current[0], room_id=current[2], ticket=current[3])
 
     def start(self):
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -717,7 +825,7 @@ class DynamicEngine:
                 closed = terminal(base)
                 self.disk['home'] = closed
                 self.disk['staged'] = None
-                self.admitted_incarnations.clear()
+                self.admissions.clear()
                 self.disk['closed'][canonical(session(self.cfg, closed)).decode()] = copy.deepcopy(closed)
                 while len(self.disk['closed']) > 32:
                     del self.disk['closed'][next(iter(self.disk['closed']))]
@@ -803,6 +911,10 @@ class DynamicEngine:
                 if (who == self.id or who not in self.peers or time.monotonic()-entry['at'] >= 2 or
                         not isinstance(host, dict) or host.get('owner') != who):
                     continue
+                # A failed join must not turn that same search's advertisement
+                # into a second bell lock. A later search or claim can proceed.
+                if who in self.failed_join_hosts and self.failed_join_hosts[who] == host.get('generation'):
+                    continue
                 if self.state['owner'] == self.id and not host.get('occupied') and who > self.id:
                     continue
                 candidates.append((not bool(host.get('occupied')), who))
@@ -832,16 +944,20 @@ class DynamicEngine:
                         self.finish_claim()
                     if not pending:
                         continue
-                    with self.lock:
-                        attached = copy.deepcopy(self.disk['attachment'])
                     destination = pending.get('destination')
                     if destination:
-                        world = self.rpc(destination['host'], dict(kind='command', session=destination['session'],
-                                                               admission=admission_ticket(destination['state'], self.id),
-                                                               seq=pending['seq'], op=pending['op']))
+                        try:
+                            world = self.rpc(destination['host'], self.remote_command(pending))
+                        except OSError:
+                            with self.lock:
+                                if self.pending_local and self.pending_local['seq'] == pending['seq']:
+                                    self.pending_local['reverse'] = True
+                            raise
                         result = world['state']['results'][self.id][str(pending['seq'])]
-                        if attached:
-                            self.accept_world(world)
+                        with self.lock:
+                            attached = self.disk['attachment']
+                            if attached and attached['reservation'] == destination['reservation']:
+                                self.accept_world(world)
                     else:
                         with self.lock:
                             done = self.disk['home']['results'].get(self.id, {})
@@ -861,7 +977,8 @@ class DynamicEngine:
                 pass  # Keep the same durable reservation/request, never release on timeout.
             except (ValueError, KeyError) as error:
                 with self.lock:
-                    if self.pending_local and pending and self.pending_local['seq'] == pending['seq']:
+                    if (self.pending_local and pending and self.pending_local['seq'] == pending['seq'] and
+                            'result' not in self.pending_local):
                         self.pending_local['error'] = str(error)
 
     def scan(self):
@@ -890,26 +1007,51 @@ class DynamicEngine:
                     return
                 attached = self.disk['attachment']
                 session_id = attached['session'] if attached and attached['host'] == who else None
+                reservation = attached['reservation'] if session_id else None
             if session_id:
                 try:
-                    self.accept_world(self.rpc(who, dict(kind='view', session=session_id)))
+                    world = self.rpc(who, dict(kind='view', session=session_id))
+                    with self.lock:
+                        attached = self.disk['attachment']
+                        if attached and attached['reservation'] == reservation:
+                            self.accept_world(world)
                 except (OSError, ValueError, KeyError) as error:
+                    if isinstance(error, OSError):
+                        with self.lock:
+                            if self.disk['attachment'] and self.disk['attachment']['reservation'] == reservation:
+                                self.reverse_view = reservation
                     if self.diagnostic:
                         failure = (tuple(session_id), str(error)[:160])
                         if failure != view_error:
                             self.diagnostic('host_view_failed', peer=who, session=session_id, reason=failure[1])
                         view_error = failure
                 else:
+                    with self.lock:
+                        if self.reverse_view == reservation:
+                            self.reverse_view = None
                     if view_error and self.diagnostic:
                         self.diagnostic('host_view_resumed', peer=who, session=session_id)
                     view_error = None
             else:
                 view_error = None
             try:
-                reply = self.rpc(who, dict(kind='presence'))
+                request = dict(kind='presence', reverse=True)
+                with self.lock:
+                    home = self.disk['home']
+                    admitted = self.admissions.get(who)
+                    if admitted and who in home['pending']:
+                        request['reservation'] = [*session(self.cfg, home), admitted[1]]
+                reply = self.rpc(who, request)
                 with self.lock:
                     if peer == self.peers.get(who) and not self.stop_event.is_set():
                         self.forget_restarted_guest(who, reply['stamp'])
+                        home = self.disk['home']
+                        if (reply.get('withdrawn') is True and 'reservation' in request and
+                                not self.disk['staged'] and self.admissions.get(who) == admitted and
+                                who in home['pending'] and request['reservation'] == [*session(self.cfg, home), admitted[1]]):
+                            self.remove_admission(who)
+                            if self.diagnostic:
+                                self.diagnostic('failed_join_withdrawn', peer=who, room_id=(home['room'] or {}).get('id'))
                         if (who in self.relay_peer_errors and who not in self.relay_reopening and
                                 admission_ticket(self.state, who) is not None):
                             # Reopen once on authenticated contact. New traffic

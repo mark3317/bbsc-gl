@@ -6,7 +6,7 @@
 
 namespace Core::Bloodborne::GuestAccess {
 // CUSA03173 1.09 host fog events and the first native enable instruction.
-// Their separate guest events own guest entry after the host starts the fight.
+// Their separate guest events own the local action and traversal.
 inline constexpr std::pair<std::int64_t, std::int32_t> BossFogRetrySteps[] = {
     {12104810, 5}, {12104880, 5}, {12204890, 10}, {12304730, 10}, {12304810, 8},
     {12404840, 8}, {12414730, 8}, {12414810, 8}, {12424710, 10}, {12424810, 8},
@@ -20,6 +20,29 @@ constexpr std::int32_t BossFogRetryEnableStep(std::int64_t event) {
     const auto gate = std::ranges::lower_bound(BossFogRetrySteps, event, {},
                                                &std::pair<std::int64_t, std::int32_t>::first);
     return gate != std::ranges::end(BossFogRetrySteps) && gate->first == event ? gate->second : 0;
+}
+
+// Native guest traversal events and their current-fight predicate. Zero in
+// the flag column means the dungeon instance supplies it through parameters.
+struct GuestFogGate {
+    std::int64_t event;
+    std::uint32_t battle_flag;
+    std::int32_t step = 4;
+};
+inline constexpr GuestFogGate GuestFogGates[] = {
+    {12104811, 12104800}, {12104881, 12104850}, {12204891, 12204800},
+    {12304731, 12304700}, {12304811, 12304800}, {12404841, 12404800},
+    {12414731, 12414700}, {12414811, 12414800}, {12424711, 12424700, 3},
+    {12424811, 12424800}, {12504811, 12504800}, {12604846, 12604800, 3},
+    {12604861, 12604850}, {12704841, 12704800}, {12804881, 12804800},
+    {12906790, 0}, {12906802, 0}, {13204831, 13204800}, {13304871, 13304800},
+    {13404801, 13404808}, {13404851, 13404858}, {13504801, 13504808},
+    {13504851, 13504858}, {13604801, 13604808},
+};
+
+constexpr const GuestFogGate* FindGuestFogGate(std::int64_t event) {
+    const auto gate = std::ranges::lower_bound(GuestFogGates, event, {}, &GuestFogGate::event);
+    return gate != std::ranges::end(GuestFogGates) && gate->event == event ? gate : nullptr;
 }
 
 // Deny lists govern LOCAL interaction gates only. They never change native

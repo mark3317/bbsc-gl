@@ -463,7 +463,7 @@ class DynamicTests(DynamicHelpers, unittest.TestCase):
                 raise OSError('Guest cannot reach the host yet')
             return original(who, body)
 
-        with patch.object(b, 'rpc', side_effect=hold_view):
+        with patch.object(b, 'rpc', side_effect=hold_view), patch.object(b, 'reverse_request', return_value=None):
             a.command(dict(kind='claim', target='B', claim={}))
             self.assertFalse(b.finalized())
             cfg = copy.deepcopy(a.cfg)

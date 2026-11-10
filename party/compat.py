@@ -15,6 +15,7 @@ RUN_LOG_EVENTS = frozenset("""
     peer_address_changed peer_presence_failed peer_presence_resumed host_view_failed host_view_resumed
     relay_native_binding relay_fenced relay_reopened relay_recovered
     guest_restarted host_restarted native_retired guest_cancel_retired native_process_exited
+    failed_join_retired failed_join_withdrawn
 """.split())
 RUN_LOG_NP_COMMANDS = {0, 101, 102, 103, 105, 110}
 
@@ -502,7 +503,10 @@ class Compatibility:
                         (current['owner'],current['generation'],admission['ticket'])!=scope):
                         raise ValueError('Join admission changed before placement')
                     if self.e.finalized(current) and self.placement_ready(current):break
-                    if time.monotonic()>=deadline:raise TimeoutError('Native join placement not acknowledged')
+                    if time.monotonic()>=deadline:
+                        if getattr(self.e,'dynamic',False):
+                            self.e.retire_failed_join((scope[0],scope[1],r['room_id'],scope[2]))
+                        raise TimeoutError('Native join placement not acknowledged')
                     time.sleep(.02)
             if not pending:
                 raise ValueError('No current admission')
@@ -742,7 +746,10 @@ class Compatibility:
                     with self.e.lock:
                         if self.e.state['owner']==self.e.id:
                             self.beckoning_seen_scope=native_scope(self.e.state)
-                self.latest_cancel=max(self.latest_cancel,int(body.get('cancel_seq',0)))
+                cancel=int(body.get('cancel_seq',0))
+                if cancel>self.latest_cancel:
+                    if getattr(self.e,'dynamic',False): self.e.retire_failed_join()
+                    self.latest_cancel=cancel
                 if self.latest_cancel>self.cancel_floor: self.release_intent=True
                 if body.get('state') in (1,3,4,6) or body.get('bell'): self.observed=True
             self.publish() # Host heartbeats exist even without a guest-search sign.

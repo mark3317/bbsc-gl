@@ -68,6 +68,12 @@ the local cumulative notice count and the count of the last confirmed release.
 The DLL presents each pending ring when the banner can draw. Fixed rosters and
 clients without this opt-in keep their previous world-generation fields.
 
+Clients that send `roster_count` also receive the confirmed room population
+in the same tick response. For this extension the preceding marker is 1 for
+counted bell notices or 0 for legacy generations. Pending invitations do not
+count. An explicit zero means no confirmed membership in a room, whereas an
+omitted population leaves the last confirmed count intact.
+
 ## Explicit host-load follow metadata вЂ” 04.11.2026 (source only)
 
 Follow0x20 kind1 keeps the34-byte position/lamp prefix, optional24-byte chalice
@@ -177,9 +183,11 @@ therefore do not enable this automatic recovery. No live journal reset/migration
 An outgoing recipient's bounded backlog overflow, socket queue overflow or10s
 ACK expiry fences only that recipient's stream. Other recipients keep ordered
 delivery through the same native relay socket. `relay_peer_errors` reports these
-fences separately from fatal local `relay_error`. A fenced stream is retired until
-reset_relay creates a fresh native transport/world stream; it never resumes with
-missing multipart sequences. Failure does not release membership or authority.
+fences separately from fatal local `relay_error`. A fenced stream is retired. In
+dynamic worlds a successful existing authenticated presence reply can open one
+fresh outgoing stream for that recipient, with the next frame at sequence one.
+Another reopening requires a relay ACK on the new stream or a new admission.
+Failure does not release membership or authority.
 The rule applies to both static Engine and DynamicEngine. It does not claim game
 handling of non-host native signaling DEAD is validated.
 
@@ -207,24 +215,38 @@ Admission is a durable two-stage reservation:
 2. Guest atomically rejects another host/local acquire, or persists a provisional
    attachment. Repeated reservation IDs return the same answer.
 3. Host commits the staged claim only after the guest's durable acknowledgement.
-4. Guest fetches and persists the host's committed snapshot. Before this, no
-   native claim, role permission or native-state relay is authorized.
+4. Guest fetches and persists the host's committed snapshot. On direct RPC
+   failure, it may send a view request or the same sequenced command in its
+   signed presence reply. The host answers on that socket using the normal
+   authorization and receipt checks. Before confirmation, no native claim,
+   role permission or native-state relay is authorized.
 5. Native Matching2 join/leave and explicit cancellation keep their original
    admission, room-member, incarnation and draining checks. After confirmed leave
    the guest returns to its home without changing its login or loopback sockets.
 
-Lost replies retry the same reservation/command. A restart resumes a staged claim
-or guest attachment. Retired reservation IDs cannot reattach a drained guest.
-A partition, native transport EOF, loading, death or elapsed time never clears a
-binding or changes a world owner. An unreachable active host can therefore block
-its attached guests until it recovers; unrelated home worlds remain independent.
+Lost replies within one launch retry the same reservation/command. On dynamic
+startup, Party replaces the journal with an empty session after binding its
+exclusive endpoint. It retains only the stable identity and monotonic counters
+needed to fence old requests. A surviving guest learns that its old world ended
+through its existing authenticated view request. The host drops only a guest
+whose newer process incarnation is authenticated, using the incarnation returned
+by that guest's reservation. A staged invitation carries the guest incarnation
+from its sign so a delayed request cannot reserve a newly launched guest.
+Retired reservation IDs cannot reattach a drained guest within the same launch.
+A JoinRoom placement timeout retires its exact unused admission. Explicit
+native cancellation may also retire a provisional reservation. The host includes
+the pending reservation ID in its presence request and releases only that
+pending admission after the guest's authenticated withdrawal. A partition,
+native transport EOF, loading, death or elapsed time never clears joined
+membership or changes a world owner. Unrelated home worlds remain independent.
 Release still requires explicit native intent and a drained room/pending/joined
 set. A host retains bounded terminal snapshots for replies across world rotation.
 
 RPC envelopes authenticate sender, nonce and body with an identity-pair HMAC and
 check source IPv4. Directory seeds and endpoints use the same private-network
 trust boundary as existing launcher discovery, not an Internet authentication
-service. Active participant identities are pinned durably. Unknown/malformed
+service. An active identity keeps its key, name and ports. An advertisement
+for the same identity can update its IPv4 address. Unknown/malformed
 identities and duplicate native names/endpoints are rejected. Legacy and dynamic
 control protocols do not interoperate; upgrade all players together.
 

@@ -15,18 +15,32 @@ elf = Path(sys.argv[1]).read_bytes()[0x4000:]
 assert elf[0x17bedd0:0x17bedd6] == bytes.fromhex('55 48 89 e5 41 57')
 assert elf[0x12ef2e0:0x12ef2e6] == bytes.fromhex('55 48 89 e5 41 57')
 source = (ROOT / 'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
-production = source[source.index('bool RedirectBbscBossFogRetry(u64 instance)'):
+production = source[source.index('void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range) {'):
                     source.index('// From an event\'s 2003 instruction')]
 production += source[source.index('u8 bbsc_guest_role_skip = 0;'):
                      source.index('void PS4_SYSV_ABI BbscDreamTypeCheckHook(')]
 access = (ROOT / 'emulator/src/core/bbsc_guest_access.h').read_text(encoding='utf-8')
-targets = {int(event): int(step) for event, step in re.findall(r'\{(\d+), (\d+)\}', access)}
+retry_table = access.split('BossFogRetrySteps[] = {', 1)[1].split('};', 1)[0]
+targets = {int(event): int(step) for event, step in re.findall(r'\{(\d+), (\d+)\}', retry_table)}
+guest_table = access.split('GuestFogGates[] = {', 1)[1].split('};', 1)[0]
+guest_targets = {int(event): (int(flag), int(step or 4))
+                 for event, flag, step in re.findall(r'\{(\d+), (\d+)(?:, (\d+))?\}', guest_table)}
 
 cases = {}
+guest_cases = {}
 scripts = {}
 for script in (game / 'event').glob('*.emevd.dcx'):
     evd = Emevd(script)
     for row, (event, ins) in enumerate(evd.events):
+        if event in guest_targets:
+            flag, step = guest_targets[event]
+            assert ins[step] == (3, 0, (257).to_bytes(4, 'little') + flag.to_bytes(4, 'little'))
+            assert ins[step-1][:2] == (3, 0)
+            assert ins[step+1] == (4, 3, bytes.fromhex('010000001027000001000000'))
+            assert ins[step+2][:2] == (3, 24)
+            assert ins[step+4][:2] == (2004, 14)
+            guest_cases[event] = (script.stem, row, step, flag)
+            scripts[script.stem] = evd.data
         if event not in targets:
             continue
         assert ins[0][:2] == (1003, 2) and ins[0][2][:4] == b'\0\1\0\0'
@@ -44,12 +58,14 @@ for script in (game / 'event').glob('*.emevd.dcx'):
         cases[event] = (script.stem, row, enable, label, hides_fog)
         scripts[script.stem] = evd.data
 assert set(cases) == set(targets)
+assert set(guest_cases) == set(guest_targets)
 assert {event for event, case in cases.items() if not case[-1]} == {12104810, 12104880}
 
 fixture = r'''
 #include <windows.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -81,10 +97,13 @@ template<class T> bool WriteValue(u64 p, size_t off, T value) {
 s32 GetSessionState() { return state; }
 s32 GetLocalPlayerType() { return type; }
 bool BbscGuestInHostWorld() { return state == 6; }
+bool BbscTimelineEnabled() { return false; }
+#define BBSC_TIMELINE(...) ((void)0)
+std::atomic<u32> bbsc_load_generation{0};
 bool PS4_SYSV_ABI NativeFlag(u64, u32 flag) { assert(flag==intro); return introduced; }
 bool BbscEventFlag(u32 flag) { return NativeFlag(0, flag); }
-struct Range {u64 first, end; s64 event;} range;
-const Range* LookupBbscQuestRange(u64) { return &range; }
+struct BbscQuestRange {u64 first, end, row; s64 event;} range;
+const BbscQuestRange* LookupBbscQuestRange(u64) { return &range; }
 s64 BbscEventIdOf(u64) { return range.event; }
 void BbscChaliceRewardGateHook(u64, const GuestRegisterSnapshot*) {
     bbsc_chalice_reward_gate_skip=0;
@@ -104,7 +123,7 @@ void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bo
     const u64 row=file+ReadValue<u64>(file,0x18)+row_index*0x30;
     assert(ReadValue<s64>(row,0)==event);
     const u64 first=file+ReadValue<u64>(file,0x28)+ReadValue<u64>(row,0x10);
-    range={first, first+ReadValue<u64>(row,8)*0x20, event};
+    range={first, first+ReadValue<u64>(row,8)*0x20, row, event};
     std::array<u64,2> ref{0,file};
     const u64 args=file+ReadValue<u64>(file,0x78)+ReadValue<u64>(first+0x20,0x10);
     // The common Chalice event substitutes a per-ritual flag into +B8.
@@ -130,7 +149,9 @@ void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bo
         assert(((Bank)(image_base+0x17bedd0))(0,p)==1);
         u8 keep_running=0;
         assert(((Advance)(image_base+0x12ef2e0))(p+0x80,&keep_running));
-        const auto next=!seen ? 2 : hooked && role==6 && player==1 ? enable : label;
+        const bool repair=hooked && ((role==6 && player==1) ||
+            (event==13404800 && player==0 && (role==0 || role==3)));
+        const auto next=!seen ? 2 : repair ? enable : label;
         assert(keep_running==1 && ReadValue<s32>(p,0xA0)==next);
         assert(ReadValue<u64>(p,0xB0)==first+next*0x20);
         if (seen || !hides_fog) continue;
@@ -147,6 +168,46 @@ void Check(const char* path, s64 event, u64 row_index, s32 enable, s32 label, bo
         assert(keep_running==1 && ReadValue<s32>(p,0xA0)==first_geometry);
         assert(ReadValue<u64>(p,0xB0)==first+first_geometry*0x20);
     }
+}
+void CheckGuest(const char* path, s64 event, u64 row_index, s32 step, u32 flag) {
+    std::ifstream script(path,std::ios::binary);
+    std::vector<char> data(std::istreambuf_iterator<char>(script), {});
+    const u64 file=(u64)data.data();
+    const u64 row=file+ReadValue<u64>(file,0x18)+row_index*0x30;
+    assert(ReadValue<s64>(row,0)==event);
+    const u64 first=file+ReadValue<u64>(file,0x28)+ReadValue<u64>(row,0x10);
+    range={first,first+ReadValue<u64>(row,8)*0x20,row,event};
+    std::array<u64,2> ref{0,file};
+    std::array<u64,26> instance{};
+    const u64 p=(u64)instance.data();
+    WriteValue<u64>(p,0xA8,(u64)ref.data());
+    const u64 args=file+ReadValue<u64>(file,0x78);
+    const u64 prior=args+ReadValue<u64>(first+(step-1)*0x20,0x10);
+    const u64 battle=args+ReadValue<u64>(first+step*0x20,0x10);
+    const auto original=data;
+    state=0;type=0; // Load in solo, then join in the same map.
+    WriteValue<s32>(p,0xA0,2);
+    PrepareBbscBossFogEvent(p,range);
+    assert(data==original);
+    WriteValue<s32>(p,0xA0,0);
+    PrepareBbscBossFogEvent(p,range);
+    size_t changed;
+    if (flag) {
+        assert(ReadValue<u64>(battle,0)==ReadValue<u64>(prior,0));
+        changed=battle-file;
+    } else {
+        const u64 count=ReadValue<u64>(row,0x18);
+        const u64 param=file+ReadValue<u64>(file,0x58)+ReadValue<u64>(row,0x20)+(count-2)*0x20;
+        assert(ReadValue<u64>(param,0x10)==12);
+        changed=param+0x10-file;
+    }
+    assert(data!=original);
+    for (size_t i=0;i<data.size();++i)
+        if (i<changed || i>=changed+8) assert(data[i]==original[i]);
+    const auto prepared=data;
+    state=6;type=1;
+    PrepareBbscBossFogEvent(p,range);
+    assert(data==prepared);
 }
 void CheckAll(bool hooked) {
 CASES
@@ -179,6 +240,7 @@ int main() {
     assert(Core::InstallGuestCodeHook((void*)(image_base+0x17b21a0),prologue,0,
         BbscGuestRoleGateHook,&bbsc_guest_role_skip));
     CheckAll(true);
+GUEST_CASES
 }
 '''
 
@@ -190,7 +252,9 @@ with tempfile.TemporaryDirectory(prefix='bbsc-fog-retry-') as directory:
     (tmp / 'iterator.bin').write_bytes(elf[0x12ef2e0:0x12ef50b])
     (tmp / 'role.bin').write_bytes(elf[0x17b21a0:0x17b244c])
     cpp = tmp / 'fixture.cpp'
-    cpp.write_text(fixture.replace('CASES', '\n'.join(
+    cpp.write_text(fixture.replace('GUEST_CASES', '\n'.join(
+        f'    CheckGuest("{script}",{event},{row},{step},{flag});'
+        for event, (script, row, step, flag) in guest_cases.items())).replace('CASES', '\n'.join(
         f'    Check("{script}",{event},{row},{enable},{label},{str(hides).lower()},hooked);'
         for event, (script, row, enable, label, hides) in cases.items())), encoding='utf-8')
     exe = tmp / 'fixture.exe'
@@ -202,3 +266,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-fog-retry-') as directory:
     subprocess.run([str(exe)], check=True, cwd=tmp, timeout=20,
                    env={**os.environ, 'PATH': str(cxx.parent) + os.pathsep + os.environ['PATH']})
 print(f'PASS {len(cases)} original boss fog events: guest first entry reaches native disable and retries reach native enable')
+print(f'PASS {len(guest_cases)} original guest fog events: only current-fight dependency replaced at event start')
