@@ -14,6 +14,7 @@
 #include "core/bbsc_world_lamp_points.h"
 #include "core/bbsc_lamp_travel_data.h"
 #include "core/bbsc_event_steps.h"
+#include "core/bbsc_boss_retry.h"
 #include "core/bbsc_native_ai_admission.h"
 #include "core/bloodborne_re.h"
 
@@ -4734,12 +4735,12 @@ bool bbsc_boss_at_own_death = false;
 std::atomic<u64> bbsc_world_native_load{0}; // before destination events, not the next game tick
 World::Scope bbsc_boss_wipe_scope{};
 std::atomic<u64> bbsc_boss_wipe_load{0};
+s32 bbsc_encounter_name = -1;
+u32 bbsc_encounter_map = 0;
+u32 bbsc_encounter_load_generation = 0;
+s32 BbscChaliceLayerFirstLamp(u64 player);
 
-void MarkBbscBossWipeLoad() {
-    std::scoped_lock lock{bbsc_world_presence_mutex};
-    bbsc_boss_wipe_scope = World::ScopeOf(bbsc_world_presence_local);
-    bbsc_boss_wipe_load = bbsc_world_native_load.load() + 1;
-}
+void MarkBbscBossWipeLoad();
 
 bool BbscIsBossWipeLoad(const World::Scope& scope) {
     const u64 load = bbsc_boss_wipe_load.load();
@@ -4773,8 +4774,6 @@ constexpr BbscBossLamp BbscBossLamps[] = {
     {453000, 3602952}, {454000, 3602952}, // Orphan, both phases
 };
 s32 bbsc_encounter_lamp = -1;
-u32 bbsc_encounter_map = 0;
-u32 bbsc_encounter_load_generation = 0;
 u32 BbscLampPointMap(s32 point);
 
 void RememberBbscBossLamp() {
@@ -4784,11 +4783,13 @@ void RememberBbscBossLamp() {
     // Preserve the identity while dead: Failed_BossAreaMission clears our HUD.
     bool active = false;
     s32 point = -1;
+    s32 boss_name = -1;
     for (int slot = 0; slot < 3; ++slot) {
         const size_t at = static_cast<size_t>(slot) * 0x14;
         if (ReadValue<s32>(gauge, 0x165C + at) == -1) continue;
         active = true;
         const s32 name = ReadValue<s32>(gauge, 0x1658 + at);
+        boss_name = name;
         for (const auto& lamp : BbscBossLamps) {
             if (lamp.name == name && BbscLampPointMap(lamp.point) == map) {
                 point = lamp.point;
@@ -4796,6 +4797,7 @@ void RememberBbscBossLamp() {
         }
     }
     if (active) {
+        bbsc_encounter_name = boss_name;
         bbsc_encounter_lamp = point; // unknown encounter must not reuse an older boss
         bbsc_encounter_map = map;
         bbsc_encounter_load_generation = bbsc_load_generation.load();
@@ -6752,6 +6754,7 @@ void HideBbscNativeKitGift(u64 instance);
 void EnableBbscKidnapEvent(u64 instance);
 void EnableBbscRomJumpEvent(u64 instance);
 void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range);
+void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range);
 bool GuardBbscSharedFinaleEvent(u64 instance);
 u8 bbsc_transition_event_skip = 0;
 bool bbsc_npc_pass_due = false;
@@ -6773,6 +6776,9 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
     if(steps & EventSteps::Kidnap)EnableBbscKidnapEvent(registers->rdi);
     if(steps & EventSteps::RomJump)EnableBbscRomJumpEvent(registers->rdi);
     if(range && (steps & EventSteps::BossFog))PrepareBbscBossFogEvent(registers->rdi,*range);
+#ifdef BBSC_MOD
+    if(range && (steps & EventSteps::ChaliceBossInit))RememberBbscChaliceBossInit(registers->rdi,*range);
+#endif
     if ((steps & EventSteps::DreamPhase) && BbscIndependentActive() && GetSessionState() == 6) {
         // These m21 events derive and stage the local Dream from native progress.
         // The host still owns the audience, encounter and ending triggers.
@@ -15179,78 +15185,155 @@ s64 bbsc_progress_home_ms = 0;  // home and settled since
 bool bbsc_progress_merged_at_load = false; // merged during the trip home (checked once settled)
 bool bbsc_progress_backed_up = false;      // saves backed up for this trip home
 
-// Temporary boss-attempt flags from EMEVD, CUSA03173 1.09. This includes
-// the boss gauge event IDs and the Amelia, Micolash and Ludwig attempt conditions.
-constexpr std::array<u32, 90> BbscEncounterProgressFlags{
-    12104800, 12104802, 12104850, 12104852, 12204800, 12204802, 12204807, 12304700,
-    12304702, 12304800, 12304802, 12404223, 12404800, 12404801, 12404802, 12414700,
-    12414702, 12414800,
-    12414802, 12414807, 12415400, 12424700, 12424702, 12424790, 12424800, 12424802,
-    12504800, 12504802, 12604800, 12604802,
+// Temporary boss-attempt flags from EMEVD, CUSA03173 1.09. Sorted for the
+// shared-progress filter and to select just the arena involved in the wipe.
+constexpr std::array<u32, 148> BbscEncounterProgressFlags{
+    12104800, 12104801, 12104802, 12104850, 12104851, 12104852,
+    12204800, 12204801, 12204802, 12204807, 12204812, 12204813, 12204845,
+    12204848, 12204849, 12204850, 12204851, 12204852, 12204853, 12204854,
+    12204855, 12204856, 12204857, 12204858, 12204859, 12204870, 12204871, 12204872,
+    12204880, 12204881, 12304700, 12304701, 12304702,
+    12304800, 12304801, 12304802, 12304807, 12304808,
+    12404223, 12404800, 12404801, 12404802,
+    12414700, 12414701, 12414702, 12414800, 12414801, 12414802, 12414807, 12415400,
+    12424700, 12424701, 12424702, 12424790, 12424800, 12424801, 12424802,
+    12504800, 12504801, 12504802, 12604800, 12604801, 12604802, 12604815,
     12604850, 12604851, 12604852, 12604856, 12604940, 12604941, 12604942, 12604943,
     12604944, 12604945, 12604946, 12604949, 12604950, 12604951, 12604952, 12604953,
     12604954, 12604955, 12604956, 12604957, 12604958, 12604959, 12604985, 12604986,
-    12704800, 12704802, 12804800, 12804802, 12904776, 12904863, 12904877, 12904881,
-    12904887, 12904890, 12904891, 12906791, 12906795, 12906806, 12906825, 13204800,
-    13204802, 13304800, 13304802, 13404802, 13404808, 13404809, 13404820, 13404821,
-    13404822, 13404823, 13404824, 13404825, 13404852,
-    13404858, 13504802, 13504808, 13504852, 13504858, 13604802, 13604808,
+    12704800, 12704801, 12704802, 12804800, 12804801, 12804802, 12804808,
+    12904776, 12904863, 12904877, 12904881, 12904887, 12904890, 12904891,
+    12906791, 12906795, 12906806, 12906825,
+    13204800, 13204801, 13204802, 13204811, 13204812, 13304800, 13304801, 13304802,
+    13304807, 13304808,
+    13404802, 13404808, 13404809, 13404820, 13404821, 13404822, 13404823, 13404824,
+    13404825, 13404852, 13404858, 13404859, 13504802, 13504808, 13504809, 13504852,
+    13504858, 13504859, 13504866, 13504868, 13504870, 13504873, 13504874, 13504875,
+    13504876, 13504877, 13504878, 13604802, 13604808, 13604809, 13604812, 13604820,
 };
 
-void ResetBbscWipeEncounterAtSpawn(u32 destination) {
-    const u32 map = destination & 0xFFFF0000;
-    u32 first, last, defeated;
-    switch (map) {
-    case 0x18000000: // Amelia
-        first = 12404000;
-        last = 12404999;
-        defeated = 0;
-        break;
-    case 0x1A000000: // Micolash; 12604800/02 belong to the Wet Nurse.
-        first = 12604850;
-        last = 12604986;
-        defeated = 12601850;
-        break;
-    case 0x22000000: // Ludwig; 13404852/58 belong to Laurence.
-        first = 13404802;
-        last = 13404825;
-        defeated = 9471;
-        break;
-    default:
-        return;
-    }
+struct BbscChaliceBossArena {
+    std::vector<u32> flags;
+    std::vector<u32> names;
+};
+
+struct BbscChaliceBossAttempts {
     World::Scope scope;
-    {
-        std::scoped_lock lock{bbsc_world_presence_mutex};
-        scope = World::ScopeOf(bbsc_world_presence_local);
+    u64 load = 0;
+    std::array<BbscChaliceBossArena, BossRetry::ChaliceVictories.size()> arenas;
+};
+BbscChaliceBossAttempts bbsc_chalice_boss_attempts;
+
+struct BbscWipeAttempt {
+    u32 defeated = 0;
+    std::vector<u32> flags;
+    bool reset = false;
+};
+BbscWipeAttempt bbsc_boss_wipe_attempt;
+
+void MarkBbscBossWipeLoad() {
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    const u64 load = bbsc_world_native_load.load();
+    bbsc_boss_wipe_scope = World::ScopeOf(bbsc_world_presence_local);
+    bbsc_boss_wipe_attempt = {};
+    auto& attempt = bbsc_boss_wipe_attempt;
+    if (Chalice::IsMap(bbsc_boss_wipe_scope.map)) {
+        const s32 lamp = BbscChaliceLayerFirstLamp(GetLocalPlayerCharacter());
+        const auto& cup = bbsc_chalice_boss_attempts;
+        if (cup.scope == bbsc_boss_wipe_scope && cup.load == load) {
+            const auto layer = lamp >= 2902951 ? static_cast<u32>((lamp - 2902951) / 2) :
+                                                BossRetry::LayerCount;
+            size_t arena = cup.arenas.size();
+            size_t matches = 0;
+            const u32 name = bbsc_encounter_load_generation == bbsc_load_generation.load() &&
+                             bbsc_encounter_name > 0 ? static_cast<u32>(bbsc_encounter_name) : 0;
+            for (size_t index = 0; index < cup.arenas.size(); ++index) {
+                if (index < BossRetry::LayerCount && index != layer) continue;
+                const auto& names = cup.arenas[index].names;
+                if (std::ranges::find(names, name) != names.end()) {
+                    arena = index;
+                    ++matches;
+                }
+            }
+            // Secondary forms may use a different gauge name. In the absence
+            // of a named side arena, the native play region identifies the layer.
+            if (matches == 0 && layer < BossRetry::LayerCount) arena = layer;
+            if (matches <= 1 && arena < cup.arenas.size()) {
+                attempt.defeated = BossRetry::ChaliceVictories[arena];
+                for (const u32 flag : cup.arenas[arena].flags) {
+                    const bool shared = std::ranges::any_of(cup.arenas, [&](const auto& other) {
+                        return &other != &cup.arenas[arena] &&
+                               std::ranges::find(other.flags, flag) != other.flags.end();
+                    });
+                    if (!shared) attempt.flags.push_back(flag);
+                }
+            }
+        }
+    } else if (bbsc_encounter_map == bbsc_boss_wipe_scope.map &&
+               bbsc_encounter_load_generation == bbsc_load_generation.load() &&
+               bbsc_encounter_name > 0) {
+        for (const auto& arena : BossRetry::StoryArenas) {
+            if (arena.map != bbsc_boss_wipe_scope.map ||
+                std::ranges::find(arena.names, bbsc_encounter_name) == arena.names.end()) continue;
+            attempt.defeated = arena.defeated;
+            const auto first = std::ranges::lower_bound(BbscEncounterProgressFlags, arena.first);
+            const auto last = std::ranges::upper_bound(first, BbscEncounterProgressFlags.end(), arena.last);
+            attempt.flags.assign(first, last);
+            if (arena.extra) attempt.flags.push_back(arena.extra);
+            break;
+        }
     }
-    if (scope.map != map || !BbscIsBossWipeLoad(scope)) return;
+    bbsc_boss_wipe_load = load + 1;
+}
+
+void ResetBbscWipeEncounter(const World::Scope& scope) {
+    const u64 load = bbsc_world_native_load.load();
     const u64 manager = ReadValue<u64>(image_base + EventFlagManPointerOffset, 0);
     if (!ReadablePointer(manager, 0x40)) return;
-    if (defeated && BbscEventFlag(defeated)) return;
+    BbscWipeAttempt attempt;
+    {
+        std::scoped_lock lock{bbsc_world_presence_mutex};
+        if (!load || scope != bbsc_boss_wipe_scope || bbsc_boss_wipe_load.load() != load ||
+            bbsc_boss_wipe_attempt.reset) return;
+        attempt = bbsc_boss_wipe_attempt;
+        bbsc_boss_wipe_attempt.reset = true;
+    }
+    if (attempt.flags.empty() || BbscEventFlag(attempt.defeated)) return;
     using SetFlag = void PS4_SYSV_ABI (*)(u64, u32, u32);
     const auto set_flag = reinterpret_cast<SetFlag>(image_base + 0x013CFCC0);
     size_t cleared = 0;
     // The kept guest bank can still contain the previous attempt. Clear it
     // before the original EMEVD reads the entry and phase conditions.
-    for (auto flag = std::lower_bound(BbscEncounterProgressFlags.begin(),
-                                    BbscEncounterProgressFlags.end(), first);
-         flag != BbscEncounterProgressFlags.end() && *flag <= last; ++flag) {
-        if (BbscEventFlag(*flag)) {
-            set_flag(manager, *flag, 0);
+    for (const u32 flag : attempt.flags) {
+        if (BbscEventFlag(flag)) {
+            set_flag(manager, flag, 0);
             ++cleared;
         }
     }
-    BBSC_TIMELINE("WORLD", "boss wipe attempt flags reset map={:#x} cleared={} load={}",
-                  scope.map, cleared, bbsc_world_native_load.load());
+    BBSC_TIMELINE("WORLD", "boss wipe attempt flags reset map={:#x} ritual={} victory={} cleared={} load={}",
+                  scope.map, scope.ritual, attempt.defeated, cleared, load);
 }
 
-void KeepBbscEncounterFlags(u32 key, const u8* before, u8* live) {
+void ResetBbscWipeEncounterAtSpawn(u32 destination) {
+    if (Chalice::IsMap(destination) ||
+        bbsc_boss_wipe_load.load() != bbsc_world_native_load.load()) return;
+    World::Scope scope;
+    {
+        std::scoped_lock lock{bbsc_world_presence_mutex};
+        scope = World::ScopeOf(bbsc_world_presence_local);
+    }
+    if (scope.map == (destination & 0xFFFF0000)) ResetBbscWipeEncounter(scope);
+}
+
+void KeepBbscEncounterFlags(const World::Scope& scope, u32 key, const u8* before, u8* live) {
+    if (key % 10 < 4 || key % 10 > 6) return;
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    if (scope != bbsc_boss_wipe_scope ||
+        bbsc_boss_wipe_load.load() != bbsc_world_native_load.load()) return;
     const u32 first = key * 1000;
-    for (auto flag = std::lower_bound(BbscEncounterProgressFlags.begin(),
-                                    BbscEncounterProgressFlags.end(), first);
-         flag != BbscEncounterProgressFlags.end() && *flag < first + 1000; ++flag) {
-        const u32 bit = *flag - first;
+    for (const u32 flag : bbsc_boss_wipe_attempt.flags) {
+        if (flag < first || flag >= first + 1000) continue;
+        const u32 bit = flag - first;
         const u8 mask = 0x80u >> (bit % 8);
         auto& byte = live[bit / 8];
         byte = (byte & ~mask) | (before[bit / 8] & mask);
@@ -19438,6 +19521,7 @@ void ClearBbscBossContext(std::string_view why) {
     bbsc_boss_bar_seen_ms = 0;
     bbsc_boss_killed_ms = 0;
     bbsc_encounter_lamp = -1;
+    bbsc_encounter_name = -1;
     bbsc_encounter_map = 0;
     bbsc_encounter_load_generation = 0;
     LOG_INFO(Debug, "BBSC boss context: cleared ({}, had bar {})", why, had_bar);
@@ -23359,6 +23443,50 @@ bool BbscEssentialDiagnosticSite(const TraceSite& site) {
 }
 
 #include "core/bbsc_independent_world.inc"
+
+#ifdef BBSC_MOD
+void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range) {
+    const u64 load = bbsc_world_native_load.load();
+    if (bbsc_world_bootstrap_load != load || !Chalice::IsMap(bbsc_world_bootstrap_scope.map)) return;
+    // The step resolver has already validated the constructor and its current PC.
+    const u64 pc = ReadValue<u64>(instance, 0xB0);
+    if (pc < range.first || pc >= range.end || !ReadablePointer(pc, 0x20) ||
+        ReadValue<s32>(pc, 0) != 2000 || ReadValue<s32>(pc, 4) != 0) return;
+    const u64 size = ReadValue<u64>(pc, 8);
+    if (size < 8 || size > 40 || size % sizeof(u32)) return;
+    const u64 ref = ReadValue<u64>(instance, 0xA8);
+    const u64 file = ReadValue<u64>(ref, 8);
+    const u64 offset = ReadValue<u64>(pc, 0x10);
+    const u64 args_size = ReadValue<u64>(file, 0x70);
+    if (offset > args_size || size > args_size - offset) return;
+    const u64 args = file + ReadValue<u64>(file, 0x78) + offset;
+    if (!ReadablePointer(args, size)) return;
+    std::array<u32, 10> words{};
+    std::memcpy(words.data(), reinterpret_cast<const void*>(args), size);
+    const auto init = BossRetry::ReadChaliceInit(std::span{words}.first(size / sizeof(u32)));
+    if (!init.victory) return;
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    auto& cup = bbsc_chalice_boss_attempts;
+    if (cup.load != load || cup.scope != bbsc_world_bootstrap_scope) {
+        cup = {bbsc_world_bootstrap_scope, load, {}};
+    }
+    const auto index = std::ranges::find(BossRetry::ChaliceVictories, init.victory) -
+                       BossRetry::ChaliceVictories.begin();
+    auto& arena = cup.arenas[index];
+    for (const u32 flag : init.flags) {
+        if (flag && std::ranges::find(arena.flags, flag) == arena.flags.end()) {
+            arena.flags.push_back(flag);
+        }
+    }
+    if (init.name && std::ranges::find(arena.names, init.name) == arena.names.end()) {
+        arena.names.push_back(init.name);
+        if (init.name == 304001) {
+            // Both additional Watchers have their own gauge slots.
+            arena.names.insert(arena.names.end(), {304002, 304003});
+        }
+    }
+}
+#endif
 
 void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     if (tag >= Sites.size() || registers == nullptr) {

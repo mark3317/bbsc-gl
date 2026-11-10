@@ -245,7 +245,7 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state,b
         // Keep permanent progress even if a resident peer's snapshot is older.
         if(i<10 && !dungeon)
             BbscMergeSharedProgressGroup(key,live,before.data());
-        if (wipe_load) KeepBbscEncounterFlags(key, before.data(), live);
+        if (wipe_load) KeepBbscEncounterFlags(scope, key, before.data(), live);
         KeepBbscGuestTalkBits(key,before.data(),live);
         KeepBbscNpcOwnBits(key,before.data(),live);
 #ifdef BBSC_MOD
@@ -485,6 +485,8 @@ bool GuardBbscWorldBootstrap(u64 instance) {
     // Enemy initial state belongs to the native network machinery. Never wait
     // for, publish or apply a parallel mod-maintained enemy snapshot.
     if(it!=bbsc_independent_states.end())BbscWorldApplyFlags(scope,it->second);
+    // m29's live bank belongs to this ritual only after native admission.
+    if (Chalice::IsMap(scope.map) && BbscIsBossWipeLoad(scope)) ResetBbscWipeEncounter(scope);
     {std::scoped_lock lock{bbsc_world_presence_mutex};
         bbsc_world_bootstrap_scope=scope;bbsc_world_bootstrap_load=load;bbsc_world_bootstrap_session=session;}
     BBSC_TIMELINE("WORLD","native world ready before events map={:#x} load={} flag_groups={:#x}",scope.map,load,

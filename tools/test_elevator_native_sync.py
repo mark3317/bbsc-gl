@@ -185,6 +185,9 @@ std::mutex bbsc_world_presence_mutex;World::Presence bbsc_world_presence_local;
 World::OwnerBook bbsc_independent_owners;
 std::optional<World::Scope> wipe_scope;
 bool BbscIsBossWipeLoad(const World::Scope& scope){return wipe_scope==scope;}
+World::Scope bbsc_boss_wipe_scope{.map=0x18000000};
+std::atomic<u64> bbsc_boss_wipe_load{1},bbsc_world_native_load{1};
+struct { std::vector<u32> flags{12404223,12404800,12404801,12404802}; } bbsc_boss_wipe_attempt;
 std::optional<World::Scope> bbsc_world_requested_scope;
 struct TestAltar {
     struct { bool occupied = false; u64 ritual = 0; } entry;
@@ -210,7 +213,7 @@ def production():
                 'bool IsBbscKidnapEvent(s64 event)','bool IsBbscPersonalMapEvent(s64 event)',
                 'bool BbscSharedMapProgressAllowed(u32 flag)','u8 BbscSharedProgressByte(u32 key, size_t byte, u8 incoming)',
                 'void BbscMergeSharedProgressGroup(u32 key, u8* live, const u8* incoming)',
-                'void KeepBbscEncounterFlags(u32 key, const u8* before, u8* live)',
+                'void KeepBbscEncounterFlags(const World::Scope& scope, u32 key, const u8* before, u8* live)',
                 'u32 BbscWorldGroupKey(u32 packed_map, size_t index)',
                 'void MaskBbscSharedFlagGroup(u32 key, u8* outgoing)'):
         code+=function(sig)
