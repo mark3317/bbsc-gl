@@ -39,6 +39,7 @@ bool bbsc_boss_death_ready=true;
 enum class BbscBossDeathGroup { Unavailable, Waiting, Ready };
 BbscBossDeathGroup bbsc_boss_death_group=BbscBossDeathGroup::Ready;
 s32 bbsc_encounter_lamp=2412952;
+s32 bbsc_encounter_name=500000;
 u32 bbsc_encounter_map=24, bbsc_encounter_load_generation=1;
 s64 bbsc_boss_bar_seen_ms=100, bbsc_boss_killed_ms=50;
 bool selected=true, writable=true, chalice_ready=true, valid=true;
@@ -72,7 +73,8 @@ bool Select(u64,s32) { return selected; }
 u64 Transition() {
     assert(!BossFightActive());
     assert(!bbsc_boss_at_own_death && !bbsc_boss_wipe_seen && bbsc_boss_bar_seen_ms==0 && bbsc_boss_killed_ms==0);
-    assert(bbsc_encounter_lamp==-1 && bbsc_encounter_map==0 && bbsc_encounter_load_generation==0);
+    assert(bbsc_encounter_lamp==-1 && bbsc_encounter_name==-1 &&
+           bbsc_encounter_map==0 && bbsc_encounter_load_generation==0);
     ++transitions; return 1;
 }
 u64 SetForcedSummonPositionOffset=reinterpret_cast<u64>(&Placement)-image_base;

@@ -84,7 +84,8 @@ int main(){
  TickBbscWorldPresence();assert(sent.size()==1);
  assert(sent.back().world==(World::WorldId{11,99}));
  assert(sent.back().phase==World::Phase::Playing&&sent.back().alive==1);
- assert(sent.back().capabilities==(World::PresenceCapability|World::BossDeathReadyCapability));
+ assert(sent.back().capabilities==(World::PresenceCapability|World::BossDeathReadyCapability|
+                                    World::BossDeathVisitCapability));
  assert(!(sent.back().capabilities&World::IndependentTravelCapability));
  const auto initial_visit=sent.back().visit;
  ++bbsc_load_generation;map=0x18010000;now++;TickBbscWorldPresence();assert(sent.back().map==map&&sent.back().visit>initial_visit);

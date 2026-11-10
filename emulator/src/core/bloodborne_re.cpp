@@ -4409,6 +4409,10 @@ struct BbscPeerLife {
     bool model_visible = false;
     World::WorldId world{};
     u64 visit = 0;
+
+    bool SameVisit(const World::Presence& presence) const {
+        return visit && world == presence.world && visit == presence.visit;
+    }
 };
 std::mutex bbsc_life_mutex;
 std::map<u32, BbscPeerLife> bbsc_peer_life;
@@ -4439,7 +4443,6 @@ BbscBossDeathGroup ReadBbscBossDeathGroup(bool first_check = false) {
     };
     const auto finish = [&](BbscBossDeathGroup result, std::string_view reason) {
         if (!trace) return result;
-        if (native_members < 0) read_counts();
         auto snapshot = std::make_tuple(scope, local.visit, local.phase, result, reason,
                                         native_members, party_members, roster.size(),
                                         blocking_peer, peer_visit, life_visit, peer_phase, life_state);
@@ -4455,23 +4458,28 @@ BbscBossDeathGroup ReadBbscBossDeathGroup(bool first_check = false) {
         }
         return result;
     };
-    if (local.phase != World::Phase::Playing || !World::Valid(scope))
+    read_counts();
+    const s32 expected_members = party_members ? static_cast<s32>(party_members) : native_members;
+    const bool group_expected = expected_members >= 2 && expected_members <= 5;
+    if (local.phase != World::Phase::Playing || !World::Valid(scope)) {
+#ifdef BBSC_MOD
+        if (group_expected) return finish(BbscBossDeathGroup::Waiting, "local_scope_not_ready");
+#endif
         return finish(BbscBossDeathGroup::Unavailable, "local_scope_not_ready");
+    }
     bool has_partner = false;
     bool all_ready = true;
     for (const auto& [peer, member] : roster) {
         const auto& presence = member.presence;
         if (World::ScopeOf(presence) != scope) continue;
+        const bool supported = (presence.capabilities & World::BossDeathVisitCapability) != 0;
+        const bool loading = presence.phase == World::Phase::Loading;
+        if (presence.phase != World::Phase::Playing && !(loading && supported)) continue;
         const auto life = bbsc_peer_life.find(peer);
-        const bool same_visit = life != bbsc_peer_life.end() &&
-                                life->second.world == presence.world &&
-                                life->second.visit == presence.visit;
+        const bool same_visit = life != bbsc_peer_life.end() && life->second.SameVisit(presence);
         // Loading is itself proof that this dead hunter reached the handoff,
         // even if its last life datagram was lost. Ignore ordinary lamp travel.
-        const bool loading_dead = presence.phase == World::Phase::Loading &&
-                                  same_visit && life->second.dead != 0;
-        if (presence.phase != World::Phase::Playing && !loading_dead) continue;
-        const bool supported = (presence.capabilities & World::BossDeathReadyCapability) != 0;
+        const bool loading_dead = loading && same_visit && life->second.dead != 0;
         has_partner = true;
         // The native death reload has been requested even if the next
         // presence packet has not caught up.
@@ -4494,27 +4502,15 @@ BbscBossDeathGroup ReadBbscBossDeathGroup(bool first_check = false) {
             return finish(BbscBossDeathGroup::Unavailable, "peer_without_death_ready");
         all_ready &= loading_dead || death_finished;
     }
-    // A missing presence is common when the native room admitted a guest
-    // before their route was established. That hunter can still be fighting.
-    // Use the native roster even when independent travel did not negotiate.
-    if (has_partner || BbscIndependentActive()) {
-        read_counts();
-        const s32 expected_members = party_members ? static_cast<s32>(party_members) : native_members;
-        if (expected_members >= 2 && expected_members <= 5 &&
-            roster.size() < static_cast<size_t>(expected_members - 1))
-            return finish(BbscBossDeathGroup::Waiting, "missing_presence");
-    }
+    // Native admission can precede the first presence, even without independent travel.
+    if (group_expected && roster.size() < static_cast<size_t>(expected_members - 1))
+        return finish(BbscBossDeathGroup::Waiting, "missing_presence");
     if (!has_partner) return finish(BbscBossDeathGroup::Unavailable, "no_partner_in_scope");
     return all_ready ? finish(BbscBossDeathGroup::Ready, "all_partners_ready")
                      : finish(BbscBossDeathGroup::Waiting, "partner_not_ready");
 }
 
 BbscBossDeathGroup bbsc_boss_death_group = BbscBossDeathGroup::Unavailable;
-
-void RefreshBbscBossDeathGroup() {
-    if (bbsc_spectate_active && bbsc_boss_death_group != BbscBossDeathGroup::Unavailable)
-        bbsc_boss_death_group = ReadBbscBossDeathGroup();
-}
 
 u64 BbscCharacterDrawState(u64 chr) {
     if (!ReadablePointer(chr, 0x410)) return 0;
@@ -4526,12 +4522,14 @@ u64 BbscCharacterDrawState(u64 chr) {
 
 // States 2 and 3 extend the existing dead byte; older clients treat both as dead.
 void SendBbscLifeState(u8 state) {
+    using namespace Protocol;
     u32 player_id = bbsc_life_own_id.load();
     if (player_id == 0) {
         player_id = static_cast<u32>(static_cast<u64>(SteadyNowMs()) * 2654435761ull) | 1u;
         bbsc_life_own_id = player_id;
     }
-    std::array<u8, 15> packet{'S', 'H', 'A', 'D', 0x23};
+    std::array<u8, LifeVisitSize> packet{'S', 'H', 'A', 'D', Life};
+    u32 size = LifeVisibleSize;
     std::memcpy(packet.data() + 5, &player_id, 4);
     packet[9] = state;
     const u32 sequence = ++bbsc_life_sequence;
@@ -4541,8 +4539,16 @@ void SendBbscLifeState(u8 state) {
         const u64 draw = BbscCharacterDrawState(chr);
         packet[14] = draw && ReadValue<u8>(draw, 0x0C) == 1 &&
                      ReadValue<float>(chr, 0x208) >= 0.99f && ReadValue<float>(chr, 0x20C) >= 0.99f;
+    } else {
+        std::scoped_lock lock{bbsc_world_presence_mutex};
+        const auto& presence = bbsc_world_presence_local;
+        if (World::Valid(presence.world) && presence.visit) {
+            std::memcpy(packet.data() + LifeVisibleSize, &presence.world.room, sizeof(u64));
+            std::memcpy(packet.data() + LifeVisibleSize + sizeof(u64), &presence.visit, sizeof(u64));
+            size = LifeVisitSize;
+        }
     }
-    Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(packet.data(), packet.size());
+    Libraries::Np::NpSignaling::Helpers::SendBbscWorldFlagsToPeers(packet.data(), size);
 }
 
 bool IsInvaderType(s32 type);
@@ -4563,11 +4569,15 @@ void NotifyBbscDeathReload() {
 
 // {fresh reports, of which dead}
 std::pair<u32, u32> BbscPeerLifeCounts() {
-    std::scoped_lock lock{bbsc_life_mutex};
+    std::scoped_lock lock{bbsc_life_mutex, bbsc_world_presence_mutex};
+    const bool independent = BbscIndependentActive();
     u32 fresh = 0;
     u32 dead = 0;
     for (const auto& [player, life] : bbsc_peer_life) {
-        if (BbscIndependentActive() && !BbscWorldPeerHere(player)) continue;
+        const auto* member = bbsc_world_presence_book.Resident(player);
+        if (independent && (!member || !World::SamePlace(bbsc_world_presence_local, member->presence)))
+            continue;
+        if (life.visit && member && !life.SameVisit(member->presence)) continue;
         if (life.received_ms != 0) { // life changes only on an explicit report, never on a timeout
             ++fresh;
             dead += life.dead != 0 ? 1 : 0;
@@ -4707,6 +4717,11 @@ enum class BbscDeathMode : u8 { Spectate, RespawnNow };
 
 BbscDeathMode bbsc_death_mode = BbscDeathMode::Spectate;
 s64 bbsc_boss_cleared_since_ms = 0;
+
+void RefreshBbscBossDeathGroup() {
+    if (bbsc_spectate_active && bbsc_death_mode == BbscDeathMode::Spectate)
+        bbsc_boss_death_group = ReadBbscBossDeathGroup();
+}
 
 bool BossFightActive() {
     const u64 gauge = ReadValue<u64>(image_base + BossGaugePointerOffset, 0);
@@ -22020,6 +22035,7 @@ void TickBbscWorldPresence() {
             if (!session || departing) {
                 if (World::Valid(previous) && bbsc_world_presence_local.finale.token)
                     QueueBbscWork(BbscWork::Finale);
+                if (World::Valid(previous)) QueueBbscWork(BbscWork::BossDeath);
                 bbsc_world_presence_book.Clear();
                 bbsc_world_presence_local = {};
                 bbsc_world_place.Clear();
@@ -22049,7 +22065,8 @@ void TickBbscWorldPresence() {
         bbsc_world_place.Observe(raw_map, loading, positioned, now);
         next.world = world;
         next.capabilities = BbscIndependentCapabilities();
-        if (BbscSpectateEnabled()) next.capabilities |= World::BossDeathReadyCapability;
+        if (BbscSpectateEnabled())
+            next.capabilities |= World::BossDeathReadyCapability | World::BossDeathVisitCapability;
         if (bbsc_finale_hooks_ready) next.capabilities |= World::NativeFinaleCapability;
         next.finale = BbscFinalePresence(world);
         next.phase = departing ? World::Phase::Leaving : bbsc_world_place.State();
@@ -22071,7 +22088,8 @@ void TickBbscWorldPresence() {
                              next.map != bbsc_world_presence_local.map ||
                              next.visit != bbsc_world_presence_local.visit ||
                              next.alive != bbsc_world_presence_local.alive ||
-                             next.dungeon != bbsc_world_presence_local.dungeon;
+                             next.dungeon != bbsc_world_presence_local.dungeon ||
+                             next.ritual != bbsc_world_presence_local.ritual;
         const bool finale_changed = next.finale != bbsc_world_presence_local.finale;
         if (!changed && !finale_changed && now - last_send < 1'000) return;
         finale_update = changed && BbscNativeFinaleWantsPresence();
@@ -22079,7 +22097,10 @@ void TickBbscWorldPresence() {
                              static_cast<u8>(next.phase), next.map, next.visit, next.alive);
         next.sequence = ++sequence;
         bbsc_world_presence_local = next;
-        if(changed)bbsc_world_player_revision.fetch_add(1,std::memory_order_release);
+        if (changed) {
+            bbsc_world_player_revision.fetch_add(1, std::memory_order_release);
+            QueueBbscWork(BbscWork::BossDeath);
+        }
         last_send = now;
     }
     // Transport dispatch is never called while the book's mutex is held.
@@ -25224,22 +25245,26 @@ std::int32_t GetBbscRelaySessionState() {
     return bbsc_relay_session_state.load();
 }
 
-void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence, bool /*host*/,
-                      bool model_visible) {
+void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence,
+                      bool model_visible, std::uint32_t session, std::uint64_t room,
+                      std::uint64_t visit) {
     if (player == bbsc_life_own_id.load()) {
         return;
     }
     bool changed = false;
     {
         std::scoped_lock lock{bbsc_life_mutex, bbsc_world_presence_mutex};
+        const World::WorldId world = visit ? World::WorldId{session, room} : World::WorldId{};
+        const auto& local_world = bbsc_world_presence_local.world;
+        const auto* member = bbsc_world_presence_book.Resident(player);
+        if (visit && ((World::Valid(local_world) && world != local_world) ||
+                      (member && (world != member->presence.world || visit < member->presence.visit))))
+            return;
         BbscPeerLife& life = bbsc_peer_life[player];
         if (life.received_ms != 0 && sequence != 0 && sequence <= life.sequence &&
-            SteadyNowMs() - life.received_ms < BbscLifeFreshMs) {
+            (visit || life.visit || SteadyNowMs() - life.received_ms < BbscLifeFreshMs)) {
             return; // older than what we have
         }
-        const auto* member = bbsc_world_presence_book.Resident(player);
-        const auto world = member ? member->presence.world : World::WorldId{};
-        const u64 visit = member ? member->presence.visit : 0;
         changed = life.received_ms == 0 || life.dead != dead || life.world != world ||
                   life.visit != visit;
         life = {dead, sequence, SteadyNowMs(), model_visible, world, visit};
@@ -25281,7 +25306,10 @@ void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,
     const bool changed = !previous || previous->presence.map != decoded->map ||
                          previous->presence.phase != decoded->phase ||
                          previous->presence.visit != decoded->visit ||
-                         previous->presence.alive != decoded->alive;
+                         previous->presence.alive != decoded->alive ||
+                         previous->presence.dungeon != decoded->dungeon ||
+                         previous->presence.ritual != decoded->ritual ||
+                         previous->presence.capabilities != decoded->capabilities;
     const auto* resident = bbsc_world_presence_book.Resident(sender);
     const bool finale_changed = decoded->finale != (resident ? resident->presence.finale : Finale::Signal{});
     const bool accepted = bbsc_world_presence_book.Hear(sender, decoded->world, *decoded, SteadyNowMs());
@@ -25299,6 +25327,11 @@ void OnBbscWorldPresencePacket(std::uint32_t sender, std::uint32_t session,
 
 void OnBbscWorldMemberIdentityChanged() {
     bbsc_world_player_revision.fetch_add(1, std::memory_order_release);
+    QueueBbscWork(BbscWork::BossDeath);
+}
+
+void OnBbscPartyRoomMemberCountChanged() {
+    QueueBbscWork(BbscWork::BossDeath);
 }
 
 void OnBbscPeerLeft(std::uint32_t player, bool host) {

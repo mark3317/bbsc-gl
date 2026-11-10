@@ -51,7 +51,8 @@ void OnBbscWorldControlPacket(std::uint32_t sender, std::uint32_t session,
 // BBSC life state: another player says whether it is dead (spectating) or alive. Relay receive
 // thread; only stores it.
 void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence,
-                      bool host = false, bool model_visible = false);
+                      bool model_visible, std::uint32_t session, std::uint64_t room,
+                      std::uint64_t visit);
 // Confirmed departure; relay receive thread queues cleanup for the game thread.
 void OnBbscPeerLeft(std::uint32_t player, bool host);
 void OnBbscExplicitSessionLeave(std::uint32_t player, bool host);

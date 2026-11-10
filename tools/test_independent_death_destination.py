@@ -37,7 +37,9 @@ prefix = r'''
 #include <mutex>
 #include <string_view>
 #include "core/bbsc_world_control.h"
+#define BBSC_MOD
 namespace World=Core::Bloodborne::World;
+namespace Protocol=Core::Bloodborne::Protocol;
 using u8=uint8_t;using u32=uint32_t;using u64=uint64_t;using s32=int32_t;using s64=int64_t;
 #define LOG_INFO(...)
 int boss_decision_logs=0;
@@ -55,6 +57,8 @@ bool BbscEventFlag(u32 f){return f==9420?kidnap:(f==9421||f==9422);}
 
 bool independent=true,living=true,loop=false,revive_ok=true,bbsc_wipe_restock_pending=false;
 s32 native_members=0;
+u32 party_members=0;
+namespace BbscMod { u32 PartyRoomMemberCount(){return party_members;} }
 s32 GetBbscSessionMemberCount(u64){return native_members;}
 bool all_report_dead=false,bbsc_boss_wipe_seen=false;
 bool bbsc_boss_death_ready=false;
@@ -65,8 +69,22 @@ int ready_sends=0,reload_sends=0,wipe_loads=0;
 bool boss_death_work=false;
 enum class BbscWork { BossDeath };
 void QueueBbscWork(BbscWork){boss_death_work=true;}
+void OnBbscLifePacket(u32,u8,u32,bool,u32,u64,u64);
+void PeerLife(u32 id,u8 state,u32 sequence,const World::Presence& p){
+ OnBbscLifePacket(id,state,sequence,false,p.world.host,p.world.room,p.visit);
+}
 constexpr s64 BbscLifeFreshMs=3000;
-void SendBbscLifeState(u8 state){assert(state==2||state==3);if(state==3)++ready_sends;else ++reload_sends;}
+u64 BbscCharacterDrawState(u64){return 0;}
+std::vector<u8> life_packet;
+namespace Libraries::Np::NpSignaling::Helpers {
+u32 SendBbscWorldFlagsToPeers(const void* data,u32 size){
+ const auto* bytes=static_cast<const u8*>(data);
+ life_packet.assign(bytes,bytes+size);
+ if(bytes[9]==2) ++reload_sends;
+ if(bytes[9]==3) ++ready_sends;
+ return 1;
+}
+}
 void MarkBbscBossWipeLoad(){++wipe_loads;}
 bool bbsc_request_death_reload=false,bbsc_spectate_active=true,bbsc_spectate_releasing=false;
 bool bbsc_spectate_waiting_host_reload=false,bbsc_spectate_saw_wipe=true,bbsc_spectate_wipe_warped=false;
@@ -119,7 +137,7 @@ bool ReadablePointer(u64 p,size_t){return p==0x10000;}
 main = r'''
 void reset(){warps=reloads=suspends=releases=revives=penalties=curtains=0;fade_ok=false;boss=false;
  ready_sends=reload_sends=wipe_loads=local_hp=0;
- native_members=0;
+ native_members=party_members=0;
  bbsc_boss_death_ready=boss_death_work=false;
  bbsc_death_reload_generation.reset();
  bbsc_boss_death_group=BbscBossDeathGroup::Unavailable;
@@ -254,13 +272,13 @@ int main(){
   reset();role=self==11?3:6;boss=true;bbsc_spectate_active=false;
   auto& local=bbsc_world_presence_local;local.world={11,99};local.map=0x18000000;
   local.phase=World::Phase::Playing;local.sequence=1;local.visit=7;
-  local.capabilities|=World::BossDeathReadyCapability;
+  local.capabilities|=World::BossDeathVisitCapability;
   bbsc_world_presence_book.Bind(local.world,self);
   auto peer=local;
   assert(bbsc_world_presence_book.Hear(44,local.world,[&]{auto p=peer;p.map=0x15000000;p.alive=1;return p;}(),now));
   for(u32 id:{11u,22u,33u})if(id!=self){
    assert(bbsc_world_presence_book.Hear(id,local.world,peer,now));
-   OnBbscLifePacket(id,id==last?u8{1}:u8{3},1,id==11,false);
+   PeerLife(id,id==last?u8{1}:u8{3},1,peer);
   }
   assert(boss_death_work);
   living=false;all_report_dead=true;bbsc_boss_wipe_seen=true;
@@ -297,14 +315,14 @@ int main(){
   reset();role=3;boss=true;bbsc_spectate_active=false;living=false;
   auto& local=bbsc_world_presence_local;local.world={11,99};local.map=0x22000000;
   local.phase=World::Phase::Playing;local.sequence=1;local.visit=7;
-  local.capabilities|=World::BossDeathReadyCapability;
+  local.capabilities|=World::BossDeathVisitCapability;
   bbsc_world_presence_book.Bind(local.world,11);
   auto peer=local;peer.alive=1;
   assert(bbsc_world_presence_book.Hear(22,local.world,peer,now));
-  OnBbscLifePacket(22,1,1,false,false);
+  PeerLife(22,1,1,peer);
   BeginBbscCoopDeath("native final",role);TickBbscSpectate();
   assert(!reloads&&ready_sends==1);
-  OnBbscLifePacket(22,BbscLifeDeathReloading,2,false,false);
+  PeerLife(22,BbscLifeDeathReloading,2,peer);
   RefreshBbscBossDeathGroup();TickBbscSpectate();
   assert(reloads==1&&wipe_loads==1);
  }
@@ -315,11 +333,11 @@ int main(){
   independent=travel_ready;native_members=3;
   auto& local=bbsc_world_presence_local;local.world={11,99};local.map=0x22000000;
   local.phase=World::Phase::Playing;local.sequence=1;local.visit=7;
-  local.capabilities|=World::BossDeathReadyCapability;
+  local.capabilities|=World::BossDeathVisitCapability;
   bbsc_world_presence_book.Bind(local.world,22);
   auto peer=local;
   assert(bbsc_world_presence_book.Hear(11,local.world,peer,now));
-  OnBbscLifePacket(11,BbscLifeBossDeathReady,1,true,false);
+  PeerLife(11,BbscLifeBossDeathReady,1,peer);
   const int initial_decision_logs=boss_decision_logs;
   BeginBbscCoopDeath("native final",role);TickBbscSpectate();
   assert(boss_decision_logs==initial_decision_logs+1);
@@ -331,17 +349,113 @@ int main(){
   peer.alive=1;
   if(!last_hunter_here)peer.map=0x15000000;
   assert(bbsc_world_presence_book.Hear(33,local.world,peer,now));
-  OnBbscLifePacket(33,0,1,false,false);
+  OnBbscLifePacket(33,0,1,false,local.world.host,0,0);
   RefreshBbscBossDeathGroup();TickBbscSpectate();
   assert(boss_decision_logs==initial_decision_logs+2);
   if(last_hunter_here){
    assert(!reloads&&bbsc_spectate_active);
    peer.alive=0;peer.sequence=2;
    assert(bbsc_world_presence_book.Hear(33,local.world,peer,now));
-   OnBbscLifePacket(33,BbscLifeBossDeathReady,2,false,false);
+   PeerLife(33,BbscLifeBossDeathReady,2,peer);
    RefreshBbscBossDeathGroup();TickBbscSpectate();
   }
   assert(reloads==1&&wipe_loads==1&&!bbsc_spectate_active);
+ }
+ // A native admission can precede all presence packets, including local binding.
+ for(bool have_local:{false,true}) {
+  reset(); role=6; independent=false; native_members=2;
+  boss=true; living=false; bbsc_spectate_active=false;
+  World::Presence peer;
+  peer.world={11,99}; peer.map=0x22000000; peer.visit=7; peer.sequence=1;
+  peer.phase=World::Phase::Playing; peer.capabilities|=World::BossDeathVisitCapability;
+  if(have_local) bbsc_world_presence_local=peer;
+  BeginBbscCoopDeath("native final",role); TickBbscSpectate();
+  assert(bbsc_boss_death_group==BbscBossDeathGroup::Waiting && !reloads && ready_sends==1);
+  assert(life_packet.size()==(have_local?Protocol::LifeVisitSize:Protocol::LifeVisibleSize));
+  if(have_local){
+   u64 room=0,visit=0;
+   std::memcpy(&room,life_packet.data()+Protocol::LifeVisibleSize,sizeof(room));
+   std::memcpy(&visit,life_packet.data()+Protocol::LifeVisibleSize+sizeof(room),sizeof(visit));
+   assert(room==peer.world.room && visit==peer.visit);
+  }
+  bbsc_world_presence_local=peer;
+  bbsc_world_presence_book.Bind(peer.world,22);
+  assert(bbsc_world_presence_book.Hear(11,peer.world,peer,now));
+  PeerLife(11,BbscLifeBossDeathReady,1,peer);
+  RefreshBbscBossDeathGroup(); TickBbscSpectate();
+  assert(reloads==1 && wipe_loads==1);
+ }
+ // A temporary loss of in-scope presence must not disable subsequent decisions.
+ {
+  reset(); role=6; boss=true; living=false; native_members=2; bbsc_spectate_active=false;
+  auto& local=bbsc_world_presence_local;
+  local.world={11,99}; local.map=0x22000000; local.visit=7; local.sequence=1;
+  local.phase=World::Phase::Playing; local.capabilities|=World::BossDeathVisitCapability;
+  bbsc_world_presence_book.Bind(local.world,22);
+  auto peer=local;
+  assert(bbsc_world_presence_book.Hear(11,peer.world,peer,now));
+  BeginBbscCoopDeath("native final",role); TickBbscSpectate();
+  assert(bbsc_boss_death_group==BbscBossDeathGroup::Waiting && !reloads);
+  peer.phase=World::Phase::Leaving; ++peer.sequence;
+  assert(bbsc_world_presence_book.Hear(11,peer.world,peer,now));
+  RefreshBbscBossDeathGroup();
+  assert(bbsc_boss_death_group==BbscBossDeathGroup::Unavailable);
+  peer.phase=World::Phase::Loading; ++peer.sequence;
+  assert(bbsc_world_presence_book.Hear(11,peer.world,peer,now));
+  RefreshBbscBossDeathGroup(); TickBbscSpectate();
+  assert(bbsc_boss_death_group==BbscBossDeathGroup::Waiting && !reloads);
+  now+=2*BbscSpectateReleaseDebounceMs; TickBbscSpectate(); assert(!reloads);
+  PeerLife(11,BbscLifeDeathReloading,1,peer);
+  RefreshBbscBossDeathGroup(); TickBbscSpectate();
+  assert(reloads==1 && wipe_loads==1);
+ }
+ // Only the sender's visit can attest to a death, before or after its presence.
+ {
+  reset(); role=6; native_members=2;
+  auto& local=bbsc_world_presence_local;
+  local.world={11,99}; local.map=0x22000000; local.visit=7; local.sequence=1;
+  local.phase=World::Phase::Playing; local.capabilities|=World::BossDeathVisitCapability;
+  bbsc_world_presence_book.Bind(local.world,22);
+  auto peer=local; peer.visit=8; peer.alive=1;
+  assert(bbsc_world_presence_book.Hear(11,peer.world,peer,now));
+  auto old=peer; --old.visit;
+  PeerLife(11,BbscLifeDeathReloading,1,old);
+  assert(!bbsc_peer_life.contains(11));
+  old=peer; ++old.world.room;
+  PeerLife(11,BbscLifeDeathReloading,2,old);
+  assert(!bbsc_peer_life.contains(11));
+  OnBbscLifePacket(11,BbscLifeDeathReloading,3,false,local.world.host,0,0);
+  assert(ReadBbscBossDeathGroup()==BbscBossDeathGroup::Waiting);
+  auto next=peer; ++next.visit; ++next.sequence; next.alive=0;
+  PeerLife(11,BbscLifeDeathReloading,4,next);
+  assert(ReadBbscBossDeathGroup()==BbscBossDeathGroup::Waiting);
+  assert(bbsc_world_presence_book.Hear(11,next.world,next,now));
+  assert(ReadBbscBossDeathGroup()==BbscBossDeathGroup::Ready);
+  OnBbscLifePacket(11,0,5,true,local.world.host,0,0);
+  now+=BbscLifeFreshMs;
+  PeerLife(11,BbscLifeDeathReloading,4,next);
+  assert(ReadBbscBossDeathGroup()==BbscBossDeathGroup::Waiting);
+  next.capabilities=World::PresenceCapability|World::BossDeathReadyCapability;
+  ++next.sequence;
+  assert(bbsc_world_presence_book.Hear(11,next.world,next,now));
+  assert(ReadBbscBossDeathGroup()==BbscBossDeathGroup::Unavailable);
+ }
+ // An updated Party count wakes a waiting death even without new peer packets.
+ {
+  reset(); role=6; native_members=2; party_members=3;
+  boss=true; living=false; bbsc_spectate_active=false;
+  auto& local=bbsc_world_presence_local;
+  local.world={11,99}; local.map=0x22000000; local.visit=7; local.sequence=1;
+  local.phase=World::Phase::Playing; local.capabilities|=World::BossDeathVisitCapability;
+  bbsc_world_presence_book.Bind(local.world,22);
+  assert(bbsc_world_presence_book.Hear(11,local.world,local,now));
+  PeerLife(11,BbscLifeBossDeathReady,1,local);
+  BeginBbscCoopDeath("native final",role); TickBbscSpectate();
+  assert(bbsc_boss_death_group==BbscBossDeathGroup::Waiting && !reloads);
+  boss_death_work=false;
+  party_members=2; OnBbscPartyRoomMemberCountChanged();
+  if(boss_death_work) RefreshBbscBossDeathGroup();
+  TickBbscSpectate(); assert(reloads==1 && wipe_loads==1);
  }
  // Only actual death reloads publish the fallback proof. Guests and hosts
  // both publish it before the native load, once per death.
@@ -354,14 +468,19 @@ int main(){
  }
  reset();role=6;invader=true;
  NotifyBbscDeathReload();assert(!reload_sends);
+ SendBbscLifeState(0);assert(life_packet.size()==Protocol::LifeVisibleSize && life_packet[9]==0);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-death-destination-') as tmp:
     cpp, exe = Path(tmp)/'death.cpp', Path(tmp)/'death.exe'
     group = source[source.index('struct BbscPeerLife {'):source.index('u64 BbscCharacterDrawState(')]
-    life_receive = function('void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence, bool /*host*/,\n                      bool model_visible)')
+    life_receive = function('void OnBbscLifePacket(std::uint32_t player, std::uint8_t dead, std::uint32_t sequence,\n                      bool model_visible, std::uint32_t session, std::uint64_t room,\n                      std::uint64_t visit)')
     notify = function('void NotifyBbscDeathReload()')
-    cpp.write_text(prefix+group+notify+life_receive+kidnap_production+entry+reload+production+main, encoding='utf-8')
+    send_life = function('void SendBbscLifeState(u8 state)')
+    refresh = function('void RefreshBbscBossDeathGroup()')
+    count_change = function('void OnBbscPartyRoomMemberCountChanged()')
+    cpp.write_text(prefix+group+send_life+notify+life_receive+refresh+count_change+kidnap_production+
+                   entry+reload+production+main, encoding='utf-8')
     compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
     subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)
     env = dict(os.environ);env['PATH']=str(Path(compiler).parent)+os.pathsep+env.get('PATH','')

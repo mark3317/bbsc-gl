@@ -105,9 +105,9 @@ int main() {
     assert(book.Hear(22,a.world,a,100));
     assert(!book.Hear(22,a.world,a,101));
     assert(book.Find(22,3099)); assert(!book.Find(22,3100));
-    const auto no_deaths = [](u32,s64){return false;};
+    const auto no_deaths = [](u32,const Member&){return false;};
     assert(book.LivingHere(a,no_deaths)==1); // a movie is not a death or departure
-    assert(book.LivingHere(a,[](u32 peer,s64 received){return peer==22 && received==100;})==0);
+    assert(book.LivingHere(a,[](u32 peer,const Member& m){return peer==22 && m.received==100;})==0);
     b=Sample(Dream,2); assert(book.Hear(22,b.world,b,3200));
     assert(book.LivingHere(a,no_deaths)==0);
     b=Sample(Yharnam,3); b.visit=2; assert(book.Hear(22,b.world,b,3300));

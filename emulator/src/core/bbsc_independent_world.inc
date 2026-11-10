@@ -219,12 +219,13 @@ bool BbscWorldPlayerSendHere(u32 peer) {
 }
 u32 BbscWorldLivingHere() {
     std::scoped_lock lock{bbsc_life_mutex, bbsc_world_presence_mutex};
-    return bbsc_world_presence_book.LivingHere(bbsc_world_presence_local, [](u32 peer, s64 present_at) {
-        // A room member can report death before its map presence arrives.
-        // Use the explicit newer report without treating silence as a death.
+    return bbsc_world_presence_book.LivingHere(bbsc_world_presence_local, [](u32 peer, const World::Member& member) {
+        // Use an explicit newer death for the observed visit. A scoped report
+        // can arrive before the presence that identifies its actual visit.
         const auto life = bbsc_peer_life.find(peer);
         return life != bbsc_peer_life.end() && life->second.dead &&
-               life->second.received_ms >= present_at;
+               life->second.received_ms >= member.received &&
+               (!life->second.visit || life->second.SameVisit(member.presence));
     });
 }
 u32 BbscWorldParticipantsHere() {

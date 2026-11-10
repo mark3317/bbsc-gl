@@ -24,6 +24,7 @@ prefix=r'''
 #include "core/bbsc_chalice.h"
 #include "core/bbsc_follow.h"
 using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using s32=int32_t;
+using u64=uint64_t;
 int state=6,book=0,mount=0,kill=0,left=0,follow=0,other=0,pvp=0,pvp_kind=-1,pvp_on=-1;
 int world_presence=0;u32 world_sender=0,world_session=0;
 u32 own_id=2,host=1,key=1;int peers=0;
@@ -42,8 +43,10 @@ void OnBbscWorldControlPacket(u32,u32,const void*,size_t){++world_presence;}
 Follow::Arrival last_arrival;
 void OnBbscHostFollowPacket(u32,float,float,float,float,u32,s32,const Chalice::Key&,const Follow::Arrival& a){++follow;last_arrival=a;}
 void NoteBbscRelayHost(u32,u32,float,float,float){}
-int life_packets=0;bool visible=false;
-void OnBbscLifePacket(u32,u8,u32,bool,bool shown){++life_packets;visible=shown;}
+int life_packets=0;bool visible=false;u64 life_room=0,life_visit=0;
+void OnBbscLifePacket(u32,u8,u32,bool shown,u32,u64 room,u64 visit){
+ ++life_packets;visible=shown;life_room=room;life_visit=visit;
+}
 void OnBbscScalePacket(const u16*){++other;}
 void OnBbscPvpPacket(u8 kind,u8 on){++pvp;pvp_kind=kind;pvp_on=on;}
 void OnBbscProgressPacket(const u32*,size_t){++other;}
@@ -75,6 +78,19 @@ int main(){
  assert(life_packets==1&&visible);
  Dispatch(packet(Protocol::Life,14));assert(life_packets==2&&!visible);
  Dispatch(packet(Protocol::Life,15,3,3));assert(life_packets==2);
+ for(bool server:{false,true}){
+  const int before=life_packets;
+  auto ready=packet(Protocol::Life,Protocol::LifeVisitSize);
+  ready[13+9]=3;
+  u64 room=0x1234567890ULL,visit=7;
+  std::memcpy(ready.data()+13+Protocol::LifeVisibleSize,&room,sizeof(room));
+  std::memcpy(ready.data()+13+Protocol::LifeVisibleSize+sizeof(room),&visit,sizeof(visit));
+  Dispatch(ready,server);
+  assert(life_packets==before+1&&!visible&&life_room==room&&life_visit==visit);
+  ready[13+9]=0;Dispatch(ready,server); // alive keeps the old visibility layout
+  ready[13+9]=3;ready.pop_back();Dispatch(ready,server);
+  assert(life_packets==before+1);
+ }
  // The presence bridge uses exactly the shared session envelope on both paths.
  for(bool server:{false,true}){
   Dispatch(packet(Protocol::WorldPresence,88,3,1),server);

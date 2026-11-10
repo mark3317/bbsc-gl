@@ -192,7 +192,8 @@ void PartyMaintain() {
                      (status.substr(separator+1)=="0" || status.substr(separator+1)==expected);
     // An unavailable reply is not a roster change. An explicit zero clears
     // the previous room once Party has confirmed that we no longer belong.
-    if(valid && roster_confirmed) room_members=members;
+    if(valid && roster_confirmed && room_members.exchange(members)!=members)
+        Core::Bloodborne::OnBbscPartyRoomMemberCountChanged();
     can_beckon=valid && status[0]=='1'; host_hint=valid?hint:0; bell_generation=valid?generation:0; bell_released_generation=valid?released:0; refreshed=GetTickCount64();
     const bool ready=valid && awaiting && cancel && status.substr(separator+1)==expected;
     if(cancel_sequence.load()==cancel) {

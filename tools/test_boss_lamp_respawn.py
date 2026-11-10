@@ -64,6 +64,7 @@ bool shared_checkpoint=false,shared_here=true;
 bool ReadBbscSharedLampCheckpoint(s32&,bool&){return shared_checkpoint;}
 std::atomic<u32> bbsc_load_generation{7};
 s32 bbsc_encounter_lamp=-1;
+s32 bbsc_encounter_name=-1;
 u32 bbsc_encounter_map=0,bbsc_encounter_load_generation=0;
 s64 bbsc_boss_killed_ms=200,bbsc_spectate_since_ms=300,bbsc_spectate_death_ms=100;
 std::mutex bbsc_follow_mutex;

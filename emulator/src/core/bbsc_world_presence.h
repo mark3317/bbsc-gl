@@ -30,6 +30,7 @@ inline constexpr u32 PresenceCapability = 1;
 inline constexpr u32 IndependentTravelCapability = 2;
 inline constexpr u32 NativeFinaleCapability = 1u << 16;
 inline constexpr u32 BossDeathReadyCapability = 1u << 17;
+inline constexpr u32 BossDeathVisitCapability = 1u << 18;
 
 #pragma pack(push,1)
 struct WorldId {
@@ -221,7 +222,7 @@ public:
     u32 LivingHere(const Presence& local, const auto& reported_dead) const {
         u32 count = 0;
         for (const auto& [id, m] : members_)
-            count += m.presence.alive && SamePlace(local, m.presence) && !reported_dead(id, m.received);
+            count += m.presence.alive && SamePlace(local, m.presence) && !reported_dead(id, m);
         return count;
     }
     bool AllSupportTravel(const Presence& local, std::span<const u32> native_members,

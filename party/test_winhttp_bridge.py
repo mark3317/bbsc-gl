@@ -9,10 +9,15 @@ SOURCE=r'''
 #include <cstdio>
 #include <string>
 #include <future>
+#include <vector>
 #include "bbsc_party.h"
 namespace BbscMod {
 void LogLine(char,const char*,const std::string&){}
 std::string AimedPlacementAcknowledgment(){return {};}
+}
+std::vector<unsigned> roster_changes;
+void Core::Bloodborne::OnBbscPartyRoomMemberCountChanged(){
+ roster_changes.push_back(BbscMod::PartyRoomMemberCount());
 }
 int main(int argc,char** argv){
  if(argc>1 && std::string(argv[1])=="roles"){
@@ -34,6 +39,7 @@ int main(int argc,char** argv){
       counted!=pair[2] || BbscMod::PartyRoomMemberCount()!=pair[3])return 30;
    Sleep(260);
   }
+  if(roster_changes!=std::vector<unsigned>{3,2,0,3})return 31;
   return 0;
  }
 

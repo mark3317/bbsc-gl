@@ -365,17 +365,23 @@ void Dispatch(const std::vector<u8>& wrapped, bool from_server = false) {
                 follow.packed_map, follow.x, follow.y, follow.z, follow.heading, follow.sequence,
                 follow.lamp_point, dungeon, arrival);
         }
-    } else if (frame[4] == LifeType && frame.size() >= 14) {
+    } else if (frame[4] == LifeType) {
+        using namespace Core::Bloodborne::Protocol;
         // Only the players of our own session (same host).
-        if (session == 0 || session != SessionKey()) {
-            return;
-        }
-        u32 player = 0;
+        if (!session || session != SessionKey() ||
+            (frame.size() != LifeLegacySize && frame.size() != LifeVisibleSize &&
+             frame.size() != LifeVisitSize) || frame[9] > 3) return;
         u32 sequence = 0;
-        std::memcpy(&player, frame.data() + 5, 4);
-        std::memcpy(&sequence, frame.data() + 10, 4);
-        Core::Bloodborne::OnBbscLifePacket(sender, frame[9], sequence, from_our_host(),
-                                           frame.size() == 15 && frame[14] == 1);
+        std::memcpy(&sequence, frame.data() + 10, sizeof(sequence));
+        std::uint64_t room = 0, visit = 0;
+        if (frame.size() == LifeVisitSize) {
+            std::memcpy(&room, frame.data() + LifeVisibleSize, sizeof(room));
+            std::memcpy(&visit, frame.data() + LifeVisibleSize + sizeof(room), sizeof(visit));
+            if (!frame[9] || !room || !visit) return;
+        }
+        Core::Bloodborne::OnBbscLifePacket(sender, frame[9], sequence,
+                                           frame.size() == LifeVisibleSize && frame[14] == 1,
+                                           session, room, visit);
     } else if (frame[4] == ScaleType && frame.size() >= 15) {
         if (from_our_host()) {
             std::uint16_t percent[5]{};

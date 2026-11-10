@@ -52,7 +52,7 @@
 using namespace Core::Bbsc::PatchTables;
 
 // Public release version. Keep it equal to "version" in mod.json.
-#define BBSC_VERSION "1.5.8"
+#define BBSC_VERSION "1.5.9"
 
 namespace BbscMod {
 void LogPlain(const char* text);

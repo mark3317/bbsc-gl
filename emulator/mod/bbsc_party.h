@@ -20,3 +20,6 @@ unsigned PartyRoomMemberCount(); // confirmed host roster including self, or zer
 void PartyObserve(std::int32_t state, bool loading, bool bell, std::int32_t members, bool alive, bool responder = false);
 void PartyMaintain(); // existing mod maintenance worker, not the frame thread
 }
+namespace Core::Bloodborne {
+void OnBbscPartyRoomMemberCountChanged(); // wake the game-thread death decision
+}
