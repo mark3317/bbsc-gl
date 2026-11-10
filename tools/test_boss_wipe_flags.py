@@ -47,6 +47,21 @@ assert phase[17] == (2005, 3, struct.pack('<II', 2601851, 0))
 assert mensis[12604877][13] == (2003, 22, struct.pack('<III', 12604940, 12604946, 0))
 assert mensis[12604986][3] == (2003, 8, struct.pack('<III', 12604985, 0, 0))
 
+ludwig = dict(Emevd(Path(sys.argv[1]) / 'event/m34_00_00_00.emevd.dcx').events)
+assert ludwig[13404802][10] == (3, 0, struct.pack('<II', 0x100, 13404808))
+assert ludwig[13404801][16] == (2003, 2, struct.pack('<II', 13404809, 1))
+phase = ludwig[13404825]
+assert phase[0:4] == [(1003, 2, struct.pack('<II', 0x100, 9471)),
+                      (1003, 101, struct.pack('<II', 0x10000, 0)),
+                      (2004, 5, struct.pack('<II', 3400800, 0)),
+                      (1000, 4, bytes(4))]
+assert phase[8] == (3, 0, struct.pack('<II', 0x101, 13404824))
+assert ludwig[13404802][39] == (1003, 1, struct.pack('<II', 0x105, 13404825))
+for event in range(13404820, 13404824):
+    assert (2004, 17, struct.pack('<III', 3400800, 100 + event - 13404820, 0)) in ludwig[event]
+    if event > 13404820:
+        assert ludwig[event][9] == (3, 0, struct.pack('<II', 0x103, event - 1))
+
 with Path(sys.argv[2]).open('rb') as elf:
     elf.seek(0x4000 + 0x013CFCC0)
     writer = elf.read(0xB1)
@@ -161,6 +176,38 @@ int main() {
     ++bbsc_world_native_load;
     ResetBbscWipeEncounterAtSpawn(local.map);
     assert(attempt==previous_attempt && BbscEventFlag(12601850));
+
+    local.map=0x22000000;
+    attempt_group=13404;
+    Store((u64)node.data(),0x20,attempt_group);
+    attempt.fill(0);
+    progress.fill(0);
+    SetFixtureFlag(progress,13401800); // guest's local completion can be stale
+    SetFixtureFlag(progress,13401801); // first encounter
+    SetFixtureFlag(attempt,13404811); // completed approach
+    SetFixtureFlag(attempt,13404852); // Laurence
+    SetFixtureFlag(attempt,13404858);
+    constexpr std::array ludwig_flags{13404802u,13404808u,13404809u,13404820u,13404821u,
+                                      13404822u,13404823u,13404824u,13404825u};
+    for (u32 flag : ludwig_flags) SetFixtureFlag(attempt,flag);
+    const auto old_ludwig_attempt=attempt;
+    ResetBbscWipeEncounterAtSpawn(local.map);
+    assert(attempt==old_ludwig_attempt);
+    MarkBbscBossWipeLoad();
+    ++bbsc_world_native_load;
+    ResetBbscWipeEncounterAtSpawn(local.map);
+    for (u32 flag : ludwig_flags) assert(!BbscEventFlag(flag));
+    assert(BbscEventFlag(13401800) && BbscEventFlag(13401801) && BbscEventFlag(13404811));
+    assert(BbscEventFlag(13404852) && BbscEventFlag(13404858));
+    stale_snapshot=old_ludwig_attempt;
+    KeepBbscEncounterFlags(attempt_group,attempt.data(),stale_snapshot.data());
+    assert(stale_snapshot==attempt);
+    attempt=old_ludwig_attempt;
+    SetFixtureFlag(progress,9471);
+    MarkBbscBossWipeLoad();
+    ++bbsc_world_native_load;
+    ResetBbscWipeEncounterAtSpawn(local.map);
+    assert(attempt==old_ludwig_attempt && BbscEventFlag(9471));
 }
 '''.replace('NATIVE_WRITER', ','.join(map(str, writer)))
 
@@ -172,4 +219,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-wipe-flags-') as tmp:
     subprocess.run([compiler, '-std=c++20', '-I', str(ROOT / 'emulator/src'), str(cpp),
                     '-o', str(exe)], check=True, env=env)
     subprocess.run([str(exe)], check=True, env=env)
-print('PASS original Amelia and Micolash EMEVD and native SetFlag: scoped wipe reset, stale snapshots, and permanent progress')
+print('PASS original Amelia, Micolash and Ludwig EMEVD and native SetFlag: scoped wipe reset, stale snapshots, and permanent progress')

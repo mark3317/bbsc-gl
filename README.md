@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.6** includes BBSC-GL 1.5.6. When Ludwig’s arena loads, BBSC-GL checks the local and global defeat flags. If the flags disagree, the fog entrance uses the game’s global victory flag. Targeted tests passed. In-game verification is pending. [Release notes](docs/release-1.5.6.md).
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.7** includes BBSC-GL 1.5.7. After a full party wipe in the Hunter’s Nightmare, BBSC-GL clears Ludwig’s encounter flags so the next attempt starts in phase one. After victory, the mod skips network replays of the phase-two cutscene. Targeted tests passed. In-game verification is pending. [Release notes](docs/release-1.5.7.md).
 
 Hunters can travel independently within a party, use their own Dream and meet again on another map. The host’s Chalice lamp list and progress are synchronized with guests.
 

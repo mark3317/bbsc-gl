@@ -15180,8 +15180,8 @@ bool bbsc_progress_merged_at_load = false; // merged during the trip home (check
 bool bbsc_progress_backed_up = false;      // saves backed up for this trip home
 
 // Temporary boss-attempt flags from EMEVD, CUSA03173 1.09. This includes
-// the boss gauge event IDs and the Amelia and Micolash attempt conditions.
-constexpr std::array<u32, 85> BbscEncounterProgressFlags{
+// the boss gauge event IDs and the Amelia, Micolash and Ludwig attempt conditions.
+constexpr std::array<u32, 90> BbscEncounterProgressFlags{
     12104800, 12104802, 12104850, 12104852, 12204800, 12204802, 12204807, 12304700,
     12304702, 12304800, 12304802, 12404223, 12404800, 12404801, 12404802, 12414700,
     12414702, 12414800,
@@ -15192,16 +15192,33 @@ constexpr std::array<u32, 85> BbscEncounterProgressFlags{
     12604954, 12604955, 12604956, 12604957, 12604958, 12604959, 12604985, 12604986,
     12704800, 12704802, 12804800, 12804802, 12904776, 12904863, 12904877, 12904881,
     12904887, 12904890, 12904891, 12906791, 12906795, 12906806, 12906825, 13204800,
-    13204802, 13304800, 13304802, 13404802, 13404808, 13404824, 13404825, 13404852,
+    13204802, 13304800, 13304802, 13404802, 13404808, 13404809, 13404820, 13404821,
+    13404822, 13404823, 13404824, 13404825, 13404852,
     13404858, 13504802, 13504808, 13504852, 13504858, 13604802, 13604808,
 };
 
 void ResetBbscWipeEncounterAtSpawn(u32 destination) {
-    constexpr u32 CathedralWard = 0x18000000;
-    constexpr u32 Mensis = 0x1A000000;
-    constexpr u32 MicolashDefeated = 12601850;
     const u32 map = destination & 0xFFFF0000;
-    if (map != CathedralWard && map != Mensis) return;
+    u32 first, last, defeated;
+    switch (map) {
+    case 0x18000000: // Amelia
+        first = 12404000;
+        last = 12404999;
+        defeated = 0;
+        break;
+    case 0x1A000000: // Micolash; 12604800/02 belong to the Wet Nurse.
+        first = 12604850;
+        last = 12604986;
+        defeated = 12601850;
+        break;
+    case 0x22000000: // Ludwig; 13404852/58 belong to Laurence.
+        first = 13404802;
+        last = 13404825;
+        defeated = 9471;
+        break;
+    default:
+        return;
+    }
     World::Scope scope;
     {
         std::scoped_lock lock{bbsc_world_presence_mutex};
@@ -15210,11 +15227,7 @@ void ResetBbscWipeEncounterAtSpawn(u32 destination) {
     if (scope.map != map || !BbscIsBossWipeLoad(scope)) return;
     const u64 manager = ReadValue<u64>(image_base + EventFlagManPointerOffset, 0);
     if (!ReadablePointer(manager, 0x40)) return;
-    if (map == Mensis && BbscEventFlag(MicolashDefeated)) return;
-
-    // In Mensis the earlier 12604800/02 flags belong to the Wet Nurse.
-    const u32 first = map == CathedralWard ? 12404000 : 12604850;
-    const u32 last = map == CathedralWard ? 12404999 : 12604986;
+    if (defeated && BbscEventFlag(defeated)) return;
     using SetFlag = void PS4_SYSV_ABI (*)(u64, u32, u32);
     const auto set_flag = reinterpret_cast<SetFlag>(image_base + 0x013CFCC0);
     size_t cleared = 0;
@@ -24973,6 +24986,10 @@ void TickBbscCutsceneReplay() {
         LOG_INFO(Debug, "BBSC cutscenes: the host's cutscene {} is in map {:#x}, we are in {:#x} - "
                         "not played here", packet.cutscene, packet.map, map);
         BBSC_TIMELINE("CUTSCENE", "the host's cutscene {} skipped: another map", packet.cutscene);
+        return;
+    }
+    if (map == 0x22000000 && packet.cutscene == 34000030 && BbscEventFlag(9471)) {
+        BBSC_TIMELINE("CUTSCENE", "the host's cutscene 34000030 skipped: Ludwig already defeated");
         return;
     }
     if (legacy_ending && !PrepareBbscSharedFinaleActor()) {

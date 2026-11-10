@@ -56,10 +56,11 @@ u64 image_base=1;
 std::atomic<u32> bbsc_load_generation{1};
 s64 now=100;
 s32 session=6, extra=1;
+u32 current_map=24;
 size_t writes=0;
 s64 SteadyNowMs() { return now; }
 s32 GetSessionState() { return session; }
-u32 GetCurrentPackedMap() { return 24; }
+u32 GetCurrentPackedMap() { return current_map; }
 bool BbscScalingEnabled() { return true; }
 s32 GetBbscGuestCount() { return extra; }
 s32 GetBbscScalingGuests() { return extra; }
@@ -113,7 +114,8 @@ bool BbscIndependentActive(){return false;}
 bool BbscIndependentTravelAllowed(){return false;}
 bool BbscGroupStoryMovie(u32,s32){return false;}
 bool BbscWorldPeerHere(u32){return true;}
-bool BbscEventFlag(u32){return false;}
+bool ludwig_defeated=false;
+bool BbscEventFlag(u32 flag){return flag==9471 && ludwig_defeated;}
 std::optional<bool> BbscRemoPlaying(){return false;}
 void ArmBbscCainhurstReveal(s32){}
 bool PrepareBbscSharedFinaleActor(){return false;}
@@ -177,6 +179,20 @@ int main() {
     }
     assert(TakeBbscWork()==0 && bbsc_cutscene_queue.empty());
     std::cout << "cutscenes: deduplicated, one replay/frame, backlog rearmed\n";
+
+    current_map=packet.map=0x22000000;
+    packet.cutscene=34000030;
+    packet.sequence=4;
+    OnBbscCutscenePacket(1,true,&packet,sizeof(packet));
+    ludwig_defeated=true; // victory arrives after the request was queued
+    TickBbscCutsceneReplay();
+    assert(replays==3 && bbsc_cutscene_queue.empty() && !bbsc_cutscene_seen.contains(34000030));
+    packet.sequence=5;
+    ludwig_defeated=false;
+    OnBbscCutscenePacket(1,true,&packet,sizeof(packet));
+    TickBbscCutsceneReplay();
+    assert(replays==4);
+    std::cout << "Ludwig phase-two cutscene: discarded after victory, played during the encounter\n";
 
     TickBbscScaling(); assert(writes==1);
     float hp; std::memcpy(&hp,enemy_row.data()+16,4); assert(hp>1.39f && hp<1.41f);
