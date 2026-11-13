@@ -1,3 +1,14 @@
+## Boss death readiness scope — 11.11.2026
+
+The existing `SHAD 0x23` life message can append a native room ID and sender
+visit to death states 1–3. Both are little-endian `u64` at offsets 15 and 23.
+The receiver validates the host session in the envelope and uses the supplied
+room and visit to match the sender's presence. The 14- and 15-byte legacy
+messages still carry ordinary life and model visibility. New peers advertise
+presence capability bit 18 for scoped boss readiness. Mixed peers use the
+legacy death path on clients that cannot verify the other peer's visit.
+The Party relay continues to forward the existing message type unchanged.
+
 ## Drained host search survives native room teardown — 04.11.2026
 
 A fresh native0/2/5 with active Beckoning is not a terminal host event when
