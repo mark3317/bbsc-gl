@@ -122,6 +122,12 @@ u32 GetCurrentPackedMap() { return current; }
 bool IsUsablePackedMap(u32 m) { return m && m!=0xffffffff; }
 constexpr size_t BbscWorldGroupBytes=125, BbscWorldChunkGroups=8;
 constexpr size_t BbscWorldGroupCount=40, BbscDreamGroupCount=57;
+constexpr u32 BbscDreamStateMap=0x15000000;
+std::atomic<u64> bbsc_world_native_load{};
+u64 ReadBbscWorldRoom(){return 15;}
+enum class BbscWork { Gehrman };
+unsigned gehrman_wakes=0;
+void QueueBbscWork(BbscWork) { ++gehrman_wakes; }
 bool compact_world=false; bool BbscCompactWorldSnapshots(){return compact_world;}
 constexpr size_t BbscWorldChunkCount=5, BbscDreamChunkCount=8, BbscSnapshotMaxGroups=57;
 constexpr s64 BbscWorldFlagsFreshMs=6000;
@@ -135,11 +141,17 @@ std::array<u8,125> group{};
 u64 BbscFlagGroupStorage(u32) { return reinterpret_cast<u64>(group.data()); }
 u32 key_of(u32,size_t n) { return static_cast<u32>(12900+n); }
 u32 privacy_key(u32,size_t n) { return n<30?12410:52410; }
+u32 dream_key(u32,size_t n) { return n==31?50000:12410; }
 '''
 
 start = SOURCE.index("struct BbscWorldSnapshot {")
 end = SOURCE.index("// Host side: one snapshot", start)
-snapshots = SOURCE[start:end].replace(function("bool BbscCompactWorldSnapshots()"), "")
+placement = SOURCE[SOURCE.index('enum class BbscGehrmanPlacement'):
+                   SOURCE.index('bool BbscWorldSyncEnabled() {')]
+snapshots = (
+    placement.replace('static_assert(BbscDreamStateKeys[BbscGehrmanSnapshotIndex] == 50000);', '')
+    + SOURCE[start:end].replace(function("bool BbscCompactWorldSnapshots()"), "")
+)
 start = SOURCE.index("struct BbscFollowMessage {")
 end = SOURCE.index("BbscFollowMessage bbsc_follow_latest{};", start) + len("BbscFollowMessage bbsc_follow_latest{};")
 follow = SOURCE[start:end]
@@ -411,6 +423,39 @@ int main() {
     OnBbscWorldFlagsPacket(packet.data(),packet.size()); assert(bbsc_world_blocks.empty());
     for (const auto& chunk:sent) OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
     assert(bbsc_world_blocks.size()==1);
+    ClearBbscHostWorldSnapshots();
+    current=BbscDreamStateMap;
+    const auto dream = [&](u32 seq, u64 load, BbscGehrmanPlacement placement) {
+        sent.clear(); u64 mask=0;
+        bbsc_world_native_load=load;
+        bbsc_own_gehrman_load=load;
+        bbsc_own_gehrman=placement;
+        SendBbscFlagSnapshot(2,current,seq,57,dream_key,mask);
+        assert(sent.size()==8 && !(mask & (u64{1}<<31)));
+        return sent;
+    };
+    gehrman_wakes=0;
+    const auto before_reload=dream(80,5,BbscGehrmanPlacement::Seated);
+    for (size_t i=0;i<7;++i) OnBbscWorldFlagsPacket(before_reload[i].data(),before_reload[i].size());
+    assert(gehrman_wakes==0);
+    OnBbscWorldFlagsPacket(before_reload[7].data(),before_reload[7].size());
+    assert(gehrman_wakes==1 && bbsc_host_gehrman.placement==BbscGehrmanPlacement::Seated);
+    for (const auto& chunk:dream(81,5,BbscGehrmanPlacement::Seated))
+        OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
+    assert(gehrman_wakes==1);
+    for (const auto& chunk:dream(82,6,BbscGehrmanPlacement::Tree))
+        OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
+    assert(gehrman_wakes==2 && bbsc_host_gehrman.host_load==6 &&
+           bbsc_host_gehrman.placement==BbscGehrmanPlacement::Tree);
+    for (const auto& chunk:before_reload) OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
+    assert(gehrman_wakes==2 && bbsc_host_gehrman.host_load==6);
+    for (const auto& chunk:dream(83,7,BbscGehrmanPlacement::Unknown))
+        OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
+    assert(gehrman_wakes==2 && bbsc_host_gehrman.host_load==6);
+    for (const auto& chunk:dream(84,7,BbscGehrmanPlacement::Hidden))
+        OnBbscWorldFlagsPacket(chunk.data(),chunk.size());
+    assert(gehrman_wakes==3 && bbsc_host_gehrman.placement==BbscGehrmanPlacement::Hidden);
+    ClearBbscHostWorldSnapshots();
     sent.clear(); present=0;
     SendBbscFlagSnapshot(1,0x18000000,3,40,key_of,present);
     assert(sent[0].size()==sizeof(Packet) && sent[0][5]==1);

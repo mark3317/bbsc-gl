@@ -1,8 +1,9 @@
-"""Run the channel 13 branch and exercise the actual BBSC finale transition code."""
+"""Run the native teardown guards and exercise the BBSC finale transition code."""
 import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
@@ -19,10 +20,13 @@ spawn = source_file.split('if (site.offset == 0x01938F65) {', 1)[1].split('if (s
 assert 'DepartBbscNativeFinaleAtSpawn(registers->r13);' in spawn
 assert 'if (GetSessionState() == 7 && !BbscNativeFinaleCommitted())' in source_file
 
-elf = (root.parents[1] / 'out/exit-study.elf').read_bytes()
+elf_path = Path(sys.argv[1]) if len(sys.argv) > 1 else root.parents[1] / 'out/exit-study.elf'
+elf = elf_path.read_bytes()
 native_test = elf[0x1783681 + 0x4000:0x1783686 + 0x4000]
 native_panic = elf[0x1783686 + 0x4000:0x178368B + 0x4000]
 test_bytes = ','.join(map(str, native_test + native_panic))
+remove_branch = ','.join(map(str, elf[0x1E54ED0 + 0x4000:0x1E54F11 + 0x4000]))
+remove_twin_branch = ','.join(map(str, elf[0x1E55170 + 0x4000:0x1E551B1 + 0x4000]))
 source = r'''
 #include <algorithm>
 #include <atomic>
@@ -98,7 +102,13 @@ struct { bool valid = true; } bbsc_home_spot;
 bool bbsc_guest_respawn_held = true;
 int bbsc_host_time_bits = 64;
 int restores = 0, world_clears = 0, pending_finishes = 0, trip_finishes = 0, memory_drops = 0;
-void RestoreBbscOwnWorld(const char*, bool) { ++restores; }
+std::vector<int> bbsc_own_world;
+bool altar_bank_ready = false;
+bool BbscNativeFinaleCommitted();
+void RestoreBbscOwnWorld(const char*, bool native_finale) {
+    assert(native_finale && !BbscNativeFinaleCommitted());
+    if (altar_bank_ready) { bbsc_own_world.clear(); ++restores; }
+}
 void ClearBbscHostWorldSnapshots() { ++world_clears; }
 void FinishBbscPendingProgress() { ++pending_finishes; }
 void FinishBbscTripJournal(int) { ++trip_finishes; }
@@ -111,7 +121,7 @@ void RetireBbscNativeFinaleCycle();
 
 void CheckReceive() {
     using namespace Core::Bbsc::PatchTables;
-    const auto& patch = EntryJumps.back();
+    const auto& patch = *std::ranges::find(EntryJumps, 0x1783686ULL, &EntryJump::site);
     assert(patch.site == 0x1783686 && patch.target == 0x1783590 && patch.group == Group::Stage);
     constexpr u8 branch[] = {''' + test_bytes + r'''};
     auto* code = static_cast<u8*>(VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE,
@@ -138,8 +148,54 @@ void CheckReceive() {
     VirtualFree(code, 0, MEM_RELEASE);
 }
 
+template<size_t Size>
+void CheckRemoveMember(u64 start, const u8 (&branch)[Size]) {
+    using namespace Core::Bbsc::PatchTables;
+    // The null path loads the panic arguments before the patched MOV ESI,177.
+    constexpr size_t panic_line = 0x1A, panic_call = 0x21;
+    const auto patch = std::ranges::find(EntryJumps, start + panic_line, &EntryJump::site);
+    assert(patch != EntryJumps.end() && patch->group == Group::Stage);
+    assert(patch->target == start + Size - 2);
+    auto* code = static_cast<u8*>(VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE,
+                                               PAGE_EXECUTE_READWRITE));
+    assert(code);
+    const u8 argument[] = {0x48, 0x89, 0xc8}; // manager argument into RAX
+    std::copy_n(argument, sizeof argument, code);
+    auto* native = code + sizeof argument;
+    std::copy_n(branch, Size, native);
+    assert(std::equal(patch->prologue.begin(), patch->prologue.end(), native + panic_line));
+    const u8 panic[] = {0xb0, 3, 0xc3}; // return a marker at the original panic call
+    assert(native[panic_call] == 0xe8);
+    std::copy_n(panic, sizeof panic, native + panic_call);
+    native[Size] = 0xc3; // return AL where the original member cleanup branches rejoin
+    const auto remove = reinterpret_cast<u8(*)(const void*)>(code);
+    assert(FlushInstructionCache(GetCurrentProcess(), code, 0x1000));
+
+    struct Actor { u8 padding[0x78]; u32 field; } actor{};
+    struct Manager { u8 padding[0x60]; Actor* local; } world{};
+    assert(remove(nullptr) == 3 && remove(&world) == 0);
+    world.local = &actor;
+    assert(remove(&world) == 1);
+    actor.field = 1;
+    assert(remove(&world) == 0);
+
+    const auto jump = EncodeRel32(0xe9, patch->site, patch->target);
+    std::copy(jump.begin(), jump.end(), native + panic_line);
+    assert(FlushInstructionCache(GetCurrentProcess(), code, 0x1000));
+    assert(remove(nullptr) == 0 && remove(&world) == 0);
+    actor.field = 0;
+    assert(remove(&world) == 1);
+    world.local = nullptr;
+    assert(remove(&world) == 0);
+    VirtualFree(code, 0, MEM_RELEASE);
+}
+
 int main() {
     CheckReceive();
+    const u8 remove_branch[] = {''' + remove_branch + r'''};
+    const u8 remove_twin_branch[] = {''' + remove_twin_branch + r'''};
+    CheckRemoveMember(0x1E54ED0, remove_branch);
+    CheckRemoveMember(0x1E55170, remove_twin_branch);
     WriteValue(image_base, PlayerSlotManagerPointerOffset, data);
     WriteValue(image_base, MatchingStatePointerOffset, manager);
     WriteValue(image_base, SummonSessionRulesPointerOffset, rules);
@@ -185,10 +241,17 @@ int main() {
         assert(!GuardBbscNativeFinaleCommand(event));
         assert(ReadValue<s32>(data, 0x68) == advanced);
         WriteValue(event, 0xA0, native.commit);
+        bbsc_own_world = {94000, 12100};
+        altar_bank_ready = false;
         assert(GuardBbscNativeFinaleCommand(event) && !BbscNativeFinaleCommitted());
+        assert(bbsc_native_finale.signal.phase != FinalePhase::AtEnd);
+        assert(bbsc_own_world.size()==2 && restores==ending-1);
         bbsc_native_finale.released = true;
+        assert(GuardBbscNativeFinaleCommand(event) && !BbscNativeFinaleCommitted());
+        assert(bbsc_own_world.size()==2 && restores==ending-1);
+        altar_bank_ready = true;
         assert(!GuardBbscNativeFinaleCommand(event) && BbscNativeFinaleCommitted());
-        assert(role == 6 && restores == ending);
+        assert(role == 6 && restores == ending && bbsc_own_world.empty());
 
         WriteValue(descriptor, 8, 0x18010000);
         WriteValue(descriptor, 0x54, 8);
@@ -244,6 +307,7 @@ int main() {
         ++bbsc_load_generation;
         FinishBbscNativeFinaleLoad();
         assert(!BbscNativeFinaleCommitted());
+        assert(bbsc_own_world.empty());
         assert(!ApplyBbscNativeFinaleDescriptor(descriptor));
         assert(ReadValue<s32>(data, 0x68) == advanced);
         map = Finale::Map;
@@ -259,4 +323,4 @@ with tempfile.TemporaryDirectory() as tmp:
                    check=True)
     env = dict(os.environ, PATH=str(compiler.parent) + os.pathsep + os.environ['PATH'])
     subprocess.run([str(exe)], check=True, env=env)
-print('PASS: all three native endings, native cycle inputs, quiet-load departure gates and retirement')
+print('PASS: native teardown guards, all three endings, cycle inputs and quiet-load departure')

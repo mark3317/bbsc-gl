@@ -76,6 +76,25 @@ int main() {
     assert(Core::InstallGuestCodeHook(vector_start+10,std::span<const u8>{vector_code+10,8},2,callback));
     should_skip=false;assert(vector(0x1234)==0x1234);
     should_skip=true;assert(vector(0x1234)==0xDEADCAFE);
+    // The original flag writer's displaced instructions preserve RSI, then
+    // pass it to the native write. Its failure epilogue returns false directly.
+    const u8 flags_code[]={0x53,0x41,0x56,
+        0x49,0x89,0xfe,0x89,0xd3,
+        0x49,0x8b,0x06,0x4c,0x89,0xf7,0x48,0x89,0xda,
+        0x48,0x89,0xf0,0xeb,0x02,0x31,0xc0,0x41,0x5e,0x5b,0xc3};
+    auto* flags_start=start+0x6000;
+    std::memcpy(flags_start,flags_code,sizeof(flags_code));
+    using Flags=u64 PS4_SYSV_ABI (*)(u64*, u64, u32);
+    auto flags=reinterpret_cast<Flags>(flags_start);
+    u64 vtable=0;
+    assert(Core::InstallGuestCodeHook(flags_start+8,{flags_code+8,9},5,callback));
+    should_skip=false;assert(flags(&vtable,0x1234,125)==0x1234);
+    should_skip=true;assert(flags(&vtable,0x1234,125)==15000012);
+    std::memcpy(flags_start+0x100,flags_code,sizeof(flags_code));
+    auto* failing=flags_start+0x100;
+    assert(Core::InstallGuestCodeHook(failing+8,{flags_code+8,9},0,callback,&skip,false,failing+22));
+    should_skip=false;assert(reinterpret_cast<Flags>(failing)(&vtable,0x1234,125)==0x1234);
+    should_skip=true;assert(reinterpret_cast<Flags>(failing)(&vtable,0x1234,125)==0);
     // Exact native movement CMP followed by its JNE: callback must run before
     // CMP, then displaced instruction must establish the flags consumed by JNE.
     const u8 move_code[]={0x41,0x54,0x49,0x89,0xFC,

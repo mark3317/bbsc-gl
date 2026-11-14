@@ -107,6 +107,11 @@ bool BbscWorldTalkAllowed(u32 talk);
 s32 PS4_SYSV_ABI WorkshopCount(u64 object){return ReadValue<s32>(object,8);}
 '''
 _re=(ROOT/'emulator/src/core/bloodborne_re.cpp').read_text(encoding='utf-8')
+_placement = _re.index('enum class BbscGehrmanPlacement')
+_room = _re.index('u64 ReadBbscWorldRoom();', _placement)
+PREFIX += _re[_placement:_room].replace(
+    'static_assert(BbscDreamStateKeys[BbscGehrmanSnapshotIndex] == 50000);', '')
+PREFIX += 'bool bbsc_gehrman_waiting_for_actor = false;\n'
 _a=_re.index('bool BbscGuestDialogueAllowed(u32 talk) {')
 _b=_re.index('\n}\n',_a)+3
 PREFIX+=_re[_a:_b]

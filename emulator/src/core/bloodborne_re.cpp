@@ -40,6 +40,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <random>
 #include <set>
@@ -85,7 +86,8 @@ namespace {
 // combined wake mask per frame; a concurrent publication survives for the next frame.
 // This avoids locking empty reward/drop/cutscene/departure queues on every game update.
 enum class BbscWork : u32 {
-    GuestDrop = 2, Cutscene = 4, PeerLeft = 8, RewardCheck = 16, Finale = 32, BossDeath = 64
+    GuestDrop = 2, Cutscene = 4, PeerLeft = 8, RewardCheck = 16, Finale = 32, BossDeath = 64,
+    Gehrman = 128
 };
 std::atomic<u32> bbsc_pending_work{0};
 
@@ -6297,10 +6299,49 @@ constexpr size_t BbscDreamChunkCount =
 constexpr size_t BbscSnapshotMaxGroups = 64;
 static_assert(BbscDreamGroupCount <= BbscSnapshotMaxGroups && BbscDreamChunkCount <= 8);
 
+enum class BbscGehrmanPlacement : u8 { Unknown, Hidden, Workshop, Seated, Tree };
+constexpr u32 BbscGehrmanActor = 2100600;
+constexpr u32 BbscGehrmanFirstPoint = 2102310;
+// This personal receipt group is never present in the v2 Dream snapshot.
+// Older receivers ignore the payload of absent groups; older senders leave it zero.
+constexpr size_t BbscGehrmanSnapshotIndex = 31;
+static_assert(BbscDreamStateKeys[BbscGehrmanSnapshotIndex] == 50000);
+
+struct BbscGehrmanView {
+    u64 room = 0;
+    u64 host_load = 0;
+    BbscGehrmanPlacement placement = BbscGehrmanPlacement::Unknown;
+    bool operator==(const BbscGehrmanView&) const = default;
+};
+
+BbscGehrmanPlacement bbsc_own_gehrman = BbscGehrmanPlacement::Unknown;
+u64 bbsc_own_gehrman_load = 0;
+BbscGehrmanView bbsc_applied_gehrman;
+BbscGehrmanPlacement bbsc_local_gehrman = BbscGehrmanPlacement::Unknown;
+u64 bbsc_local_gehrman_load = 0;
+u64 bbsc_applied_gehrman_load = 0;
+u64 bbsc_gehrman_fight_load = 0;
+BbscGehrmanView bbsc_gehrman_before_fight;
+u64 ReadBbscWorldRoom();
+void ApplyBbscGehrmanPlacement();
+bool bbsc_gehrman_waiting_for_actor = false;
+
+BbscGehrmanView ReadBbscGehrmanView(const u8* bytes) {
+    BbscGehrmanView view;
+    if (bytes[0] < static_cast<u8>(BbscGehrmanPlacement::Hidden) ||
+        bytes[0] > static_cast<u8>(BbscGehrmanPlacement::Tree)) return view;
+    std::memcpy(&view.room, bytes + 1, sizeof(view.room));
+    std::memcpy(&view.host_load, bytes + 1 + sizeof(view.room), sizeof(view.host_load));
+    if (view.room) view.placement = static_cast<BbscGehrmanPlacement>(bytes[0]);
+    return view;
+}
+
 bool BbscWorldSyncEnabled() {
     static const bool enabled = EnvFlagEnabled("SHADPS4_BBSC_WORLD_SYNC");
     return enabled;
 }
+
+bool bbsc_altar_save_hook_ready = false;
 
 // ---- Every area, not just the host's (2026-10-18) -------------------------------------------------
 // Reports: "Paarl marked as defeated without being fought" (valriv55, guest + host), "all bosses
@@ -6857,6 +6898,7 @@ struct BbscWorldSnapshot {
     s64 complete_ms = 0; // 0 while chunks are missing
     Chalice::Key dungeon{}; // v3/v4 only; empty for ordinary maps/Dream
     u64 dungeon_revision = 0; // v4: native loader generation
+    BbscGehrmanView gehrman{}; // v2 Dream metadata, never a live flag group
 };
 
 std::mutex bbsc_world_mutex;
@@ -6870,6 +6912,9 @@ std::map<u32, BbscWorldSnapshot> bbsc_world_blocks;
 constexpr s64 BbscWorldBlockFreshMs = 120'000; // other blocks: a turn takes a few seconds
 BbscWorldSnapshot bbsc_dream_assembling; // guest: the host's Dream state being received
 BbscWorldSnapshot bbsc_dream_ready;      // guest: the newest complete one
+// Keep the last resolved placement while the host is loading another Dream.
+BbscGehrmanView bbsc_host_gehrman;
+u32 bbsc_host_gehrman_snapshot = 0;
 
 void ClearBbscHostWorldSnapshots() {
     {
@@ -6882,6 +6927,8 @@ void ClearBbscHostWorldSnapshots() {
     bbsc_world_blocks.clear();
     bbsc_dream_assembling = {};
     bbsc_dream_ready = {};
+    bbsc_host_gehrman = {};
+    bbsc_host_gehrman_snapshot = 0;
 }
 
 // Party v5/v6 omit diagnostic-only kind-5 groups; legacy retains its format.
@@ -6920,6 +6967,16 @@ u32 SendBbscFlagSnapshot(u8 version, u32 map, u32 snapshot, size_t count,
         packet.group_count = static_cast<u8>(here);
         for (size_t i = 0; i < here; ++i) {
             const u32 key = key_of(map, first + i);
+            if (version == 2 && first + i == BbscGehrmanSnapshotIndex) {
+                const u64 room = ReadBbscWorldRoom();
+                if (room && (GetCurrentPackedMap() != BbscDreamStateMap ||
+                             bbsc_own_gehrman_load == bbsc_world_native_load.load())) {
+                    packet.groups[i][0] = static_cast<u8>(bbsc_own_gehrman);
+                    std::memcpy(packet.groups[i] + 1, &room, sizeof(room));
+                    std::memcpy(packet.groups[i] + 1 + sizeof(room),
+                                &bbsc_own_gehrman_load, sizeof(bbsc_own_gehrman_load));
+                }
+            }
             // Personal pickup receipts and shop stock do not enter world snapshots.
             if (key / 10000 == 5 || key == BbscDreamSoldGroup) continue;
             const u64 storage = BbscFlagGroupStorage(key);
@@ -7490,6 +7547,9 @@ void ApplyBbscHostDreamState(std::string_view why) {
         if ((host.present & (u64{1} << i)) == 0) {
             continue;
         }
+        if (!bbsc_altar_save_hook_ready && Chalice::IsAltarRecordGroup(BbscDreamStateKeys[i])) {
+            continue;
+        }
         const u64 storage = BbscFlagGroupStorage(BbscDreamStateKeys[i]);
         if (storage == 0) {
             continue;
@@ -7792,7 +7852,10 @@ std::optional<BbscSaveSlot> BbscActiveSaveSlotUnchecked() {
 // meanwhile, e.g. a purchase) updates the kept copy of the Dream-only groups.
 constexpr u32 BbscOwnWorldMagic = 0x574F4242; // "BBOW"
 constexpr s64 BbscOwnWorldRecoverMs = 15'000;
-std::map<u32, std::array<u8, BbscWorldGroupBytes>> bbsc_own_world; // game thread only
+std::map<u32, std::array<u8, BbscWorldGroupBytes>> bbsc_own_world;
+// The native save writer also reads personal altar entries. Protect their data
+// and the map's structure while it copies the bank.
+std::mutex bbsc_own_world_save_mutex;
 std::optional<BbscSaveSlot> bbsc_own_world_slot;
 bool bbsc_own_world_dirty = false;
 
@@ -7809,9 +7872,11 @@ bool BbscIsMapFlagGroup(u32 key) {
 }
 
 void KeepBbscOwnWorldGroup(u32 key, const u8* live) {
-    if (key == 0 || live == nullptr || bbsc_own_world.contains(key)) {
+    if (key == 0 || live == nullptr) {
         return;
     }
+    if (bbsc_own_world.contains(key)) return; // only the game thread inserts
+    std::scoped_lock lock{bbsc_own_world_save_mutex};
     std::memcpy(bbsc_own_world[key].data(), live, BbscWorldGroupBytes);
     bbsc_own_world_dirty = true;
 }
@@ -7864,7 +7929,10 @@ void KeepBbscOwnTimeBits() {
     std::array<u8, BbscWorldGroupBytes> pseudo{};
     pseudo[0] = static_cast<u8>(ReadValue<u8>(storage, BbscTimeByte) & BbscTimeMask);
     pseudo[1] = 1;
-    bbsc_own_world[BbscOwnTimeKey] = pseudo;
+    {
+        std::scoped_lock lock{bbsc_own_world_save_mutex};
+        bbsc_own_world[BbscOwnTimeKey] = pseudo;
+    }
     bbsc_own_world_dirty = true;
     LOG_INFO(Debug, "BBSC time: our own time of night ({}) kept for the trip home",
              BbscTimeName(pseudo[0]));
@@ -7878,14 +7946,24 @@ void KeepBbscOwnTimeBits() {
 // world, and the empty copy went back into her own world at home (taken items back there too).
 // After a later warp the game re-read her real flags (69 taken) and BBSC switched the items off.
 // Now the whole own world is kept when the guest accepts the summon (JoinSession_White, on the
-// game thread, before the load): every map group of kinds 1/5/6/7 in the flag table.
+// game thread, before the load): every map group of kinds 1/5/6/7 and personal altar record.
 void CaptureBbscOwnWorldBeforeJoin() {
-    if (image_base == 0 || !bbsc_own_world.empty()) {
-        return; // a copy is kept already (an earlier session that has not got home yet)
-    }
+    if (image_base == 0) return;
     const u64 global = GetGlobalState();
     if (!ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 0x1592) == 0) {
         return; // not in our own world
+    }
+    const bool capture_map = bbsc_own_world.empty();
+    for (u32 slot = 0; slot < 7; ++slot) {
+        for (u32 group = 0; group < 6; ++group) {
+            const u32 key = 94000 + slot * 100 + group;
+            if (const auto storage = BbscFlagGroupStorage(key); storage != 0)
+                KeepBbscOwnWorldGroup(key, reinterpret_cast<const u8*>(storage));
+        }
+    }
+    if (!capture_map) {
+        WriteBbscOwnWorldFile();
+        return; // existing map entries still belong to this trip
     }
     // A fast re-summon may precede the final home save. Freeze the latest
     // personal delta into the next own-world baseline, not an older native table.
@@ -7945,7 +8023,7 @@ void CaptureBbscOwnWorldBeforeJoin() {
 }
 
 void NoteBbscOwnDreamRestored(u32 key, const u8* live) {
-    if (BbscIsMapFlagGroup(key) || (key >= 94000 && key < 94700)) {
+    if (BbscIsMapFlagGroup(key) || Chalice::IsAltarRecordGroup(key)) {
         // Map state and complete personal ritual records use their FIRST kept
         // copy. In particular 94x05500..507 choose the native cup model. Host
         // catalog removal/replacement is a borrowed view, not a personal edit;
@@ -8014,6 +8092,7 @@ bool LoadBbscOwnWorldFile(const BbscSaveSlot& slot) {
         if (!get32(key) || !file.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
             break;
         }
+        std::scoped_lock lock{bbsc_own_world_save_mutex};
         bbsc_own_world.try_emplace(key, bytes); // what is in memory already is newer
     }
     bbsc_own_world_slot = slot;
@@ -8029,10 +8108,77 @@ bool BbscHomeForOwnWorld() {
            ReadValue<u64>(image_base + WorldFlagManPointerOffset, 0) != 0;
 }
 
+u8 bbsc_altar_save_skip = 0;
+
+void PS4_SYSV_ABI BbscSavePersonalAltars(u64, const GuestRegisterSnapshot* registers) {
+    std::scoped_lock lock{bbsc_own_world_save_mutex};
+    const auto first = bbsc_own_world.lower_bound(94000);
+    if (first == bbsc_own_world.end() || first->first >= 94700) return;
+
+    // The native serializer writes the live flag bank as one synchronous block.
+    // Redirect only its source. The guest's menu, map events and later writes
+    // still see the live table, even if the native save fails.
+    const u64 live = registers->rsi;
+    const size_t bytes = static_cast<u32>(registers->rbx);
+    std::array<std::pair<size_t, const u8*>, 7 * 6> altar_groups{};
+    size_t count = 0;
+    for (auto it = first; it != bbsc_own_world.end() && it->first < 94700; ++it) {
+        if (!Chalice::IsAltarRecordGroup(it->first)) continue;
+        const u64 storage = BbscFlagGroupStorage(it->first);
+        if (storage < live || storage - live > bytes ||
+            bytes - (storage - live) < BbscWorldGroupBytes) {
+            LOG_ERROR(Debug, "BBSC save: personal altar group {} is outside the native flag bank",
+                      it->first);
+            bbsc_altar_save_skip = 1; // use the serializer's native failure path
+            return;
+        }
+        altar_groups[count++] = {storage - live, it->second.data()};
+    }
+    if (!count) return;
+    if (!HasMemoryAccess(live, bytes, MemoryProt::CpuRead)) {
+        bbsc_altar_save_skip = 1;
+        return;
+    }
+
+    thread_local std::vector<u8> save_flags;
+    try {
+        save_flags.resize(bytes);
+    } catch (const std::bad_alloc&) {
+        bbsc_altar_save_skip = 1;
+        return;
+    }
+    std::memcpy(save_flags.data(), reinterpret_cast<const void*>(live), bytes);
+    for (size_t i = 0; i < count; ++i) {
+        const auto& [offset, own] = altar_groups[i];
+        std::memcpy(save_flags.data() + offset, own, BbscWorldGroupBytes);
+    }
+    const_cast<GuestRegisterSnapshot*>(registers)->rsi = reinterpret_cast<u64>(save_flags.data());
+}
+
+void InstallBbscAltarSaveHook() {
+    // 01399E40..49 load the writer vtable and pass the flag bank in RSI.
+    // When preparing the personal bank fails, 01399E7A returns native false.
+    static constexpr std::array<u8, 9> WriteFlags{
+        0x49, 0x8B, 0x06, 0x4C, 0x89, 0xF7, 0x48, 0x89, 0xDA};
+    bbsc_altar_save_hook_ready = InstallGuestCodeHook(
+        reinterpret_cast<void*>(image_base + 0x01399E40), WriteFlags, 0, BbscSavePersonalAltars,
+        &bbsc_altar_save_skip, false, reinterpret_cast<const void*>(image_base + 0x01399E7A));
+    if (!bbsc_altar_save_hook_ready) {
+        LOG_ERROR(Debug, "BBSC save: native altar flag writer hook unavailable");
+    }
+}
+
 // Our own groups back into the live table. Returns the groups written (0 = nothing kept).
 size_t RestoreBbscOwnWorld(std::string_view why, bool native_finale = false) {
     if (bbsc_own_world.empty() || image_base == 0 || (!native_finale && !BbscHomeForOwnWorld())) {
         return 0;
+    }
+    std::scoped_lock lock{bbsc_own_world_save_mutex};
+    const auto first_altar = bbsc_own_world.lower_bound(94000);
+    for (auto it = first_altar; it != bbsc_own_world.end() && it->first < 94700; ++it) {
+        if (Chalice::IsAltarRecordGroup(it->first) && !BbscFlagGroupStorage(it->first)) {
+            return 0; // the home flag bank is not ready; keep its journal intact
+        }
     }
     if (bbsc_dream_own.held != 0) {
         RestoreBbscOwnDreamState(why); // first: it keeps what the game changed in the Dream
@@ -8090,13 +8236,20 @@ size_t RestoreBbscOwnWorld(std::string_view why, bool native_finale = false) {
                           BbscTimeName(own), BbscTimeName(live & BbscTimeMask));
         }
     }
-    bbsc_own_world.clear();
-    bbsc_own_world_dirty = false;
     if (bbsc_own_world_slot.has_value()) {
         std::error_code ec;
         const auto path = BbscOwnWorldPath(*bbsc_own_world_slot);
         std::filesystem::rename(path, std::filesystem::path(path).concat(".restored"), ec);
+        if (native_finale && ec) {
+            std::error_code status_error;
+            if (std::filesystem::exists(path, status_error) || status_error) {
+                LOG_ERROR(Debug, "BBSC Dream finale: old world journal could not be retired");
+                return 0;
+            }
+        }
     }
+    bbsc_own_world.clear();
+    bbsc_own_world_dirty = false;
     bbsc_own_world_slot.reset();
     return restored;
 }
@@ -8392,7 +8545,10 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
         !bbsc_loot_dungeon.empty() || (!global_receipt && !bbsc_own_world.contains(key))) return;
     // Global enemy/NPC receipts have no map baseline. This zero group contains
     // only a confirmed local pickup bit; restore ORs kind5 and cannot import host bits.
-    if (global_receipt) bbsc_own_world.try_emplace(key);
+    if (global_receipt) {
+        std::scoped_lock lock{bbsc_own_world_save_mutex};
+        bbsc_own_world.try_emplace(key);
+    }
     MarkBbscTakenInOwnWorld(key, byte, mask);
     auto& group = bbsc_loot_groups[key];
     group.taken[byte] |= mask;
@@ -9341,9 +9497,38 @@ bool BbscRespawnInPlace(std::string_view why) {
         LOG_WARNING(Debug, "BBSC respawn in place ({}): native collision restore unavailable -> real reload", why);
         return false;
     }
+    // Regist_LadderAction and OnEvent_LadderUp/Dawn initialize this player module.
+    // OnEvent_4001 ends the action without moving the character or touching the session.
+    const u64 action_module = ReadValue<u64>(modules, 0x58);
+    if (!ReadablePointer(action_module, 0x30)) {
+        return false;
+    }
+    const u64 ladder = ReadValue<u64>(action_module, 0x28);
+    if (ladder != 0 && !ReadablePointer(ladder, 0x2C)) {
+        return false;
+    }
+    const bool ladder_active = ladder != 0 && ReadValue<s32>(ladder, 0) != 0;
+    constexpr std::array<u8, 16> EndLadderSignature{
+        0x80, 0x7A, 0x08, 0x00, 0x75, 0x62, 0x48, 0x8D,
+        0x05, 0x7B, 0x8B, 0x1B, 0x04, 0x48, 0x8B, 0x00};
+    const u64 end_ladder = image_base + 0x01385CF0;
+    if (ladder_active &&
+        (!ReadablePointer(end_ladder, EndLadderSignature.size()) ||
+         std::memcmp(reinterpret_cast<const void*>(end_ladder),
+                     EndLadderSignature.data(), EndLadderSignature.size()) != 0 ||
+         ReadValue<u64>(world_chr, 0x60) != player)) {
+        LOG_WARNING(Debug, "BBSC respawn in place ({}): native ladder reset unavailable -> real reload", why);
+        return false;
+    }
     if (!BbscResetDeathStatuses(player)) {
         LOG_WARNING(Debug, "BBSC respawn in place ({}): death status reset unavailable -> real reload", why);
         return false;
+    }
+    const std::array<u8, 16> local_event_args{};
+    using LocalPlayerEvent = void PS4_SYSV_ABI (*)(u64, u64, const u8*);
+    if (ladder_active) {
+        reinterpret_cast<LocalPlayerEvent>(end_ladder)(0, 0, local_event_args.data());
+        BBSC_TIMELINE("RESPAWN", "native OnEvent_4001 ended ladder action");
     }
     // 1. opacity / scale back to normal
     WriteValue<u64>(player, 0x208, 0x3F8000003F800000ull);
@@ -9366,9 +9551,7 @@ bool BbscRespawnInPlace(std::string_view why) {
     WriteValue<u8>(player, 0x1E4, static_cast<u8>(ReadValue<u8>(player, 0x1E4) | 0x02));
     // OnEvent_4019 restores map collision, gravity and control+0x111.
     // Its zeroed argument block selects the local player (byte +8 == 0).
-    const std::array<u8, 16> collision_args{};
-    using RestoreCollision = void PS4_SYSV_ABI (*)(u64, u64, const u8*);
-    reinterpret_cast<RestoreCollision>(restore_collision)(0, 0, collision_args.data());
+    reinterpret_cast<LocalPlayerEvent>(restore_collision)(0, 0, local_event_args.data());
     BBSC_TIMELINE("RESPAWN", "native OnEvent_4019 restored map collision={} gravity={}",
                   (ReadValue<u8>(player, 0x1E1) & 0x40) == 0,
                   (ReadValue<u16>(control, 0x114) & 0x10) == 0);
@@ -11053,6 +11236,8 @@ int RemotePlayerCount() {
 
 void PS4_SYSV_ABI BbscQuitToTitleHook(u64 confirmed, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscQuitToTitleHook");
+    bbsc_own_gehrman = BbscGehrmanPlacement::Unknown;
+    bbsc_applied_gehrman = {};
     // Who asked to return to the title matters. A player choosing "quit to title" from the menu
     // and the game bailing out on its own both land here, and only the first should tear the
     // session down. Sessions were ending by themselves (2026-09-21) with nothing failing in the
@@ -12079,6 +12264,7 @@ void TickBbscLoadState() {
         if (was_loading || native_finish || world_ready) {
             ++bbsc_load_generation;
             FinishBbscNativeFinaleLoad();
+            ApplyBbscGehrmanPlacement();
             SeedBbscNativeItemStateAtLoad();
             LOG_INFO(Debug, "BBSC load: completed generation {} (native finish {})",
                      bbsc_load_generation.load(), native_finish);
@@ -12220,6 +12406,8 @@ void TickBbscSessionExit(bool peer_work) {
     const s32 state = GetSessionState();
     static s32 previous_state = 0;
     if (state == 0 && previous_state != 0) bbsc_recover_session_cleanup = true;
+    if (state != previous_state && (state == 0 || state == 3 || state == 6))
+        ApplyBbscGehrmanPlacement();
     previous_state = state;
     ReleaseBbscNativeLeavingSession();
     const u64 global = GetGlobalState();
@@ -12827,7 +13015,12 @@ bool BbscRegisterRemotePlayer(u64 chr) {
 
 bool BbscGuestDialogueAllowed(u32 talk) {
     if (!BbscGuestInHostWorld()) return false;
-    const bool ending = talk == GehrmanTalkId && (BbscNightIsOver() || BbscEventFlag(9462));
+    // The guest's own dialogue can enter the final branch even if their
+    // borrowed actor is elsewhere. Both the displayed stage and local ESD
+    // predicates must permit ordinary dialogue.
+    const bool ending = talk == GehrmanTalkId &&
+                        (bbsc_applied_gehrman.placement == BbscGehrmanPlacement::Tree ||
+                         BbscNightIsOver() || BbscEventFlag(9462));
     const bool altar = !GuestAccess::AltarTalk(talk) || BbscWorldTalkAllowed(talk);
     return GuestAccess::TalkAllowed(talk, ending, altar);
 }
@@ -15223,18 +15416,20 @@ bool bbsc_progress_backed_up = false;      // saves backed up for this trip home
 
 // Temporary boss-attempt flags from EMEVD, CUSA03173 1.09. Sorted for the
 // shared-progress filter and to select just the arena involved in the wipe.
-constexpr std::array<u32, 148> BbscEncounterProgressFlags{
+constexpr std::array<u32, 168> BbscEncounterProgressFlags{
     12104800, 12104801, 12104802, 12104850, 12104851, 12104852,
-    12204800, 12204801, 12204802, 12204807, 12204812, 12204813, 12204845,
+    12201810, 12204800, 12204801, 12204802, 12204807, 12204810, 12204811,
+    12204812, 12204813, 12204845,
     12204848, 12204849, 12204850, 12204851, 12204852, 12204853, 12204854,
     12204855, 12204856, 12204857, 12204858, 12204859, 12204870, 12204871, 12204872,
-    12204880, 12204881, 12304700, 12304701, 12304702,
+    12204875, 12204876, 12204880, 12204881, 12304700, 12304701, 12304702,
     12304800, 12304801, 12304802, 12304807, 12304808,
     12404223, 12404800, 12404801, 12404802,
-    12414700, 12414701, 12414702, 12414800, 12414801, 12414802, 12414807, 12415400,
+    12414700, 12414701, 12414702, 12414708, 12414800, 12414801, 12414802, 12414807, 12415400,
     12424700, 12424701, 12424702, 12424790, 12424800, 12424801, 12424802,
     12504800, 12504801, 12504802, 12604800, 12604801, 12604802, 12604815,
-    12604850, 12604851, 12604852, 12604856, 12604940, 12604941, 12604942, 12604943,
+    12604850, 12604851, 12604852, 12604856, 12604870, 12604879, 12604880,
+    12604940, 12604941, 12604942, 12604943,
     12604944, 12604945, 12604946, 12604949, 12604950, 12604951, 12604952, 12604953,
     12604954, 12604955, 12604956, 12604957, 12604958, 12604959, 12604985, 12604986,
     12704800, 12704801, 12704802, 12804800, 12804801, 12804802, 12804808,
@@ -15243,10 +15438,13 @@ constexpr std::array<u32, 148> BbscEncounterProgressFlags{
     13204800, 13204801, 13204802, 13204811, 13204812, 13304800, 13304801, 13304802,
     13304807, 13304808,
     13404802, 13404808, 13404809, 13404820, 13404821, 13404822, 13404823, 13404824,
-    13404825, 13404852, 13404858, 13404859, 13504802, 13504808, 13504809, 13504852,
-    13504858, 13504859, 13504866, 13504868, 13504870, 13504873, 13504874, 13504875,
-    13504876, 13504877, 13504878, 13604802, 13604808, 13604809, 13604812, 13604820,
+    13404825, 13404852, 13404858, 13404859, 13404860,
+    13504802, 13504803, 13504808, 13504809, 13504811, 13504852, 13504858, 13504859, 13504860,
+    13504866, 13504868, 13504869, 13504870, 13504873, 13504874, 13504875,
+    13504876, 13504877, 13504878, 13505655, 13505668, 13505669, 13505690, 13505691, 13505692,
+    13604802, 13604808, 13604809, 13604812, 13604820,
 };
+static_assert(std::ranges::is_sorted(BbscEncounterProgressFlags));
 
 struct BbscChaliceBossArena {
     std::vector<u32> flags;
@@ -15256,12 +15454,51 @@ struct BbscChaliceBossArena {
 struct BbscChaliceBossAttempts {
     World::Scope scope;
     u64 load = 0;
-    std::array<BbscChaliceBossArena, BossRetry::ChaliceVictories.size()> arenas;
+    std::vector<BossRetry::ChaliceAttempt> constructors;
 };
 BbscChaliceBossAttempts bbsc_chalice_boss_attempts;
 
+u32 ResolveBbscChaliceVictory(const BbscChaliceBossAttempts& cup,
+                            const BossRetry::ChaliceAttempt& init) {
+    u32 victory = init.victory;
+    if (victory) return victory;
+    for (const auto& setup : cup.constructors) {
+        if (!setup.defines_arena || setup.actor != init.actor ||
+            (init.activation && setup.activation != init.activation)) continue;
+        if (std::ranges::find(BossRetry::StandardChaliceVictories, setup.victory) ==
+                BossRetry::StandardChaliceVictories.end() &&
+            init.access != setup.victory) continue;
+        if (victory && victory != setup.victory) return 0;
+        victory = setup.victory;
+    }
+    return victory;
+}
+
+auto ResolveBbscChaliceBossAttempts(const BbscChaliceBossAttempts& cup) {
+    std::array<BbscChaliceBossArena, BossRetry::ChaliceVictories.size()> arenas;
+    // Resolve once, when the wipe is confirmed. Native constructors can
+    // announce secondary phases before or after the arena setup.
+    for (const auto& init : cup.constructors) {
+        const u32 victory = ResolveBbscChaliceVictory(cup, init);
+        if (!victory) continue;
+        const auto index = std::ranges::find(BossRetry::ChaliceVictories, victory) -
+                           BossRetry::ChaliceVictories.begin();
+        auto& arena = arenas[index];
+        for (const u32 flag : init.flags) {
+            if (flag && std::ranges::find(arena.flags, flag) == arena.flags.end())
+                arena.flags.push_back(flag);
+        }
+        if (init.name && std::ranges::find(arena.names, init.name) == arena.names.end()) {
+            arena.names.push_back(init.name);
+            if (init.name == 304001) arena.names.insert(arena.names.end(), {304002, 304003});
+        }
+    }
+    return arenas;
+}
+
 struct BbscWipeAttempt {
     u32 defeated = 0;
+    u32 intro_completed = 0;
     std::vector<u32> flags;
     bool reset = false;
 };
@@ -15277,15 +15514,21 @@ void MarkBbscBossWipeLoad() {
         const s32 lamp = BbscChaliceLayerFirstLamp(GetLocalPlayerCharacter());
         const auto& cup = bbsc_chalice_boss_attempts;
         if (cup.scope == bbsc_boss_wipe_scope && cup.load == load) {
+            const auto arenas = ResolveBbscChaliceBossAttempts(cup);
             const auto layer = lamp >= 2902951 ? static_cast<u32>((lamp - 2902951) / 2) :
                                                 BossRetry::LayerCount;
-            size_t arena = cup.arenas.size();
+            size_t arena = arenas.size();
             size_t matches = 0;
             const u32 name = bbsc_encounter_load_generation == bbsc_load_generation.load() &&
                              bbsc_encounter_name > 0 ? static_cast<u32>(bbsc_encounter_name) : 0;
-            for (size_t index = 0; index < cup.arenas.size(); ++index) {
+            // An arena variant with no verified victory flag may still expose
+            // a familiar gauge. Do not fall back to an unrelated layer.
+            const bool unresolved_gauge = name && std::ranges::any_of(cup.constructors, [&](const auto& init) {
+                return init.name == name && !ResolveBbscChaliceVictory(cup, init);
+            });
+            for (size_t index = 0; index < arenas.size(); ++index) {
                 if (index < BossRetry::LayerCount && index != layer) continue;
-                const auto& names = cup.arenas[index].names;
+                const auto& names = arenas[index].names;
                 if (std::ranges::find(names, name) != names.end()) {
                     arena = index;
                     ++matches;
@@ -15293,15 +15536,20 @@ void MarkBbscBossWipeLoad() {
             }
             // Secondary forms may use a different gauge name. In the absence
             // of a named side arena, the native play region identifies the layer.
-            if (matches == 0 && layer < BossRetry::LayerCount) arena = layer;
-            if (matches <= 1 && arena < cup.arenas.size()) {
+            if (matches == 0 && !unresolved_gauge && layer < BossRetry::LayerCount) {
+                arena = layer;
+            }
+            if (!unresolved_gauge && matches <= 1 && arena < arenas.size()) {
                 attempt.defeated = BossRetry::ChaliceVictories[arena];
-                for (const u32 flag : cup.arenas[arena].flags) {
-                    const bool shared = std::ranges::any_of(cup.arenas, [&](const auto& other) {
-                        return &other != &cup.arenas[arena] &&
+                for (const u32 flag : arenas[arena].flags) {
+                    const bool shared = std::ranges::any_of(arenas, [&](const auto& other) {
+                        return &other != &arenas[arena] &&
                                std::ranges::find(other.flags, flag) != other.flags.end();
                     });
-                    if (!shared) attempt.flags.push_back(flag);
+                    const bool access = std::ranges::any_of(cup.constructors, [&](const auto& init) {
+                        return init.victory == flag || init.activation == flag || init.access == flag;
+                    });
+                    if (!shared && !access) attempt.flags.push_back(flag);
                 }
             }
         }
@@ -15312,6 +15560,7 @@ void MarkBbscBossWipeLoad() {
             if (arena.map != bbsc_boss_wipe_scope.map ||
                 std::ranges::find(arena.names, bbsc_encounter_name) == arena.names.end()) continue;
             attempt.defeated = arena.defeated;
+            attempt.intro_completed = arena.intro_completed;
             const auto first = std::ranges::lower_bound(BbscEncounterProgressFlags, arena.first);
             const auto last = std::ranges::upper_bound(first, BbscEncounterProgressFlags.end(), arena.last);
             attempt.flags.assign(first, last);
@@ -15337,6 +15586,10 @@ void ResetBbscWipeEncounter(const World::Scope& scope) {
     if (attempt.flags.empty() || BbscEventFlag(attempt.defeated)) return;
     using SetFlag = void PS4_SYSV_ABI (*)(u64, u32, u32);
     const auto set_flag = reinterpret_cast<SetFlag>(image_base + 0x013CFCC0);
+    // A recorded Laurence fight has passed the introduction. Install that
+    // fact before 13404861 chooses its native placement branch on reload.
+    if (attempt.intro_completed && !BbscEventFlag(attempt.intro_completed))
+        set_flag(manager, attempt.intro_completed, 1);
     size_t cleared = 0;
     // The kept guest bank can still contain the previous attempt. Clear it
     // before the original EMEVD reads the entry and phase conditions.
@@ -15351,22 +15604,38 @@ void ResetBbscWipeEncounter(const World::Scope& scope) {
 }
 
 void ResetBbscWipeEncounterAtSpawn(u32 destination) {
-    if (Chalice::IsMap(destination) ||
-        bbsc_boss_wipe_load.load() != bbsc_world_native_load.load()) return;
+    const u64 load = bbsc_world_native_load.load();
+    const u64 first_load = bbsc_boss_wipe_load.load();
+    if (!first_load || load < first_load || Chalice::IsMap(destination)) return;
+    const u32 map = destination & 0xFFFF0000;
     World::Scope scope;
     {
         std::scoped_lock lock{bbsc_world_presence_mutex};
-        scope = World::ScopeOf(bbsc_world_presence_local);
+        if (bbsc_boss_wipe_load.load() != first_load || bbsc_boss_wipe_attempt.reset ||
+            bbsc_boss_wipe_attempt.flags.empty()) return;
+        scope = bbsc_boss_wipe_scope;
+        if (World::ScopeOf(bbsc_world_presence_local).world != scope.world) return;
+        if (Chalice::IsMap(scope.map) || scope.map != map) return;
+        // A death can return the party to a lamp on another map. Consume the
+        // pending attempt when the original arena next loads in this room.
+        bbsc_boss_wipe_load = load;
     }
-    if (scope.map == (destination & 0xFFFF0000)) ResetBbscWipeEncounter(scope);
+    ResetBbscWipeEncounter(scope);
 }
 
 void KeepBbscEncounterFlags(const World::Scope& scope, u32 key, const u8* before, u8* live) {
-    if (key % 10 < 4 || key % 10 > 6) return;
+    const bool attempt_group = key == 12201 || key == 12915 || (key % 10 >= 4 && key % 10 <= 6);
+    if (!attempt_group && key != 13401) return;
     std::scoped_lock lock{bbsc_world_presence_mutex};
     if (scope != bbsc_boss_wipe_scope ||
         bbsc_boss_wipe_load.load() != bbsc_world_native_load.load()) return;
     const u32 first = key * 1000;
+    const u32 intro = bbsc_boss_wipe_attempt.intro_completed;
+    if (intro && intro / 1000 == key) {
+        const u32 bit = intro - first;
+        live[bit / 8] |= before[bit / 8] & (0x80u >> (bit % 8));
+    }
+    if (!attempt_group) return;
     for (const u32 flag : bbsc_boss_wipe_attempt.flags) {
         if (flag < first || flag >= first + 1000) continue;
         const u32 bit = flag - first;
@@ -18215,6 +18484,17 @@ void PS4_SYSV_ABI BbscResearchSetFlagHook(u64 /*tag*/, const GuestRegisterSnapsh
     }
     const u64 caller = ReadablePointer(registers->rsp, 8) ? ReadValue<u64>(registers->rsp, 0) : 0;
     const u64 caller_offset = caller >= image_base ? caller - image_base : caller;
+    // A dialogue already open when the host changes Dream stage can still
+    // execute its ESD action. The final choice belongs to the host.
+    const u32 requested_flag = static_cast<u32>(registers->rsi);
+    if ((requested_flag == 72100130 || requested_flag == 72100131) &&
+        static_cast<u8>(registers->rdx) != 0) {
+        const s32 role = GetSessionState();
+        if (role == 4 || role == 6) {
+            bbsc_setflag_skip = 1;
+            return;
+        }
+    }
     if (caller_offset == BbscTalkSetFlagReturnOffset &&
         QueueBbscWorldTravel(static_cast<u32>(registers->rsi), static_cast<u8>(registers->rdx))) {
         bbsc_setflag_skip = 1;
@@ -23159,6 +23439,143 @@ void TickBbscFreeBell() {
 // Insight = [[0x0553B130]+8]+0x84 (GetHeroPoint 0x01338670).
 constexpr size_t PlayerInsightOffset = 0x84;
 
+// 12100160/61 choose the room, pose and visibility in the original script.
+// Record the last command on this load, including solo placement before hosting.
+void ObserveBbscGehrmanCommand(u64 instance, u64 instruction, s32 opcode) {
+    if ((opcode != 5 && opcode != 41) || !BbscDreamEnabled()) return;
+    const size_t length = opcode == 5 ? 8 : 16;
+    u64 args = ReadValue<u64>(instance, 0xB8);
+    if (!args) {
+        const u64 ref = ReadValue<u64>(instance, 0xA8);
+        const u64 file = ReadablePointer(ref, 0x10) ? ReadValue<u64>(ref, 8) : 0;
+        if (!ReadablePointer(file, 0x80)) return;
+        args = file + ReadValue<u64>(file, 0x78) + ReadValue<u64>(instruction, 0x10);
+    }
+    if (!ReadablePointer(args, length) || ReadValue<u32>(args, 0) != BbscGehrmanActor)
+        return;
+    const s64 event = BbscEventIdOf(instance);
+    if (event != 12100160 && event != 12100161 && event != 12101802 && event != 12101803)
+        return;
+    if (GetCurrentPackedMap() != BbscDreamStateMap) return;
+    using Placement = BbscGehrmanPlacement;
+    Placement placement = Placement::Hidden;
+    if (opcode == 41) {
+        const u32 point = ReadValue<u32>(args, 8);
+        if (ReadValue<u32>(args, 4) != 1 || point < BbscGehrmanFirstPoint ||
+            point > BbscGehrmanFirstPoint + 2) return;
+        placement = static_cast<Placement>(static_cast<u8>(Placement::Workshop) +
+                                           point - BbscGehrmanFirstPoint);
+    } else if (ReadValue<u8>(args, 4)) {
+        return; // 12100161 follows EnableCharacter with a pose and a move
+    }
+
+    const u64 load = bbsc_world_native_load.load();
+    const s32 role = GetSessionState();
+    if (role == 0 || role == 3) {
+        bbsc_own_gehrman = placement;
+        bbsc_own_gehrman_load = load;
+    }
+    if (event == 12100160 || event == 12100161 || role == 0 || role == 3) {
+        bbsc_local_gehrman = placement;
+        bbsc_local_gehrman_load = load;
+    }
+    if (role == 4 || role == 6) {
+        if (event == 12101802 || event == 12101803) {
+            bbsc_gehrman_fight_load = load;
+            bbsc_gehrman_before_fight = bbsc_applied_gehrman;
+        }
+        bbsc_applied_gehrman_load = ~u64{0}; // the native script just placed the local copy
+        QueueBbscWork(BbscWork::Gehrman);
+    }
+}
+
+u64 FindBbscGehrman() {
+    if (!ReadValue<u64>(image_base + CandidateLocalStatePointerOffset, 0)) return 0;
+    using Find = u64 PS4_SYSV_ABI (*)(u32, u64, u64);
+    return reinterpret_cast<Find>(image_base + 0x013C97A0)(BbscGehrmanActor, 0, 0);
+}
+
+void NoteBbscGehrmanActorReady(u64 actor) {
+    if (!bbsc_gehrman_waiting_for_actor || !actor || FindBbscGehrman() != actor) return;
+    bbsc_gehrman_waiting_for_actor = false;
+    // The displaced native instruction still has to commit activation.
+    QueueBbscWork(BbscWork::Gehrman);
+}
+
+void ApplyBbscGehrmanPlacement() {
+    bbsc_gehrman_waiting_for_actor = false;
+    if (!BbscDreamEnabled() || BbscQuitInProgress() || BbscReturningToTitle() ||
+        BbscNativeFinaleCommitted() || GetCurrentPackedMap() != BbscDreamStateMap)
+        return;
+    const s32 role = GetSessionState();
+    const bool guest = BbscGuestInHostWorld();
+    if (!guest && (role != 0 && role != 3)) return;
+    const u64 load = bbsc_world_native_load.load();
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, 0x10) || ReadValue<u8>(global, 8) != 0 ||
+        !IsSprjLuaEventManReady()) return;
+
+    using Placement = BbscGehrmanPlacement;
+    BbscGehrmanView wanted;
+    if (guest) {
+        const u64 room = ReadBbscWorldRoom();
+        std::scoped_lock lock{bbsc_world_mutex};
+        if (!room || bbsc_host_gehrman.room != room) return;
+        wanted = bbsc_host_gehrman;
+    } else {
+        if (!bbsc_applied_gehrman.room) return;
+        if (bbsc_local_gehrman_load != load) {
+            bbsc_applied_gehrman = {};
+            return; // a fresh personal map owns its own placement
+        }
+        wanted.placement = bbsc_local_gehrman;
+    }
+    if (guest && wanted.placement != Placement::Hidden &&
+        (BbscDreamFinaleHolding() || BbscNativeFinalePlaying() ||
+         (bbsc_gehrman_fight_load == load && bbsc_gehrman_before_fight == wanted))) return;
+    if (wanted.placement == Placement::Unknown) return;
+    if (wanted.room == bbsc_applied_gehrman.room &&
+        wanted.placement == bbsc_applied_gehrman.placement &&
+        load == bbsc_applied_gehrman_load) {
+        bbsc_applied_gehrman = wanted;
+        return;
+    }
+    const u64 actor = FindBbscGehrman();
+    const u64 activation = ReadablePointer(actor, 0x60) ? ReadValue<u64>(actor, 0x18) : 0;
+    if (!ReadablePointer(activation, 0x21) ||
+        (guest && ReadValue<s32>(activation, 0x10) != 4) ||
+        !ReadablePointer(ReadValue<u64>(actor, 0x58), 0x116)) {
+        bbsc_gehrman_waiting_for_actor = true;
+        return;
+    }
+
+    // Same native calls as EMEVD 2004[5], 2003[18] and 2004[41].
+    using Disable = void PS4_SYSV_ABI (*)(u64, u8);
+    const bool hidden = wanted.placement == Placement::Hidden;
+    const auto disable = reinterpret_cast<Disable>(image_base + 0x018C6390);
+    if (hidden) {
+        disable(actor, 1);
+    } else {
+        if (!ReadValue<u64>(image_base + 0x0553B168, 0) ||
+            !ReadValue<u64>(image_base + CurrentMapListPointerOffset, 0)) return;
+        using Animate = void PS4_SYSV_ABI (*)(u32, u32, u32, u32);
+        using Warp = void PS4_SYSV_ABI (*)(u32, u32, u32);
+        const u32 point = BbscGehrmanFirstPoint + static_cast<u8>(wanted.placement) -
+                          static_cast<u8>(Placement::Workshop);
+        disable(actor, 0);
+        if (wanted.placement != Placement::Workshop) {
+            const u32 animation = wanted.placement == Placement::Tree ? 9002 : 9000;
+            reinterpret_cast<Animate>(image_base + 0x013CBFD0)(BbscGehrmanActor, animation, 1, 0);
+        }
+        reinterpret_cast<Warp>(image_base + 0x013CB3D0)(BbscGehrmanActor, point, 1);
+    }
+    bbsc_applied_gehrman = wanted;
+    bbsc_applied_gehrman_load = load;
+    BBSC_TIMELINE("DREAM", "Gehrman placement {} from {} room={:#x} load={}",
+                  static_cast<u8>(wanted.placement), guest ? "host" : "own Dream",
+                  wanted.room, load);
+}
+
 // common.emevd 9183[6] adds SpEffect 4680 (+1 Insight) when an unanswered
 // Beckoning Bell ends. Free bells never paid it. Suppress only this command;
 // boss rewards and the chalice altar refund (9422) still use 4680 normally.
@@ -23174,6 +23591,9 @@ void PS4_SYSV_ABI BbscBellRefundHook(u64, const GuestRegisterSnapshot* registers
     if (!ReadablePointer(instruction, 0x18) ||
         ReadValue<s32>(instruction, 0) != 2004) return;
     const s32 opcode = ReadValue<s32>(instruction, 4);
+#ifdef BBSC_MOD
+    ObserveBbscGehrmanCommand(instance, instruction, opcode);
+#endif
     if (opcode != 37 && (opcode != 8 || !EnvFlagEnabled("SHADPS4_BBSC_FREE_BELL"))) return;
     u64 args = ReadValue<u64>(instance, 0xB8);
     if (!args) {
@@ -23509,27 +23929,14 @@ void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range) {
     std::array<u32, 10> words{};
     std::memcpy(words.data(), reinterpret_cast<const void*>(args), size);
     const auto init = BossRetry::ReadChaliceInit(std::span{words}.first(size / sizeof(u32)));
-    if (!init.victory) return;
+    if (!init.victory && !init.actor) return;
     std::scoped_lock lock{bbsc_world_presence_mutex};
     auto& cup = bbsc_chalice_boss_attempts;
     if (cup.load != load || cup.scope != bbsc_world_bootstrap_scope) {
         cup = {bbsc_world_bootstrap_scope, load, {}};
     }
-    const auto index = std::ranges::find(BossRetry::ChaliceVictories, init.victory) -
-                       BossRetry::ChaliceVictories.begin();
-    auto& arena = cup.arenas[index];
-    for (const u32 flag : init.flags) {
-        if (flag && std::ranges::find(arena.flags, flag) == arena.flags.end()) {
-            arena.flags.push_back(flag);
-        }
-    }
-    if (init.name && std::ranges::find(arena.names, init.name) == arena.names.end()) {
-        arena.names.push_back(init.name);
-        if (init.name == 304001) {
-            // Both additional Watchers have their own gauge slots.
-            arena.names.insert(arena.names.end(), {304002, 304003});
-        }
-    }
+    if (std::ranges::find(cup.constructors, init) == cup.constructors.end())
+        cup.constructors.push_back(init);
 }
 #endif
 
@@ -23637,6 +24044,8 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
     if (site.offset == 0x0178D9C0) {
         ClearBbscFinaleDialog();
         if (BbscNativeFinaleCommitted()) {
+            bbsc_own_gehrman = BbscGehrmanPlacement::Unknown;
+            bbsc_applied_gehrman = {};
             RetireBbscNativeFinaleCycle();
         } else {
             RestoreBbscOwnWorldAtLoad(); // only when the load is home
@@ -23733,6 +24142,7 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         { BBSC_PERF_NESTED("tick TickBbscSharedProgress"); TickBbscSharedProgress(); }
         if (HasBbscWork(pending_work, BbscWork::RewardCheck)) ProcessBbscRewardCheck();
         if (HasBbscWork(pending_work, BbscWork::BossDeath)) RefreshBbscBossDeathGroup();
+        if (HasBbscWork(pending_work, BbscWork::Gehrman)) ApplyBbscGehrmanPlacement();
         { BBSC_PERF_NESTED("tick TickBbscSpectate"); TickBbscSpectate(); }
         { BBSC_PERF_NESTED("tick TickBbscFollowBroadcast"); TickBbscFollowBroadcast(); }
         { BBSC_PERF_NESTED("tick TickBbscWorldFlagsBroadcast"); TickBbscWorldFlagsBroadcast(); }
@@ -25475,6 +25885,12 @@ void OnBbscWorldFlagsPacket(const void* data, std::uint32_t size) {
                 snap.present |= u64{1} << (first + i);
             }
         }
+        if (dream && packet.packed_map == BbscDreamStateMap &&
+            first <= BbscGehrmanSnapshotIndex && BbscGehrmanSnapshotIndex < first + count) {
+            const size_t index = BbscGehrmanSnapshotIndex - first;
+            if (!(packet.present & (1u << index)))
+                snap.gehrman = ReadBbscGehrmanView(packet.groups[index]);
+        }
         snap.chunks |= 1u << packet.chunk;
         if (snap.chunks == (1u << chunk_total) - 1 && snap.complete_ms == 0) {
             snap.complete_ms = SteadyNowMs();
@@ -25485,7 +25901,18 @@ void OnBbscWorldFlagsPacket(const void* data, std::uint32_t size) {
                 first_for_map = !bbsc_world_blocks.contains(snap.map);
                 bbsc_world_blocks[snap.map] = snap;
             }
-            if (dream) ready = snap;
+            if (dream) {
+                ready = snap;
+                if (snap.gehrman.room &&
+                    (snap.gehrman.room != bbsc_host_gehrman.room ||
+                     static_cast<s32>(snap.snapshot - bbsc_host_gehrman_snapshot) > 0)) {
+                    bbsc_host_gehrman_snapshot = snap.snapshot;
+                    if (snap.gehrman != bbsc_host_gehrman) {
+                        bbsc_host_gehrman = snap.gehrman;
+                        QueueBbscWork(BbscWork::Gehrman);
+                    }
+                }
+            }
         }
     }
     if (first_for_map) {
@@ -26518,6 +26945,7 @@ void InstallReverseEngineeringTrace() {
                               std::span<const u8>{RemoStartStore}, 0, BbscRemoStartedHook))
         LOG_ERROR(Debug, "BBSC Dream finale: native Remo start hook unavailable");
     InstallBbscChaliceHooks();
+    InstallBbscAltarSaveHook();
     InstallBbscIndependentWorld();
     InstallBbscFloorGuardAndPickupTrace();
     InstallBbscLocalKeyBankHook();

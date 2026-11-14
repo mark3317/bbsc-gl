@@ -29,6 +29,7 @@ using u8=uint8_t;using u16=uint16_t;using u32=uint32_t;using u64=uint64_t;using 
 constexpr u64 WorldFlagManPointerOffset=0x553B100;
 constexpr u32 BbscDreamStateMap=0x15000000;
 bool active=true;s32 session=6;
+bool bbsc_altar_save_hook_ready=true;
 u64 image_base=0;
 std::array<u8,64> manager{};
 std::array<u8,125*1200> lamp_backing{};
@@ -177,6 +178,10 @@ int main(){
  map=BbscDreamStateMap;
  for(u32 i=0;i<7;++i)for(u32 j=0;j<6;++j)groups[94000+i*100+j].fill(0xA5);
  const auto personal_altars=groups;
+ const auto journal_before=own_kept;
+ bbsc_altar_save_hook_ready=false;
+ assert(!BbscWorldApplyAltars(map)&&own_kept==journal_before&&groups==personal_altars);
+ bbsc_altar_save_hook_ready=true;
  groups.erase(94605);assert(!BbscWorldApplyAltars(map));
  assert(groups[94000]==personal_altars.at(94000)); // no partial installation
  groups[94605]=personal_altars.at(94605);

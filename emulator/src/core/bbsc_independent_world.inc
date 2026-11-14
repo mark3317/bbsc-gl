@@ -549,8 +549,9 @@ void PS4_SYSV_ABI BbscWorldNpcActivated(u64,const GuestRegisterSnapshot* regs) {
     if(!ReadablePointer(chr,0x94) || !ReadablePointer(world,0xA48))return;
     const u64 control=ReadValue<u64>(chr,0x18);
     if(!ReadablePointer(control,0x21) || control!=regs->rax ||
-       ReadValue<s32>(control,0x14)!=4 || ReadValue<u8>(chr,0x28) ||
-       (ReadValue<u8>(control,0x20)&1))return;
+       ReadValue<s32>(control,0x14)!=4 || ReadValue<u8>(chr,0x28))return;
+    NoteBbscGehrmanActorReady(chr);
+    if (ReadValue<u8>(control,0x20)&1) return;
     const s32 handle=ReadValue<s32>(chr,0x90);
     if(handle<0)return;
     const u32 block=(static_cast<u32>(handle)>>11)&31,slot=handle&0x7FF;

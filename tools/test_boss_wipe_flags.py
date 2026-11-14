@@ -64,6 +64,47 @@ assert len(parts) == 2641 and regular_arenas == 8485
 watchers = initializers(next(EVENTS.rglob('m29_30_90_00.emevd.dcx')))
 watchers = [init for init in watchers if init[1] in (12906795, 12906802) and init[4] == 12901800]
 assert len(watchers) == 2
+rom = [init for init in initializers(next(EVENTS.rglob('m29_30_90_00.emevd.dcx')))
+       if init[1] in (12906806, 12906863) and init[2] == 2900111]
+assert len(rom) == 2
+# Phase constructors can arrive before their main battle setup.
+rom.sort(key=lambda init: init[1], reverse=True)
+phase = dict(Emevd(EVENTS / 'm29.emevd.dcx').events)[12906863]
+assert all(phase[i] == (2003, 2, struct.pack('<II', 0, 1)) for i in (18, 34))
+
+local_layouts = [
+    ('m29_01_00_30', 2231, 12900531, 12905955, 12905826, 12905950),
+    ('m29_01_00_32', 2233, 12910033, 12915455, 12915326, 12915450),
+    ('m29_01_00_85', 2231, 12900500, 12905500, 12905610, 12905505),
+    ('m29_01_00_86', 2090, 12900500, 12905500, 12905610, 12905505),
+    ('m29_01_00_99', 2231, 12900531, 12905955, 12905826, 12905950),
+    ('m29_01_10_06', 511000, 12900500, 12905500, 12905610, 12905505),
+]
+local_cases = []
+for layout, name, victory, activation, phase_flag, gate in local_layouts:
+    calls = initializers(next(EVENTS.rglob(f'{layout}.emevd.dcx')))
+    setup, = [init for init in calls if init[1] == 12904881 and init[5] == name]
+    assert setup[6:8] == (victory, activation)
+    music, = [init for init in calls if init[1] == 12904882 and init[7] == setup[2]]
+    assert music[2:4] == (victory, activation)
+    phases = [init for init in calls if (init[1] == 12904894 and init[3] == phase_flag)
+              or (init[1] in (12904898, 12904901, 12904904, 12904907, 12904910)
+                  and init[4] == phase_flag)]
+    assert phases
+    intro = next((init for init in calls if init[1] == 12904879), None)
+    local_cases.append(([setup, *phases, music],
+                        (name, victory, activation, phase_flag, gate,
+                         12904879 + intro[0] if intro else 0, intro[4] if intro else 0)))
+
+native_maps = {
+    map_id: dict(Emevd(EVENTS / f'm{map_id}_00_00.emevd.dcx').events)
+    for map_id in ('22_00', '24_01', '35_00')
+}
+for map_id, event, step in [('22_00', 12204810, 1), ('22_00', 12204811, 1),
+                            ('24_01', 12414708, 1), ('35_00', 13505655, 2)]:
+    assert native_maps[map_id][event][step] == (1003, 101, struct.pack('<II', 0x10100, 0))
+assert native_maps['35_00'][13504803][28] == (2003, 2, struct.pack('<II', 13504811, 1))
+assert native_maps['35_00'][13504880][8] == (1003, 101, struct.pack('<II', 0x100, 13504869))
 
 events = dict(Emevd(EVENTS / 'm24_00_00_00.emevd.dcx').events)
 actor = 2400800
@@ -103,6 +144,16 @@ for event in range(13404820, 13404824):
     assert (2004, 17, struct.pack('<III', 3400800, 100 + event - 13404820, 0)) in ludwig[event]
     if event > 13404820:
         assert ludwig[event][9] == (3, 0, struct.pack('<II', 0x103, event - 1))
+
+laurence_setup = ludwig[13404861]
+assert laurence_setup[:4] == [
+    (1003, 2, struct.pack('<II', 0x100, 13401850)),
+    (1003, 101, struct.pack('<II', 0, 13401851)),
+    (2004, 41, struct.pack('<IIII', 3400850, 1, 3402853, 0xFFFFFFFF)),
+    (1000, 4, bytes(4)),
+]
+assert laurence_setup[16] == (2003, 2, struct.pack('<II', 13404860, 1))
+assert ludwig[13404852][6] == (1003, 1, struct.pack('<II', 0x101, 13404860))
 
 with Path(sys.argv[2]).open('rb') as elf:
     elf.seek(0x4000 + 0x013CFCC0)
@@ -165,7 +216,7 @@ int main() {
     assert(image_base);
     const u8 writer[]={NATIVE_WRITER};
     std::memcpy((void*)(image_base+0x013CFCC0),writer,sizeof(writer));
-    std::array<u8,0x40> manager{},head{},node{};
+    std::array<u8,0x40> manager{},head{},node{},progress_node{};
     Store(image_base,EventFlagManPointerOffset,(u64)manager.data());
     Store((u64)manager.data(),0x1c,1000u);
     Store((u64)manager.data(),0x38,(u64)head.data());
@@ -207,7 +258,7 @@ int main() {
     SetFixtureFlag(attempt,12604800); // Wet Nurse arena
     SetFixtureFlag(attempt,12604960); // neighbouring event
     constexpr std::array micolash_flags{
-        12604850u,12604851u,12604852u,12604856u,
+        12604850u,12604851u,12604852u,12604856u,12604870u,12604879u,12604880u,
         12604940u,12604941u,12604942u,12604943u,12604944u,12604945u,12604946u,
         12604949u,12604950u,12604951u,12604952u,12604953u,12604954u,12604955u,
         12604956u,12604957u,12604958u,12604959u,12604985u,12604986u,
@@ -246,6 +297,7 @@ int main() {
     SetFixtureFlag(attempt,13404811); // completed approach
     SetFixtureFlag(attempt,13404852); // Laurence
     SetFixtureFlag(attempt,13404858);
+    SetFixtureFlag(attempt,13404860);
     constexpr std::array ludwig_flags{13404802u,13404808u,13404809u,13404820u,13404821u,
                                       13404822u,13404823u,13404824u,13404825u};
     for (u32 flag : ludwig_flags) SetFixtureFlag(attempt,flag);
@@ -257,7 +309,7 @@ int main() {
     ResetBbscWipeEncounterAtSpawn(local.map);
     for (u32 flag : ludwig_flags) assert(!BbscEventFlag(flag));
     assert(BbscEventFlag(13401800) && BbscEventFlag(13401801) && BbscEventFlag(13404811));
-    assert(BbscEventFlag(13404852) && BbscEventFlag(13404858));
+    assert(BbscEventFlag(13404852) && BbscEventFlag(13404858) && BbscEventFlag(13404860));
     stale_snapshot=old_ludwig_attempt;
     KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),stale_snapshot.data());
     assert(stale_snapshot==attempt);
@@ -267,6 +319,102 @@ int main() {
     ++bbsc_world_native_load;
     ResetBbscWipeEncounterAtSpawn(local.map);
     assert(attempt==old_ludwig_attempt && BbscEventFlag(9471));
+
+    bbsc_encounter_name=450000;
+    Store((u64)node.data(),0,(u64)progress_node.data());
+    Store((u64)progress_node.data(),0,(u64)head.data());
+    Store((u64)progress_node.data(),0x10,(u64)head.data());
+    Store((u64)progress_node.data(),0x20,13401u);
+    Store((u64)progress_node.data(),0x28,2u);
+    Store((u64)progress_node.data(),0x30,(u64)progress.data());
+    constexpr std::array laurence_flags{13404852u,13404858u,13404859u,13404860u};
+    for (u32 flag : laurence_flags) SetFixtureFlag(attempt,flag);
+    const auto old_laurence_attempt=attempt;
+    const auto old_laurence_progress=progress;
+    MarkBbscBossWipeLoad();
+    ++bbsc_world_native_load;
+    ResetBbscWipeEncounterAtSpawn(local.map);
+    for (u32 flag : laurence_flags) assert(!BbscEventFlag(flag));
+    assert(BbscEventFlag(13401851) && !BbscEventFlag(13401850));
+    assert(BbscEventFlag(13404802) && BbscEventFlag(13401801));
+    stale_snapshot=old_laurence_attempt;
+    KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),stale_snapshot.data());
+    assert(stale_snapshot==attempt);
+    auto stale_intro=old_laurence_progress;
+    KeepBbscEncounterFlags(World::ScopeOf(local),13401,progress.data(),stale_intro.data());
+    assert(stale_intro==progress);
+
+    progress=old_laurence_progress;
+    attempt=old_laurence_attempt;
+    SetFixtureFlag(progress,13401850);
+    MarkBbscBossWipeLoad();
+    ++bbsc_world_native_load;
+    ResetBbscWipeEncounterAtSpawn(local.map);
+    assert(attempt==old_laurence_attempt && !BbscEventFlag(13401851));
+    Store((u64)node.data(),0,(u64)head.data());
+
+    // A lamp outside the arena delays the reset until the party returns.
+    local.map=0x20000000;
+    bbsc_encounter_map=local.map; bbsc_encounter_name=510000;
+    attempt_group=13204;
+    Store((u64)node.data(),0x20,attempt_group);
+    progress.fill(0);
+    attempt.fill(0);
+    SetFixtureFlag(progress,13201802); // introduction
+    SetFixtureFlag(attempt,13204811); // first relocation
+    const auto old_rom_story=attempt;
+    MarkBbscBossWipeLoad();
+    ++bbsc_world_native_load;
+    local.map=0x18000000;
+    ResetBbscWipeEncounterAtSpawn(local.map);
+    assert(attempt==old_rom_story);
+    ++bbsc_world_native_load;
+    ++local.world.room;
+    ResetBbscWipeEncounterAtSpawn(0x20000000);
+    assert(attempt==old_rom_story);
+    --local.world.room;
+    ResetBbscWipeEncounterAtSpawn(0x20000000);
+    assert(!BbscEventFlag(13204811) && BbscEventFlag(13201802));
+    local.map=0x20000000;
+    stale_snapshot=old_rom_story;
+    KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),stale_snapshot.data());
+    assert(stale_snapshot==attempt);
+
+    const auto check_banks = [&](u32 map, s32 boss, u32 attempt_key, u32 progress_key,
+                                 const auto& reset_flags, const auto& kept_flags) {
+        local.map=map; bbsc_encounter_map=map; bbsc_encounter_name=boss;
+        attempt_group=attempt_key;
+        Store((u64)node.data(),0x20,attempt_key);
+        Store((u64)progress_node.data(),0x20,progress_key);
+        Store((u64)node.data(),progress_key<attempt_key ? 0 : 0x10,(u64)progress_node.data());
+        attempt.fill(0);
+        progress.fill(0);
+        for (const u32 flag : reset_flags)
+            SetFixtureFlag(flag/1000==attempt_key ? attempt : progress,flag);
+        for (const u32 flag : kept_flags)
+            SetFixtureFlag(flag/1000==attempt_key ? attempt : progress,flag);
+        const auto old_attempt=attempt, old_progress=progress;
+        MarkBbscBossWipeLoad();
+        ++bbsc_world_native_load;
+        ResetBbscWipeEncounterAtSpawn(map);
+        for (const u32 flag : reset_flags) assert(!BbscEventFlag(flag));
+        for (const u32 flag : kept_flags) assert(BbscEventFlag(flag));
+        auto incoming_attempt=old_attempt, incoming_progress=old_progress;
+        KeepBbscEncounterFlags(World::ScopeOf(local),attempt_key,attempt.data(),incoming_attempt.data());
+        KeepBbscEncounterFlags(World::ScopeOf(local),progress_key,progress.data(),incoming_progress.data());
+        assert(incoming_attempt==attempt && incoming_progress==progress);
+        Store((u64)node.data(),0,(u64)head.data());
+        Store((u64)node.data(),0x10,(u64)head.data());
+    };
+    check_banks(0x16000000,210000,12204,12201,
+        std::array{12201810u,12204810u,12204811u,12204875u,12204876u},
+        std::array{12201802u}); // first meeting
+    check_banks(0x23000000,452000,13504,13501,
+        std::array{13504803u,13504811u},
+        std::array{13501802u,13501850u,13504858u}); // intro and other arena
+    check_banks(0x23000000,403000,13504,13505,
+        std::array{13504860u,13504869u,13505655u,13505668u,13505669u,13505690u,13505691u,13505692u},
+        std::array{13504808u,13504810u,13505657u}); // Maria and unrelated state
 
     // Phase 2 Gascoigne may share the map with an undefeated Cleric Beast.
     local.map=0x18010000;
@@ -323,8 +471,8 @@ int main() {
         RememberBbscChaliceBossInit(instance_at,{pc_at,pc_at+0x20});
     };
     std::apply([&](const auto&... args) { (capture(args), ...); }, WATCHERS_CTORS);
-    assert(cup.scope==World::ScopeOf(local) && cup.arenas[0].flags.size()==5);
-    cup.arenas[1]={{12905509,12906806,12906802},{216000}};
+    assert(cup.scope==World::ScopeOf(local) && ResolveBbscChaliceBossAttempts(cup)[0].flags.size()==5);
+    cup.constructors.push_back({12901801,216000,{12905509,12906806,12906802}});
     attempt_group=12905;
     Store((u64)node.data(),0x20,attempt_group);
     progress.fill(0); attempt.fill(0);
@@ -355,10 +503,112 @@ int main() {
     incoming.fill(0);
     KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),incoming.data());
     assert((incoming[502/8] & (0x80 >> (502%8))) != 0);
+
+    bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+    std::apply([&](const auto&... args) { (capture(args), ...); }, ROM_CTORS);
+    // The same bit is used as an access condition in a different layout.
+    // Only constructors from the mounted ritual can protect it.
+    const auto rom_arenas=ResolveBbscChaliceBossAttempts(cup);
+    assert(std::ranges::find(rom_arenas[2].flags,12905519u) != rom_arenas[2].flags.end());
+    assert(std::ranges::find(rom_arenas[2].flags,12905520u) != rom_arenas[2].flags.end());
+    bbsc_encounter_name=510010;
+    layer_lamp=2902955;
+    attempt.fill(0);
+    progress.fill(0);
+    SetFixtureFlag(progress,12901801);
+    SetFixtureFlag(progress,12900532);
+    for (u32 flag : {12905518u,12905519u,12905520u,12905525u}) SetFixtureFlag(attempt,flag);
+    const auto old_rom_attempt=attempt;
+    MarkBbscBossWipeLoad();
+    ++bbsc_world_native_load;
+    ResetBbscWipeEncounter(World::ScopeOf(local));
+    assert(!BbscEventFlag(12905518) && !BbscEventFlag(12905519) && !BbscEventFlag(12905520));
+    assert(BbscEventFlag(12905525) && BbscEventFlag(12901801) && BbscEventFlag(12900532));
+    incoming=old_rom_attempt;
+    KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),incoming.data());
+    assert(incoming==attempt);
+
+    // Native 12904881 can carry an access/activation flag in place of
+    // the victory flag. Only matching actor + activation can resolve it.
+    bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+    bbsc_encounter_name=216000;
+    layer_lamp=2902953;
+    capture(std::array{0u,12904881u,2900100u,2903007u,12905501u,216000u,
+                       12905502u,12905502u,12905502u});
+    capture(std::array{1u,12904882u,12901801u,12905502u,2903004u,2903003u,2903006u,2900100u});
+    capture(std::array{0u,12904040u,2900132u,12905533u,12905534u,2900137u,2900100u,2900100u});
+    capture(std::array{0u,12906863u,2900100u,2903096u,2903097u,12905502u,12905520u});
+    MarkBbscBossWipeLoad();
+    const auto& flags=bbsc_boss_wipe_attempt.flags;
+    for (const u32 flag : {12904881u,12905520u,12905533u,12905534u})
+        assert(std::ranges::find(flags,flag)!=flags.end());
+    for (const u32 flag : {12901801u,12905502u})
+        assert(std::ranges::find(flags,flag)==flags.end());
+    capture(std::array{0u,12904881u,2900180u,2903007u,12905501u,216000u,
+                       12900531u,12905955u,12905955u});
+    MarkBbscBossWipeLoad();
+    assert(bbsc_boss_wipe_attempt.flags.empty());
+
+    const auto check_local_arena = [&](const auto& calls, const auto& facts) {
+        const auto [name,victory,activation,phase_flag,gate,intro,intro_signal] = facts;
+        ++bbsc_world_native_load;
+        bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+        std::apply([&](const auto&... args) { (capture(args), ...); }, calls);
+        bbsc_encounter_name=name;
+        layer_lamp=-1; // a local arena does not use a standard layer victory
+        attempt_group=phase_flag/1000;
+        Store((u64)node.data(),0x20,attempt_group);
+        attempt.fill(0);
+        progress.fill(0);
+        SetFixtureFlag(attempt,phase_flag);
+        const auto set_preserved = [&](const u32 flag) {
+            if (flag) SetFixtureFlag(flag/1000==attempt_group ? attempt : progress,flag);
+        };
+        set_preserved(activation); // entered and fighting
+        set_preserved(gate);
+        set_preserved(intro);
+        set_preserved(intro_signal);
+        const auto old_attempt=attempt, old_progress=progress;
+        MarkBbscBossWipeLoad();
+        assert(bbsc_boss_wipe_attempt.defeated==victory);
+        assert(std::ranges::find(bbsc_boss_wipe_attempt.flags,phase_flag)!=bbsc_boss_wipe_attempt.flags.end());
+        for (const u32 flag : {victory,activation,gate,intro,intro_signal})
+            assert(std::ranges::find(bbsc_boss_wipe_attempt.flags,flag)==bbsc_boss_wipe_attempt.flags.end());
+        ++bbsc_world_native_load;
+        ResetBbscWipeEncounter(wrong_ritual);
+        assert(attempt==old_attempt);
+        ResetBbscWipeEncounter(World::ScopeOf(local));
+        assert(!BbscEventFlag(phase_flag) && BbscEventFlag(activation) && BbscEventFlag(gate));
+        assert(!intro || BbscEventFlag(intro));
+        assert(!intro_signal || BbscEventFlag(intro_signal));
+        assert(progress==old_progress);
+        auto stale=old_attempt;
+        KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),stale.data());
+        assert(stale==attempt);
+
+        bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+        std::apply([&](const auto&... args) { (capture(args), ...); }, calls);
+        attempt=old_attempt;
+        set_preserved(victory);
+        MarkBbscBossWipeLoad();
+        ++bbsc_world_native_load;
+        ResetBbscWipeEncounter(World::ScopeOf(local));
+        assert(BbscEventFlag(victory) && BbscEventFlag(phase_flag));
+    };
+    LOCAL_CHALICE_CASES
 }
-'''.replace('NATIVE_WRITER', ','.join(map(str, writer))).replace(
-    'WATCHERS_CTORS', 'std::tuple{' + ','.join(
-        'std::array{' + ','.join(f'{word}u' for word in init) + '}' for init in watchers) + '}')
+'''.replace('NATIVE_WRITER', ','.join(map(str, writer)))
+
+def cpp_calls(calls):
+    return 'std::tuple{' + ','.join(
+        'std::array{' + ','.join(f'{word}u' for word in init) + '}' for init in calls) + '}'
+
+
+for marker, calls in [('WATCHERS_CTORS', watchers), ('ROM_CTORS', rom)]:
+    code = code.replace(marker, cpp_calls(calls))
+code = code.replace('LOCAL_CHALICE_CASES', '\n    '.join(
+    f"check_local_arena({cpp_calls(calls)}, std::array{{{','.join(f'{word}u' for word in facts)}}});"
+    for calls, facts in local_cases))
 
 with tempfile.TemporaryDirectory(prefix='bbsc-wipe-flags-') as tmp:
     cpp, exe = Path(tmp) / 'wipe.cpp', Path(tmp) / 'wipe.exe'

@@ -168,7 +168,7 @@ void QueueBbscWorldAltarWrite(u32 flag,u32 width,u32 value) {
 bool BbscWorldApplyAltars(u32 map) {
     const s32 session=GetSessionState();
     if(!BbscIndependentActive() || (session!=4 && session!=6) || map!=BbscDreamStateMap)return true;
-    if(!bbsc_world_catalog_ready.load())return false;
+    if(!bbsc_altar_save_hook_ready || !bbsc_world_catalog_ready.load())return false;
     std::array<u64,42> storage{};
     for(size_t i=0;i<7;++i)for(size_t j=0;j<6;++j){
         storage[i*6+j]=BbscFlagGroupStorage(94000+i*100+j);

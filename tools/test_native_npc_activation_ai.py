@@ -62,6 +62,7 @@ template<class T>void WriteValue(u64 p,size_t off,T v){++writes;memcpy((void*)(p
 bool ReadablePointer(u64 p,size_t){return p>0x10000;}
 bool HasMemoryAccess(u64 p,size_t n,MemoryProt){return ReadablePointer(p,n);}
 bool BbscIndependentActive(){return active;}
+void NoteBbscGehrmanActorReady(u64){}
 u64 doll=0;u64 BbscWorldDoll(u64){return doll;}
 bool PS4_SYSV_ABI Ready(u64){return setup_ready;}
 bool PS4_SYSV_ABI Setup(u64,u64){return setup_ready;}

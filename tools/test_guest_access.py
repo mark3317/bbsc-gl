@@ -26,6 +26,41 @@ using s8=int8_t;
 #define LOG_INFO(...)
 bool BbscResearchEnabled(){return false;}
 void NoteBbscBossRewardEvent(s64){}
+bool BbscDreamEnabled(){return true;}
+bool BbscQuitInProgress(){return false;}
+bool BbscReturningToTitle(){return false;}
+bool BbscDreamFinaleHolding(){return false;}
+bool IsSprjLuaEventManReady(){return true;}
+u64 ReadBbscWorldRoom(){return 7;}
+constexpr u64 CandidateLocalStatePointerOffset=0x900, CurrentMapListPointerOffset=0x908;
+std::mutex bbsc_world_mutex;
+BbscGehrmanView bbsc_host_gehrman;
+std::array<u8,0x60> gehrman_actor{};
+std::array<u8,0x116> gehrman_controller{};
+std::array<u8,0x21> gehrman_activation{};
+int gehrman_toggles=0, gehrman_warps=0;
+u32 gehrman_point=0, gehrman_animation=0;
+bool gehrman_hidden=false;
+bool gehrman_available=true;
+bool gehrman_work=false;
+enum class BbscWork { Gehrman };
+void QueueBbscWork(BbscWork work) { assert(work==BbscWork::Gehrman); gehrman_work=true; }
+u64 PS4_SYSV_ABI FindGehrman(u32 entity,u64,u64) {
+ assert(entity==2100600);
+ return gehrman_available ? reinterpret_cast<u64>(gehrman_actor.data()) : 0;
+}
+void PS4_SYSV_ABI DisableGehrman(u64 actor,u8 hidden) {
+ assert(actor==reinterpret_cast<u64>(gehrman_actor.data()));
+ ++gehrman_toggles;gehrman_hidden=hidden;
+}
+void PS4_SYSV_ABI WarpGehrman(u32 entity,u32 point,u32 mode) {
+ assert(entity==2100600 && mode==1 && !gehrman_hidden);
+ ++gehrman_warps;gehrman_point=point;
+}
+void PS4_SYSV_ABI AnimateGehrman(u32 entity,u32 anim,u32 loop,u32 skip) {
+ assert(entity==2100600 && loop==1 && skip==0);
+ gehrman_animation=anim;
+}
 s64 BbscRunningEventId(u64){return native_event;}
 u8 bbsc_guest_role_skip=0;
 u8 bbsc_dream_type_skip=0;
@@ -36,8 +71,67 @@ production=travel.SOURCE[travel.SOURCE.index('s32 bbsc_world_travel_point='):
 production+=function('void PS4_SYSV_ABI BbscDreamTalkHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)')
 production+=function('void PS4_SYSV_ABI BbscGuestRoleGateHook(u64, const GuestRegisterSnapshot* registers)')
 production+=function('void PS4_SYSV_ABI BbscDreamTypeCheckHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)')
+production+=function('u64 FindBbscGehrman()')
+production+=function('void NoteBbscGehrmanActorReady(u64 actor)')
+production+=function('void ApplyBbscGehrmanPlacement()')
+assert 'NoteBbscGehrmanActorReady(chr);' in (root/'emulator/src/core/bbsc_independent_world.inc').read_text()
 main=r'''
 int main(){
+ state=6;
+ bbsc_applied_gehrman={.room=7,.placement=BbscGehrmanPlacement::Tree};
+ assert(!BbscGuestDialogueAllowed(210305));
+ bbsc_applied_gehrman={.room=7,.placement=BbscGehrmanPlacement::Seated};
+ assert(BbscGuestDialogueAllowed(210305));
+ bbsc_applied_gehrman={};
+ image_base=reinterpret_cast<u64>(VirtualAlloc(nullptr,0x5600000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE));
+ assert(image_base);
+ WriteValue(image_base+CandidateLocalStatePointerOffset,0,u64{1});
+ WriteValue(image_base+CurrentMapListPointerOffset,0,u64{1});
+ WriteValue(image_base+0x0553B168,0,u64{1});
+ Set(gehrman_actor,0x18,reinterpret_cast<u64>(gehrman_activation.data()));
+ Set(gehrman_actor,0x58,reinterpret_cast<u64>(gehrman_controller.data()));
+ Set(gehrman_activation,0x10,s32{4});
+ Link(0x013C97A0,reinterpret_cast<void*>(&FindGehrman));
+ Link(0x018C6390,reinterpret_cast<void*>(&DisableGehrman));
+ Link(0x013CB3D0,reinterpret_cast<void*>(&WarpGehrman));
+ Link(0x013CBFD0,reinterpret_cast<void*>(&AnimateGehrman));
+ bbsc_host_gehrman={7,11,BbscGehrmanPlacement::Seated};
+ ApplyBbscGehrmanPlacement();
+ assert(gehrman_warps==1 && gehrman_point==2102311 && gehrman_animation==9000);
+ ApplyBbscGehrmanPlacement();
+ assert(gehrman_warps==1);
+ bbsc_host_gehrman={7,12,BbscGehrmanPlacement::Tree};
+ gehrman_available=false;
+ ApplyBbscGehrmanPlacement();
+ assert(gehrman_warps==1 && bbsc_gehrman_waiting_for_actor && !gehrman_work);
+ gehrman_available=true;
+ Set(gehrman_activation,0x10,s32{3});
+ ApplyBbscGehrmanPlacement();
+ assert(gehrman_warps==1 && bbsc_gehrman_waiting_for_actor);
+ NoteBbscGehrmanActorReady(reinterpret_cast<u64>(gehrman_controller.data()));
+ assert(!gehrman_work && bbsc_gehrman_waiting_for_actor);
+ NoteBbscGehrmanActorReady(reinterpret_cast<u64>(gehrman_actor.data()));
+ assert(gehrman_work && !bbsc_gehrman_waiting_for_actor && gehrman_warps==1);
+ gehrman_work=false;
+ Set(gehrman_activation,0x10,s32{4}); // displaced native activation store completes
+ ApplyBbscGehrmanPlacement();
+ assert(gehrman_warps==2 && gehrman_point==2102312 && gehrman_animation==9002);
+ NoteBbscGehrmanActorReady(reinterpret_cast<u64>(gehrman_actor.data()));
+ assert(!gehrman_work);
+ assert(!BbscGuestDialogueAllowed(210305));
+ bbsc_host_gehrman={9,13,BbscGehrmanPlacement::Hidden};
+ ApplyBbscGehrmanPlacement();
+ assert(!gehrman_hidden && gehrman_toggles==2);
+ bbsc_host_gehrman={7,13,BbscGehrmanPlacement::Hidden};
+ ApplyBbscGehrmanPlacement();
+ assert(gehrman_hidden && gehrman_toggles==3);
+ bbsc_local_gehrman=BbscGehrmanPlacement::Workshop;
+ bbsc_local_gehrman_load=bbsc_world_native_load;
+ state=0;
+ ApplyBbscGehrmanPlacement();
+ assert(!gehrman_hidden && gehrman_point==2102310);
+ VirtualFree(reinterpret_cast<void*>(image_base),0,MEM_RELEASE);
+ image_base=0x100000;
  assert(!GuestAccess::EventAllowed(13204820)); // never execute both jump scripts as guest
  assert(GuestAccess::EventAllowed(13204832)&&GuestAccess::EventAllowed(13204833));
  assert(!GuestAccess::EventAllowed(12424810)&&GuestAccess::EventAllowed(12424811));

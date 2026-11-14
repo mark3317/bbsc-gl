@@ -639,6 +639,10 @@ void TickBbscWorldTravel() {
 }
 
 void InstallBbscWorldTravel() {
+    if (!bbsc_altar_save_hook_ready) {
+        LOG_ERROR(Debug, "BBSC native travel: personal altar save protection unavailable");
+        return;
+    }
     if(!bbsc_world_native_warp_hook.load()){
         LOG_ERROR(Debug,"BBSC native stage request hook unavailable; independent travel remains closed");return;
     }

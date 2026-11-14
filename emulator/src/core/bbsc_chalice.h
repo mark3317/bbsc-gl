@@ -19,6 +19,9 @@ struct Key {
 };
 static_assert(sizeof(Key) == 24);
 constexpr bool IsMap(std::uint32_t map) { return (map >> 24) == 29; }
+constexpr bool IsAltarRecordGroup(std::uint32_t key) {
+    return key >= 94000 && key < 94700 && key % 100 < 6;
+}
 constexpr bool IsLootGroup(std::uint32_t key) {
     return key / 10000 == 5 && (key % 10000) / 100 == 29;
 }

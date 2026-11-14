@@ -396,7 +396,7 @@ struct EntryJump {
     Group group;
 };
 
-constexpr std::array<EntryJump, 2> EntryJumps{{
+constexpr std::array<EntryJump, 4> EntryJumps{{
     // Lua_MultiWall(id) (0x0138B720) shows the co-op fog wall entity: 0x013CABD0(id, 1) draw on,
     // 0x013CA580(id, 1) collision on, 0x01315FA0(id + 1) its effect. Lua_InvalidMultiWall (0x0138B890)
     // is the same function with 0 / 0x01315E50, i.e. hides the wall. Jumping there keeps every wall
@@ -407,6 +407,12 @@ constexpr std::array<EntryJump, 2> EntryJumps{{
     // cannot apply that update. Resume the original next-member path, also
     // used for a missing actor, instead of invoking the singleton panic.
     {"Stage.Channel13NoWorld", 0x01783686, {0xBE, 0xB1, 0x00, 0x00, 0x00}, 0x01783590,
+     Group::Stage},
+    // A room member can leave while the stage is unloaded. Both native member lists
+    // can still process the departure using the existing no-local-player branch.
+    {"Stage.RemoveMemberNoWorld", 0x01E54EEA, {0xBE, 0xB1, 0x00, 0x00, 0x00}, 0x01E54F0F,
+     Group::Stage},
+    {"Stage.RemoveMemberTwinNoWorld", 0x01E5518A, {0xBE, 0xB1, 0x00, 0x00, 0x00}, 0x01E551AF,
      Group::Stage},
 }};
 

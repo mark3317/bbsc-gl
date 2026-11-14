@@ -208,6 +208,12 @@ bool GuardBbscNativeFinaleCommand(u64 instance) {
     }
     if (step != event.commit || (role != 3 && role != 6) ||
         (role == 3 ? finale.signal.ending : finale.selected) != ending) return false;
+    // A guest must drain the old world before reporting AtEnd. Otherwise
+    // the host can release the room while the guest still holds old flags.
+    if (role == 6 && !bbsc_own_world.empty()) {
+        RestoreBbscOwnWorld("before native ending", true);
+        if (!bbsc_own_world.empty()) return true;
+    }
     if (finale.signal.phase != FinalePhase::AtEnd && finale.signal.phase != FinalePhase::Release &&
         finale.signal.phase != FinalePhase::Committed) {
         finale.signal = {FinalePhase::AtEnd, finale.recall, ending};
@@ -222,7 +228,6 @@ bool GuardBbscNativeFinaleCommand(u64 instance) {
     finale.load = bbsc_load_generation.load();
     finale.signal.phase = FinalePhase::Committed;
     bbsc_native_finale_committed.store(true, std::memory_order_release);
-    if (role == 6) RestoreBbscOwnWorld("before native ending", true);
     BBSC_TIMELINE("DREAM", "native group ending {} released to the new cycle", ending);
     return false;
 }
