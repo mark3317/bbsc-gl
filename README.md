@@ -1,6 +1,6 @@
 # BBSC-GL — Bloodborne Seamless Co-op Game Launcher
 
-**BBSC-GL 1.6.0** targets **BBGL 1.6.0**. [Release notes](docs/release-1.6.0.md).
+**BBSC-GL 1.6.1** targets **BBGL 1.6.1**. It binds guest progress to the character slot and updates co-op respawn and boss recovery. [Release notes](docs/release-1.6.1.md).
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 

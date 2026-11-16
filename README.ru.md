@@ -1,6 +1,6 @@
 # BBSC-GL — Bloodborne Seamless Co-op Game Launcher
 
-**BBSC-GL 1.6.0** предназначен для **BBGL 1.6.0**. [Описание выпуска](docs/release-1.6.0.md).
+**BBSC-GL 1.6.1** предназначен для **BBGL 1.6.1**. Обновлены привязка прогресса гостя к персонажу, совместное возрождение и обработка повторных попыток на боссах. [Описание выпуска](docs/release-1.6.1.md).
 
 [English](README.md) · **Русский** · [Скачать BBGL](https://github.com/mark3317/bbgl/releases/latest)
 

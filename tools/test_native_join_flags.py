@@ -49,6 +49,7 @@ prefix = r'''
 #include "core/bbsc_quest_event_rules.h"
 #include "core/bbsc_local_map_flags.h"
 #include "core/bbsc_lift_flags.h"
+#include "core/bbsc_world_control.h"
 namespace QuestRules = Core::Bloodborne::QuestRules;
 namespace World = Core::Bloodborne::World;
 using Core::GuestRegisterSnapshot;
@@ -59,6 +60,13 @@ u64 image_base = 0;
 bool missing = false;
 std::array<u8, BbscWorldGroupBytes> personal{}, awards{}, map{};
 std::map<u32, std::array<u8, BbscWorldGroupBytes>> live_groups;
+World::Scope wipe_scope;
+void KeepBbscGuestStartedFlags(u32,const u8*,u8*){}
+u32 GetCurrentPackedMap() { return 0x18010000; }
+World::Scope BbscWipeScopeForMap(u32 map) { return map == wipe_scope.map ? wipe_scope : World::Scope{}; }
+void KeepBbscEncounterFlags(const World::Scope&, u32 key, const u8* own, u8* received) {
+    if (key == 12414) received[100] = (received[100] & ~0x40) | (own[100] & 0x40);
+}
 std::array<u8, SnapshotBytes> applied{};
 int applies = 0;
 enum class MemoryProt { CpuReadWrite };
@@ -205,6 +213,18 @@ main += r'''
     const auto bad_magic = snapshot;
     receive(42, snapshot.data());
     assert(applied == bad_magic && applies == 6);
+    const u32 encounter_slot = index(1, 24, 1, 4);
+    set(host.data() + encounter_slot * 125, 12414801);
+    set(host.data() + encounter_slot * 125, 12414802);
+    serialize(manager.data(), snapshot.data());
+    assert(is_set(snapshot, encounter_slot, 12414801));
+    live_groups[12414].fill(0);
+    wipe_scope = {{1, 99}, GetCurrentPackedMap(), {}, 0};
+    receive(42, snapshot.data());
+    assert(!is_set(applied, encounter_slot, 12414801) && is_set(applied, encounter_slot, 12414802));
+    send(manager.data(), snapshot.data());
+    assert(is_set(snapshot, encounter_slot, 12414801));
+    wipe_scope = {};
     puts("PASS original join serializer and production send/apply hooks: private zero/one, shared flags, local serializer, missing group and malformed input");
 
     std::array<u8, 0x38> extended_head{};

@@ -46,6 +46,24 @@ assert len(arena_rows) == 22
 assert gauges <= {(int(packed, 16), int(name)) for packed, names in arena_rows
                   for name in names.split(',')}
 
+dream = dict(Emevd(EVENTS / 'm21_00_00_00.emevd.dcx').events)
+for setup, music, entry, actor, name in [
+    (12104802, 12104803, 12104811, 2100800, 804000),
+    (12104852, 12104853, 12104881, 2100810, 540000),
+]:
+    assert dream[setup][4] == (1003, 101, struct.pack('<II', 0x10100, 0))
+    assert dream[setup][5] == (3, 0, struct.pack('<II', 256, setup - 2))
+    assert dream[setup][28] == (2003, 11, struct.pack('<IIII', 1, actor, 0, name))
+    music_flag = setup if actor == 2100800 else 12101852
+    assert dream[music][6] == (3, 0, struct.pack('<II', 257, music_flag))
+    assert dream[music][8] == (3, 0, struct.pack('<II', 257, setup - 1))
+    assert (2003, 2, struct.pack('<II', setup - 1, 1)) in dream[entry]
+
+full_dream = function('void ApplyBbscHostDreamState(std::string_view why)')
+legacy = function('bool ApplyBbscHostWorldFlags(u32 packed_map, std::string_view why)')
+for writer in (full_dream, legacy):
+    assert 'CopyBbscHostFlagGroup(wipe_scope, key, live,' in writer
+
 def initializers(path):
     return [words(args) for bank, opcode, args in dict(Emevd(path).events).get(0, [])
             if (bank, opcode) == (2000, 0)]
@@ -64,6 +82,19 @@ assert len(parts) == 2641 and regular_arenas == 8485
 watchers = initializers(next(EVENTS.rglob('m29_30_90_00.emevd.dcx')))
 watchers = [init for init in watchers if init[1] in (12906795, 12906802) and init[4] == 12901800]
 assert len(watchers) == 2
+boss_init_ids = {int(x) for x in re.findall(r'\{(129\d+), \d+, \d+, \{', RULES)}
+failed_layout = [init for init in initializers(next(EVENTS.rglob('m29_10_90_00.emevd.dcx')))
+                 if init[1] in boss_init_ids]
+# Bank 2000 dispatch must see every InitializeEvent inside ONE event update.
+# The original update's back edge does not return through the entry hook.
+with Path(sys.argv[2]).open('rb') as native:
+    native.seek(0x012ECF9A + 0x4000)
+    assert native.read(6) == bytes.fromhex('0f8570feffff')
+    native.seek(0x017C8030 + 0x4000)
+    assert native.read(6) == bytes.fromhex('554889e54157')
+assert '0x017C8030' in function('void InstallBbscEventPassHook()')
+assert 'RememberBbscChaliceBossInit' not in function(
+    'void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* registers)')
 rom = [init for init in initializers(next(EVENTS.rglob('m29_30_90_00.emevd.dcx')))
        if init[1] in (12906806, 12906863) and init[2] == 2900111]
 assert len(rom) == 2
@@ -162,6 +193,7 @@ assert writer[:6] == bytes.fromhex('41 89 d0 8b 4f 1c') and writer[-1] == 0xC3
 
 code = r'''
 #define NOMINMAX
+#define BBSC_MOD
 #include <windows.h>
 #include <atomic>
 #include <cassert>
@@ -171,7 +203,8 @@ code = r'''
 namespace World = Core::Bloodborne::World;
 namespace Chalice = Core::Bloodborne::Chalice;
 namespace BossRetry = Core::Bloodborne::BossRetry;
-using u8=uint8_t; using u32=uint32_t; using u64=uint64_t; using s32=int32_t;
+namespace Bbsc = Core::Bbsc;
+using u8=uint8_t; using u32=uint32_t; using u64=uint64_t; using s32=int32_t; using s64=int64_t;
 #define PS4_SYSV_ABI __attribute__((sysv_abi))
 #define BBSC_TIMELINE(...)
 std::mutex bbsc_world_presence_mutex;
@@ -197,19 +230,52 @@ bool BbscEventFlag(u32 flag) {
     const auto& bank=flag/1000==attempt_group?attempt:progress;
     return (bank[flag%1000/8] & (0x80 >> (flag%8))) != 0;
 }
+constexpr u32 BbscDreamStateMap=0x15000000;
+constexpr size_t BbscWorldGroupBytes=125;
+struct BbscGehrmanView { u64 room=0, host_load=0; };
+BbscGehrmanView bbsc_dream_encounter_host_view;
+struct BbscWorldSnapshot {
+    u32 snapshot=0; u64 present=0; s64 complete_ms=1;
+    std::array<std::array<u8,125>,10> groups{};
+    BbscGehrmanView gehrman;
+};
+std::mutex bbsc_world_mutex;
+BbscWorldSnapshot remote, bbsc_dream_ready;
+bool BbscHostBlockSnapshot(u32, BbscWorldSnapshot& out) { out=remote; return true; }
+constexpr s64 BbscWorldFlagsFreshMs=6000;
+s64 SteadyNowMs(){return 2;}
+s32 GetSessionState(){return 6;}
+bool BbscDreamFinaleHolding(){return false;}
+bool BbscNativeFinalePlaying(){return false;}
+u64 BbscFlagGroupStorage(u32 key){return reinterpret_cast<u64>(key==attempt_group ? &attempt : &progress);}
+void KeepBbscOwnWorldGroup(u32,u8*){}
+void WriteBbscOwnWorldFile(){}
+void KeepBbscGuestStartedFlags(u32,const u8*,u8*){}
+bool BbscGuestStartedFlag(u32){return false;}
+World::Scope fixture_ritual;
+Chalice::Mount fixture_catalogue;
+bool BbscChaliceBossLayoutMatchesScope(const World::Scope& scope,const Chalice::Mount& layout) {
+    return scope == fixture_ritual && Chalice::SameLayout(layout,fixture_catalogue);
+}
 '''
 code += SOURCE[SOURCE.index('World::Scope bbsc_boss_wipe_scope{};'):
                SOURCE.index('std::atomic<u64> bbsc_world_load_pending')]
 array_name = SOURCE.index('BbscEncounterProgressFlags{')
 code += SOURCE[SOURCE.rindex('constexpr std::array<', 0, array_name):
                SOURCE.index('bool BbscSharedMapProgressAllowed(')]
+code += function('World::Scope BbscWipeScopeForMap(u32 map)')
+code += function('void CopyBbscHostFlagGroup(const World::Scope& wipe_scope, u32 key, u8* live,\n'
+                 '                           const std::array<u8, BbscWorldGroupBytes>& host)')
+code += function('void ApplyBbscDreamBattleFlags()')
 code += r'''
-using s64=int64_t;
-struct BbscQuestRange { u64 first, end; };
-World::Scope bbsc_world_bootstrap_scope;
-u64 bbsc_world_bootstrap_load;
+struct BbscQuestRange { u64 first, end; s64 event=0; };
+struct GuestRegisterSnapshot { u64 rsi; };
+BbscQuestRange fixture_range;
+const BbscQuestRange* LookupBbscQuestRange(u64) { return &fixture_range; }
+
 '''
 code += function('void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range)')
+code += function('void PS4_SYSV_ABI BbscEventBank2000Hook(u64 /*tag*/, const GuestRegisterSnapshot* registers)')
 code += r'''
 int main() {
     image_base=(u64)VirtualAlloc(nullptr,0x6000000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
@@ -416,6 +482,68 @@ int main() {
         std::array{13504860u,13504869u,13505655u,13505668u,13505669u,13505690u,13505691u,13505692u},
         std::array{13504808u,13504810u,13505657u}); // Maria and unrelated state
 
+    for (const auto& arena : BossRetry::StoryArenas) {
+        local.map=arena.map; bbsc_encounter_map=arena.map; bbsc_encounter_name=arena.names[0];
+        MarkBbscBossWipeLoad();
+        assert(!BbscWipeScopeForMap(arena.map).map);
+        ++bbsc_world_native_load;
+        const auto scope=BbscWipeScopeForMap(arena.map);
+        assert(scope.map==arena.map);
+        assert(bbsc_boss_wipe_attempt.defeated==arena.defeated && !bbsc_boss_wipe_attempt.flags.empty());
+        for (const u32 flag : bbsc_boss_wipe_attempt.flags) {
+            std::array<u8,125> before{}, stale{};
+            SetFixtureFlag(stale,flag);
+            const auto original=stale;
+            CopyBbscHostFlagGroup(scope,flag/1000,before.data(),stale);
+            assert((before==std::array<u8,125>{}) && stale==original);
+            auto wrong_room=scope;
+            ++wrong_room.world.room;
+            CopyBbscHostFlagGroup(wrong_room,flag/1000,before.data(),stale);
+            assert(before==original);
+            // A snapshot with the flag off must also keep a newly completed local step.
+            stale.fill(0);
+            CopyBbscHostFlagGroup(scope,flag/1000,before.data(),stale);
+            assert(before==original);
+        }
+    }
+
+    for (const auto& arena : BossRetry::StoryArenas) {
+        if (arena.map != BbscDreamStateMap) continue;
+        bbsc_dream_encounter_host_view={local.world.room,5};
+        check_banks(arena.map,arena.names[0],12104,12101,
+            std::array{arena.first,arena.first+1,arena.last},
+            std::array{arena.defeated+2});
+        remote={};
+        remote.present=(1<<1)|(1<<4);
+        remote.snapshot=10;
+        SetFixtureFlag(remote.groups[1],arena.defeated+2);
+        SetFixtureFlag(remote.groups[4],arena.first);
+        SetFixtureFlag(remote.groups[4],arena.last);
+        bbsc_dream_ready=remote;
+        bbsc_dream_ready.gehrman={local.world.room,5};
+        ApplyBbscDreamBattleFlags(); // old host attempt
+        assert(!BbscEventFlag(arena.first) && !BbscEventFlag(arena.last));
+        bbsc_dream_ready.gehrman.host_load=6;
+        ++bbsc_dream_ready.snapshot;
+        ApplyBbscDreamBattleFlags(); // newer metadata with the older flag snapshot
+        assert(!BbscEventFlag(arena.first) && !BbscEventFlag(arena.last));
+        remote.snapshot=bbsc_dream_ready.snapshot;
+        ++bbsc_dream_ready.gehrman.room;
+        ApplyBbscDreamBattleFlags();
+        assert(!BbscEventFlag(arena.first) && !BbscEventFlag(arena.last));
+        --bbsc_dream_ready.gehrman.room;
+        ApplyBbscDreamBattleFlags(); // actual new host start
+        assert(BbscEventFlag(arena.first) && !BbscEventFlag(arena.last));
+        SetFixtureFlag(attempt,arena.first+1);
+        SetFixtureFlag(attempt,arena.last); // native setup runs locally
+        remote.groups[4].fill(0);
+        ApplyBbscDreamBattleFlags();
+        assert(BbscEventFlag(arena.first) && BbscEventFlag(arena.first+1) && BbscEventFlag(arena.last));
+        SetFixtureFlag(remote.groups[1],arena.defeated);
+        ApplyBbscDreamBattleFlags();
+        assert(BbscEventFlag(arena.defeated)); // final victory still arrives
+    }
+
     // Phase 2 Gascoigne may share the map with an undefeated Cleric Beast.
     local.map=0x18010000;
     bbsc_encounter_map=local.map; bbsc_encounter_name=272000;
@@ -453,8 +581,11 @@ int main() {
     static_assert(special.victory==12901801 && special.flags[0]==12905600 &&
                   special.flags[1]==12906809 && special.flags[2]==0);
     auto& cup=bbsc_chalice_boss_attempts;
-    bbsc_world_bootstrap_scope=World::ScopeOf(local);
-    bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+    fixture_catalogue.key=local.dungeon;
+    fixture_catalogue.layout_map=0x1d1e5a00;
+    auto native_mount=fixture_catalogue;
+    native_mount.key={local.dungeon.channel,0,0,0}; // original solo loader, before the catalogue
+    NoteBbscChaliceBossLayout(native_mount);
     std::array<u8,0xB0> file{};
     std::array<u8,0xC0> instance{};
     std::array<u8,0x20> pc{};
@@ -468,10 +599,17 @@ int main() {
     const auto capture = [&](const auto& native_args) {
         Store(pc_at,8,(u64)(native_args.size() * sizeof(u32)));
         std::memcpy(file.data()+0x80,native_args.data(),native_args.size()*sizeof(u32));
-        RememberBbscChaliceBossInit(instance_at,{pc_at,pc_at+0x20});
+        fixture_range={pc_at,pc_at+0x20,0};
+        const GuestRegisterSnapshot regs{instance_at};
+        BbscEventBank2000Hook(0,&regs);
     };
     std::apply([&](const auto&... args) { (capture(args), ...); }, WATCHERS_CTORS);
-    assert(cup.scope==World::ScopeOf(local) && ResolveBbscChaliceBossAttempts(cup)[0].flags.size()==5);
+    fixture_ritual=World::ScopeOf(local); // co-op begins after InitializeEvent
+    assert(BbscChaliceBossLayoutMatchesScope(fixture_ritual,cup.layout));
+    assert(ResolveBbscChaliceBossAttempts(cup)[0].flags.size()==5);
+    auto changed_layout=fixture_catalogue;
+    changed_layout.parts[0]=42;
+    assert(!BbscChaliceBossLayoutMatchesScope(fixture_ritual,changed_layout));
     cup.constructors.push_back({12901801,216000,{12905509,12906806,12906802}});
     attempt_group=12905;
     Store((u64)node.data(),0x20,attempt_group);
@@ -504,7 +642,8 @@ int main() {
     KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),incoming.data());
     assert((incoming[502/8] & (0x80 >> (502%8))) != 0);
 
-    bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+    fixture_catalogue.layout_map+=1;
+    NoteBbscChaliceBossLayout(fixture_catalogue);
     std::apply([&](const auto&... args) { (capture(args), ...); }, ROM_CTORS);
     // The same bit is used as an access condition in a different layout.
     // Only constructors from the mounted ritual can protect it.
@@ -530,7 +669,8 @@ int main() {
 
     // Native 12904881 can carry an access/activation flag in place of
     // the victory flag. Only matching actor + activation can resolve it.
-    bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+    fixture_catalogue.layout_map+=1;
+    NoteBbscChaliceBossLayout(fixture_catalogue);
     bbsc_encounter_name=216000;
     layer_lamp=2902953;
     capture(std::array{0u,12904881u,2900100u,2903007u,12905501u,216000u,
@@ -552,7 +692,8 @@ int main() {
     const auto check_local_arena = [&](const auto& calls, const auto& facts) {
         const auto [name,victory,activation,phase_flag,gate,intro,intro_signal] = facts;
         ++bbsc_world_native_load;
-        bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+        fixture_catalogue.layout_map+=1;
+        NoteBbscChaliceBossLayout(fixture_catalogue);
         std::apply([&](const auto&... args) { (capture(args), ...); }, calls);
         bbsc_encounter_name=name;
         layer_lamp=-1; // a local arena does not use a standard layer victory
@@ -586,7 +727,8 @@ int main() {
         KeepBbscEncounterFlags(World::ScopeOf(local),attempt_group,attempt.data(),stale.data());
         assert(stale==attempt);
 
-        bbsc_world_bootstrap_load=bbsc_world_native_load.load();
+        fixture_catalogue.layout_map+=1;
+        NoteBbscChaliceBossLayout(fixture_catalogue);
         std::apply([&](const auto&... args) { (capture(args), ...); }, calls);
         attempt=old_attempt;
         set_preserved(victory);
@@ -596,6 +738,67 @@ int main() {
         assert(BbscEventFlag(victory) && BbscEventFlag(phase_flag));
     };
     LOCAL_CHALICE_CASES
+
+    // Actual 17 November failure: layer 2 Watchers, not the earlier layer 1
+    // fixture. One native event update dispatches all these constructors.
+    ++bbsc_world_native_load;
+    fixture_catalogue.layout_map=0x1d0a5a00;
+    NoteBbscChaliceBossLayout(fixture_catalogue);
+    local.ritual=10;
+    fixture_ritual=World::ScopeOf(local);
+    std::apply([&](const auto&... args) { (capture(args), ...); }, FAILED_LAYOUT_CTORS);
+    bbsc_encounter_name=304001;
+    layer_lamp=2902953;
+    attempt_group=12905;
+    Store((u64)node.data(),0x20,attempt_group);
+    attempt.fill(0); progress.fill(0);
+    for(u32 flag:{12905511u,12905512u,12905513u,12905502u})SetFixtureFlag(attempt,flag);
+    SetFixtureFlag(progress,12900536); // permanent access
+    MarkBbscBossWipeLoad();
+    assert(bbsc_boss_wipe_attempt.defeated==12901801);
+    for(u32 flag:{12905511u,12905512u,12905513u,12906795u,12906803u})
+        assert(std::ranges::find(bbsc_boss_wipe_attempt.flags,flag)!=bbsc_boss_wipe_attempt.flags.end());
+    const auto stale_watchers=attempt;
+    ++bbsc_world_native_load;
+    auto remounted=fixture_catalogue;
+    ++remounted.revision;
+    NoteBbscChaliceBossLayout(remounted);
+    assert(!cup.constructors.empty()); // repeated load of the same geometry
+    ResetBbscWipeEncounter(World::ScopeOf(local));
+    assert(!BbscEventFlag(12905511) && !BbscEventFlag(12905512) && !BbscEventFlag(12905513));
+    assert(BbscEventFlag(12905502) && BbscEventFlag(12900536));
+    auto stale_flags=stale_watchers;
+    KeepBbscEncounterFlags(World::ScopeOf(local),12905,attempt.data(),stale_flags.data());
+    assert(stale_flags==attempt);
+    for(u32 flag:{12906795u,12906803u}) {
+        std::array<u8,125> fresh{}, stale{};
+        SetFixtureFlag(stale,flag);
+        KeepBbscEncounterFlags(World::ScopeOf(local),12906,fresh.data(),stale.data());
+        assert(stale==fresh);
+    }
+
+    // Resolved operands, and refusal to collect an unrelated event/command.
+    const auto count_before=cup.constructors.size();
+    fixture_range.event=1;
+    const GuestRegisterSnapshot bank_regs{instance_at};
+    BbscEventBank2000Hook(0,&bank_regs);
+    assert(cup.constructors.size()==count_before);
+    fixture_range.event=0;
+    Store(pc_at,4,2); // SetNetworkSync, not InitializeEvent
+    BbscEventBank2000Hook(0,&bank_regs);
+    assert(cup.constructors.size()==count_before);
+    Store(pc_at,4,0);
+    ++bbsc_world_native_load;
+    fixture_catalogue.layout_map+=1;
+    NoteBbscChaliceBossLayout(fixture_catalogue);
+    constexpr std::array resolved_init{0u,12906795u,2900105u,304001u,12901801u,
+                                       12905511u,12905513u,2900101u,2900103u};
+    Store(pc_at,8,u64{sizeof(resolved_init)});
+    std::memset(file.data()+0x80,0,sizeof(resolved_init));
+    Store(instance_at,0xB8,(u64)resolved_init.data());
+    BbscEventBank2000Hook(0,&bank_regs);
+    assert(cup.constructors.size()==1 && cup.constructors[0].victory==12901801);
+    Store(instance_at,0xB8,u64{0});
 }
 '''.replace('NATIVE_WRITER', ','.join(map(str, writer)))
 
@@ -604,7 +807,8 @@ def cpp_calls(calls):
         'std::array{' + ','.join(f'{word}u' for word in init) + '}' for init in calls) + '}'
 
 
-for marker, calls in [('WATCHERS_CTORS', watchers), ('ROM_CTORS', rom)]:
+for marker, calls in [('WATCHERS_CTORS', watchers), ('ROM_CTORS', rom),
+                      ('FAILED_LAYOUT_CTORS', failed_layout)]:
     code = code.replace(marker, cpp_calls(calls))
 code = code.replace('LOCAL_CHALICE_CASES', '\n    '.join(
     f"check_local_arena({cpp_calls(calls)}, std::array{{{','.join(f'{word}u' for word in facts)}}});"

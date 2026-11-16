@@ -54,6 +54,13 @@ struct Mount {
     bool operator==(const Mount&) const = default;
 };
 static_assert(sizeof(Mount) == 128);
+// The original loader has a decoded channel/layout before the co-op catalogue
+// has a ritual ID or form hash. Revision and resident part do not change EMEVD.
+constexpr bool SameLayout(const Mount& a, const Mount& b) {
+    return a.key.channel && a.key.channel == b.key.channel && IsMap(a.layout_map) &&
+           a.layout_map == b.layout_map && a.parts == b.parts &&
+           a.dungeon_type == b.dungeon_type && a.feature == b.feature;
+}
 inline constexpr std::uint8_t MountPacketType = Protocol::ChaliceMount;
 inline constexpr std::size_t MountPacketSize = 8 + sizeof(Mount);
 inline bool ValidMount(const Mount& mount) {

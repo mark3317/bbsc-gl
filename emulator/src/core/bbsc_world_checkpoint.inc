@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Death uses the original point-load entry, without a lamp departure animation.
+// Keep a completed native host death selection when the party wants that same
+// lamp. Other cases use the native point-load entry without a lamp animation.
 // Only a checkpoint in this player's current map/ritual may override native death.
 // Prepare exactly the selected world/ritual, then let the existing native loader
 // and FirstSync/bootstrap barriers rebuild the local character and collision.
@@ -10,12 +11,24 @@ bool BeginBbscSharedLampLoad(const World::Scope& scope,s32 point) {
     const u64 global=GetGlobalState();
     if(!ReadablePointer(global,0x1530) || ReadValue<u8>(global,8) ||
        !HasMemoryAccess(global+0x1528,8,MemoryProt::CpuWrite))return false;
-    if(Chalice::IsMap(scope.map)){
+    const bool chalice = Chalice::IsMap(scope.map);
+    bool native_selection = false;
+    if(chalice){
         const auto altar=std::ranges::find_if(bbsc_world_altars,[&](const auto& a){
             return a.entry.occupied && a.entry.ritual==scope.ritual && a.mount.key==scope.dungeon;});
         if(altar==bbsc_world_altars.end())return false;
         bbsc_world_altar_visiting=static_cast<s32>(altar-bbsc_world_altars.begin());
-        bbsc_world_requested_mount=altar->mount;
+        // 01332BC0 selected the checkpoint through 013CA100. It publishes a
+        // destination map, point=-1 and +1524=1. 013CDF30 is a different warp
+        // path and would overwrite the generic warp descriptor (+1538/+153C).
+        native_selection = GetSessionState() == 3 && GetCharacterHp(GetLocalPlayerCharacter()) == 0 &&
+            !ReadValue<u8>(global,0x1520) && ReadValue<u8>(global,0x1524) == 1 &&
+            ReadValue<s32>(global,0x1528) == point && ReadValue<s32>(global,0x10) == -1 &&
+            Chalice::IsMap(ReadValue<u32>(global,0x0C)) &&
+            bbsc_world_altar_visiting == bbsc_world_altar_current &&
+            Chalice::SameLayout(BbscHostChaliceMount(), altar->mount);
+        if(native_selection) bbsc_world_requested_mount.reset();
+        else bbsc_world_requested_mount=altar->mount;
     }else bbsc_world_requested_mount.reset();
     bbsc_world_requested_scope=scope;
     BbscWorldEnsureSeed(scope);
@@ -27,14 +40,21 @@ bool BeginBbscSharedLampLoad(const World::Scope& scope,s32 point) {
             BbscWorldSend(request);bbsc_world_travel_request_sent=SteadyNowMs();}
         return false;
     }
-    if(Chalice::IsMap(scope.map) && !PrepareBbscChaliceLoad(scope.map))return false;
+    if(chalice && !native_selection && !PrepareBbscChaliceLoad(scope.map))return false;
     const s32 aux=scope.map==BbscDreamStateMap?101200:101163;
-    WriteValue<s64>(global,0x1528,(static_cast<s64>(aux)<<32)|static_cast<u32>(point));
+    if (!native_selection && !WriteValue<s64>(global,0x1528,(static_cast<s64>(aux)<<32)|static_cast<u32>(point)))
+        return false;
     bbsc_world_travel_world=scope.world;bbsc_world_travel_point=point;bbsc_world_travel_flag=0;
     bbsc_world_travel_inflight=true;bbsc_world_travel_saw_load=false;bbsc_world_travel_native_armed=false;
     bbsc_world_travel_load=bbsc_load_generation.load();bbsc_world_travel_since=SteadyNowMs();
     if(!Chalice::IsMap(scope.map))bbsc_world_altar_visiting=-1;
     NotifyBbscDeathReload();ClearBbscBossContext("before shared lamp death load");
+    if (native_selection) {
+        using DeathLoad = u64 PS4_SYSV_ABI (*)();
+        reinterpret_cast<DeathLoad>(image_base + DeathReloadRequestOffset)();
+        BBSC_TIMELINE("RESPAWN", "shared lamp uses native death selection point={} ritual={}", point, scope.ritual);
+        return true;
+    }
     using PointLoad=void PS4_SYSV_ABI (*)(s32);
     reinterpret_cast<PointLoad>(image_base+0x013CDF30)(point);
     BBSC_TIMELINE("RESPAWN","shared lamp native death load point={} map={:#x} ritual={}",point,scope.map,scope.ritual);
@@ -179,6 +199,16 @@ bool ReadBbscSharedLampCheckpoint(s32& point,bool& here) {
     // Residency is insufficient, including adjacent ordinary maps. Dungeon
     // point IDs additionally require the exact mounted ritual, not just m29.
     here=!Chalice::IsMap(map) || (BbscChaliceArrivalReady(map) && !BbscChaliceNeedsLoad(map));
+    if (!here && GetSessionState() == 3) {
+        const s32 slot = BbscWorldHostAltarSlot(bbsc_checkpoint.scope);
+        if (slot >= 0 && slot == bbsc_world_altar_current) {
+            // A host can enter its own cup through the original loader, which
+            // records the live layout without creating a borrowed mount.
+            const auto native = BbscHostChaliceMount();
+            const auto& ritual = bbsc_world_altars[slot].mount;
+            here = Chalice::ValidMount(native) && Chalice::SameLayout(native, ritual);
+        }
+    }
     return true;
 }
 bool RequestBbscSharedLampReload() {

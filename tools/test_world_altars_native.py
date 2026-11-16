@@ -59,6 +59,7 @@ u32 BbscWorldGroupKey(u32 map,size_t i){return static_cast<u32>((Chalice::IsMap(
 void BbscMergeSharedProgressGroup(u32,u8* live,const u8* incoming){for(size_t i=0;i<125;++i)live[i]|=incoming[i];}
 bool BbscIsBossWipeLoad(const World::Scope&){return false;}
 void KeepBbscEncounterFlags(const World::Scope&,u32,const u8*,u8*){}
+void KeepBbscGuestStartedFlags(u32,const u8*,u8*){}
 void KeepBbscOwnWorldGroup(u32 key,const u8* p){if(!own_kept.contains(key))std::memcpy(own_kept[key].data(),p,125);}
 void KeepBbscGuestTalkBits(u32,const u8*,u8*){}
 void KeepBbscNpcOwnBits(u32,const u8* before,u8* live){live[0]=(live[0]&0x7f)|(before[0]&0x80);}

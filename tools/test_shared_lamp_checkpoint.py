@@ -52,6 +52,10 @@ std::atomic<u32> bbsc_load_generation{1};
 World::Presence bbsc_world_presence_local;
 std::mutex bbsc_world_presence_mutex;World::PresenceBook bbsc_world_presence_book;
 struct Altar {World::AltarEntry entry{};Chalice::Mount mount{};};std::array<Altar,7> bbsc_world_altars;
+World::WorldId bbsc_world_altar_world{};
+s32 bbsc_world_altar_current=-1;
+Chalice::Mount host_mount;
+Chalice::Mount BbscHostChaliceMount(){return host_mount;}
 std::optional<World::Scope> bbsc_world_requested_scope;
 std::optional<Chalice::Mount> bbsc_world_requested_mount;
 s32 bbsc_world_altar_visiting=-1,bbsc_world_travel_point=0;
@@ -124,6 +128,8 @@ code += function(source, 'u32 BbscLampPointMap(s32 point)')
 for signature in ('std::optional<u32> BbscLampLitFlag(s32 point)', 's32 BbscChaliceLayerFirstLamp(u64 player)',
                   'void SelectBbscLocalDeathLamp()'):
     code += '\n' + function(source, signature)
+world_state = (ROOT/'emulator/src/core/bbsc_world_state.inc').read_text(encoding='utf-8')
+code += '\n' + function(world_state, 's32 BbscWorldHostAltarSlot(const World::Scope& scope)')
 checkpoint = (ROOT/'emulator/src/core/bbsc_world_checkpoint.inc').read_text(encoding='utf-8')
 if os.environ.get('BBSC_TEST_SHARED_CHECKPOINT_OLD'):
     checkpoint = checkpoint.replace('lamp.sequence<=bbsc_checkpoint_seen[lamp.actor]', 'false')
@@ -138,7 +144,7 @@ code += checkpoint
 code += function(source, 'void RequestBbscDeathReload(std::string_view why)')
 resolve = function(source, 'std::optional<BbscTransform> ResolveLastLampTransform()')
 if os.environ.get('BBSC_TEST_NEIGHBOUR_OLD'):
-    resolve = resolve.replace('if (!here) return std::nullopt;', 'if (false) return std::nullopt;')
+    resolve = resolve.replace('BbscLampPointMap(point_id) != (chalice ? 0x1D000000u : map) || ', '')
 code += resolve
 code += r'''
 const World::WorldId world{11,99};
@@ -263,6 +269,23 @@ int main(){
  assert(RequestBbscSharedLampReload());prepared=false;const int n=loads;TickBbscSharedLampCheckpoint();assert(loads==n);
  prepared=true;TickBbscSharedLampCheckpoint();assert(loads==n+1&&bbsc_world_altar_visiting==2);
  assert(bbsc_world_requested_mount->key==altar.mount.key&&bbsc_world_requested_scope->ritual==7);
+ // The host's original death selector has already selected this mounted cup
+ // and lamp. Keep the native destination even if a borrowed load is not ready.
+ altar.mount.layout_map=0x1d0a5a00;
+ host_mount=altar.mount;bbsc_world_altar_current=2;
+ hp=0;prepared=false;
+ WriteValue<u8>(GetGlobalState(),0x1524,1);
+ WriteValue<s32>(GetGlobalState(),0x10,-1);
+ WriteValue<u32>(GetGlobalState(),0x0c,0x1d000000);
+ const s64 native_checkpoint=(s64{12345}<<32)|2902952;
+ WriteValue<s64>(GetGlobalState(),0x1528,native_checkpoint);
+ const int before_native=fallbacks,before_point_load=loads;
+ assert(BeginBbscSharedLampLoad(bbsc_checkpoint.scope,2902952));
+ assert(fallbacks==before_native+1&&loads==before_point_load&&!bbsc_world_requested_mount);
+ assert(ReadValue<s64>(GetGlobalState(),0x1528)==native_checkpoint);
+ assert(!BeginBbscSharedLampLoad(bbsc_checkpoint.scope,2902953));
+ assert(fallbacks==before_native+1&&loads==before_point_load);
+ hp=594;prepared=true;WriteValue<u8>(GetGlobalState(),0x1524,0);
  // Removing the selected ritual invalidates it rather than resolving another cup.
  altar.entry.ritual=9;s32 p=0;bool here=false;assert(!ReadBbscSharedLampCheckpoint(p,here));
  // Scripted abduction keeps its prison destination even with a shared lamp.
@@ -383,6 +406,38 @@ int main(){
  WriteValue<s32>(GetLocalPlayerCharacter(),0x278,0);
  WriteValue<s32>(GetGlobalState(),0x1528,2402950);
  SelectBbscLocalDeathLamp();assert(local_selections==cup+1);
+
+  // Host entered its own chalice through the native loader. No borrowed mount
+  // is ready, but the live mount and the active altar match this checkpoint.
+  reset();local(11,0x1d000000);ready=false;
+  auto& own=bbsc_world_altars[2];
+  own.entry.occupied=true;own.entry.ritual=7;
+  own.mount.key={55,66,88,0};own.mount.revision=7;
+  own.mount.map=own.mount.stage_map=0x1d000000;
+  own.mount.layout_map=0x1d0a0000;
+  bbsc_world_altar_world=world;bbsc_world_altar_current=2;
+  bbsc_world_presence_local.dungeon=own.mount.key;bbsc_world_presence_local.ritual=7;
+  host_mount=own.mount;host_mount.key.form_hash=789;host_mount.revision=2;
+  WriteValue<s32>(GetLocalPlayerCharacter(),0x278,290100);
+  WriteValue<s32>(GetGlobalState(),0x1528,2902953);
+  QueueBbscSharedLampCheckpoint(2902954);
+  assert(ResolveLastLampTransform()->position[0]==2902954);
+
+  unavailable=2902954;
+  assert(ResolveLastLampTransform()->position[0]==2902953);
+  unavailable=-1;
+  host_mount.parts[0]=1;
+  assert(ResolveLastLampTransform()->position[0]==2902953);
+  WriteValue<s32>(GetGlobalState(),0x1528,2902954);
+  assert(ResolveLastLampTransform()->position[0]==2902954);
+  WriteValue<s32>(GetGlobalState(),0x1528,2902951);
+  assert(!ResolveLastLampTransform());
+
+  host_mount=own.mount;bbsc_world_altar_current=1;
+  assert(!ResolveLastLampTransform());
+  bbsc_world_altar_current=2;
+  role=6;
+  assert(!ResolveLastLampTransform());
 }
 '''
 if os.environ.get('BBSC_TEST_EBOOT'):
@@ -417,4 +472,4 @@ with tempfile.TemporaryDirectory(prefix='bbsc-shared-lamp-') as tmp:
         print('PASS negative control: missing checkpoint/neighbor fence FAILS regression')
     else:
         result.check_returncode()
-        print('PASS production death lamps: shared checkpoint ordering and fences, Rom wipe for both roles, nearest local lamp and exact chalice layer')
+        print('PASS production death lamps: checkpoint fences, Rom wipe, and native host chalice revive destination')

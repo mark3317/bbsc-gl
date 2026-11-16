@@ -26,6 +26,7 @@ u64 bbsc_independent_epoch = 0;
 World::WorldId bbsc_independent_bound{};
 struct BbscWorldIncoming {u32 sender;World::Control control;std::vector<u8> payload;};
 void BbscWorldReceiveLampCheckpoint(const BbscWorldIncoming& message);
+void BbscWorldReceiveBossEntrance(const BbscWorldIncoming& message);
 std::mutex bbsc_independent_incoming_mutex;
 std::deque<BbscWorldIncoming> bbsc_independent_incoming;
 thread_local u8 bbsc_independent_send_depth = 0;
@@ -966,6 +967,7 @@ void InstallBbscWorldTravel();
 #include "core/bbsc_combat_trace.inc"
 #include "core/bbsc_world_travel.inc"
 #include "core/bbsc_world_checkpoint.inc"
+#include "core/bbsc_boss_entrance.inc"
 void TickBbscIndependentWorld() {
     BbscWorldCoordinate();
     static World::WorldId negotiated_world{};

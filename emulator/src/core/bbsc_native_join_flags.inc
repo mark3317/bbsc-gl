@@ -22,7 +22,12 @@ const std::vector<BbscNativeJoinFlagGroup>& BbscNativeJoinFlagGroups() {
                 for (const auto& lift : World::LiftFlags(key))
                     entry.shared_mask[lift.offset] &= ~lift.temporary;
             }
-            if (std::ranges::all_of(entry.shared_mask, [](u8 mask) { return mask == 0xFF; })) return;
+            // Keep the slots that may carry retry flags even if they have no
+            // permanent mask. The wipe mask belongs to the receiver's load.
+            const bool encounter = kind == 1 && (group == 4 || group == 5 || group == 6 ||
+                                                  key == 12201 || key == 13401);
+            if (!encounter &&
+                std::ranges::all_of(entry.shared_mask, [](u8 mask) { return mask == 0xFF; })) return;
             entry.slot = native_slot(kind, area, block, group);
             if (entry.slot != ~u32{0}) result.push_back(entry);
         };
@@ -63,6 +68,7 @@ void FilterBbscNativeJoinFlags(std::span<u8> snapshot, bool outgoing) {
             word(descriptor + 8) != BbscWorldGroupBytes) return;
     }
     const auto& groups = BbscNativeJoinFlagGroups();
+    const auto wipe_scope = outgoing ? World::Scope{} : BbscWipeScopeForMap(GetCurrentPackedMap());
     for (u32 i = 0; i < GroupCount; ++i) {
         const u32 slot = word(HeaderBytes + i * DescriptorBytes);
         const auto group = std::ranges::find(groups, slot, &BbscNativeJoinFlagGroup::slot);
@@ -75,6 +81,8 @@ void FilterBbscNativeJoinFlags(std::span<u8> snapshot, bool outgoing) {
             const u8 mask = group->shared_mask[byte];
             data[byte] = (data[byte] & mask) | (own ? own[byte] & ~mask : 0);
         }
+        if (wipe_scope.map) KeepBbscEncounterFlags(wipe_scope, group->key, own, data);
+        if (!outgoing) KeepBbscGuestStartedFlags(group->key, own, data);
     }
 }
 

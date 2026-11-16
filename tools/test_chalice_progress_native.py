@@ -42,6 +42,7 @@ std::atomic<u32> bbsc_independent_role{0},bbsc_load_generation{1};
 u32 BbscLampPointMap(s32){return 0x18000000;}
 void BbscWorldReceiveBlock(const BbscWorldIncoming&){}
 void BbscWorldReceiveLampCheckpoint(const BbscWorldIncoming&){}
+void BbscWorldReceiveBossEntrance(const BbscWorldIncoming&){}
 void BbscWorldNativeInitialControl(const BbscWorldIncoming&){}
 u64 addr(auto& a){return reinterpret_cast<u64>(a.data());}
 void put(auto& a,size_t off,auto v){std::memcpy(a.data()+off,&v,sizeof(v));}

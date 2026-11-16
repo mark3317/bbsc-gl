@@ -45,7 +45,8 @@ inline bool Valid(const Scope& s) {
 }
 // Wire value3 (Enemies) is reserved for old builds; no enemy payload is produced or applied.
 enum class ControlKind : u8 { Owner=1, Flags=2, Enemies=3, Request=4, Altar=5, AltarRequest=6, AltarProgress=7,
-    NativeInitialRequest=8, NativeInitialReady=9, Lamps=10, BlockOffer=11, BlockLease=12, LampCheckpoint=13 };
+    NativeInitialRequest=8, NativeInitialReady=9, Lamps=10, BlockOffer=11, BlockLease=12, LampCheckpoint=13,
+    BossEntrance=14 };
 #pragma pack(push,1)
 struct Control {
     char magic[4]={'S','H','A','D'};
@@ -64,7 +65,7 @@ static_assert(sizeof(Control)==84);
 inline bool Valid(const Control& c) {
     return !std::memcmp(c.magic,"SHAD",4) && c.type==Protocol::WorldControl &&
         c.version==2 && !c.reserved && !c.padding && Valid(c.scope) &&
-        c.kind>=ControlKind::Owner && c.kind<=ControlKind::LampCheckpoint &&
+        c.kind>=ControlKind::Owner && c.kind<=ControlKind::BossEntrance &&
         c.parts>0 && c.parts<=32 && c.part<c.parts && c.size<=2048 &&
         (c.kind!=ControlKind::Owner || (c.parts==1 && c.part==0 && c.size==0 && c.epoch!=0));
 }

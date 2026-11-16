@@ -43,9 +43,15 @@ u8 bbsc_altar_save_skip=0;
 constexpr size_t BbscWorldGroupBytes=125;
 auto& bbsc_own_world=own_kept;bool bbsc_own_world_dirty=false;
 std::mutex bbsc_own_world_save_mutex;
-std::optional<int> bbsc_own_world_slot;
+struct Slot { int slot=1; };
+std::optional<Slot> bbsc_own_world_slot;
+s32 save_slot=1;
+s32 BbscLoadedCharacterSlot(){return save_slot;}
+bool BbscReturningToTitle(){return false;}
+bool BindBbscOwnWorldSlot(){if(!bbsc_own_world_slot)bbsc_own_world_slot=Slot{save_slot};return true;}
+bool AlignBbscOwnWorldSlot(){return true;}
 std::filesystem::path fixture_journal;
-std::filesystem::path BbscOwnWorldPath(int){return fixture_journal;}
+std::filesystem::path BbscOwnWorldPath(const Slot&){return fixture_journal;}
 bool BbscHomeForOwnWorld(){return session!=4&&session!=6;}
 enum class MemoryProt { CpuRead };
 bool HasMemoryAccess(u64,size_t,MemoryProt){return true;}
@@ -117,6 +123,13 @@ int main(int argc,char** argv){
   KeepBbscOwnWorldGroup(12100,groups[12100].data());groups[12100][0]=0;
   flag_bank.back().fill(0x4A); // unrelated saved group must come from live data
   const auto guest_view=flag_bank;
+  auto native_source=reinterpret_cast<u64>(flag_bank.data());
+  Core::GuestRegisterSnapshot other{};
+  other.rsi=native_source;other.rbx=sizeof(flag_bank);
+  save_slot=2;
+  BbscSavePersonalAltars(0,&other);
+  assert(!bbsc_altar_save_skip&&other.rsi==native_source);
+  save_slot=1;
   for(s32 role:{6,7,0}){
    session=role; // autosave, leaving, and native state0 before home restore
    Core::GuestRegisterSnapshot regs{};
@@ -146,7 +159,7 @@ int main(int argc,char** argv){
  // Exercise the actual native-finale restoration, including the file
  // a later process would otherwise see as an unfinished old-world journal.
  session=6;
- own_kept.clear();bbsc_dream_own={};bbsc_own_world_slot=1;
+ own_kept.clear();bbsc_dream_own={};bbsc_own_world_slot=Slot{1};
  flag_bank[0].fill(0x11);
  KeepBbscOwnWorldGroup(94000,flag_bank[0].data());
  groups[12100].fill(0x22);

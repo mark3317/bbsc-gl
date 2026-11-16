@@ -76,6 +76,8 @@
 #include "../../mod/bbsc_party.h"
 #include "../../mod/bbsc_summon_admission.h"
 #include "core/bbsc_dreg_rules.h"
+#else
+#include "core/libraries/system/userservice.h"
 #endif
 
 namespace Core::Bloodborne {
@@ -1276,7 +1278,6 @@ std::atomic<s32> bbsc_timeline_state{-1};   // session state as of the last game
 std::atomic<u32> bbsc_timeline_map{0};      // packed map as of the last game tick
 std::atomic<s32> bbsc_timeline_type{-1};    // local player type (0 host/own, 1 co-op, 2 invader)
 std::string BbscAreaName(u32 packed_map);   // see "Discord status"
-const std::string& BbscProcessUserId();     // see "Shared progress on disk"
 
 long BbscTimelinePid() {
 #ifdef _WIN32
@@ -4817,6 +4818,8 @@ constexpr BbscBossLamp BbscBossLamps[] = {
 s32 bbsc_encounter_lamp = -1;
 u32 BbscLampPointMap(s32 point);
 
+void RememberBbscDreamEncounterHostLoad();
+
 void RememberBbscBossLamp() {
     const u64 gauge = ReadValue<u64>(image_base + BossGaugePointerOffset, 0);
     if (!ReadablePointer(gauge, 0x1690)) return;
@@ -4838,10 +4841,15 @@ void RememberBbscBossLamp() {
         }
     }
     if (active) {
+        const u32 load = bbsc_load_generation.load();
+        if (map == Bbsc::DreamFinale::Map &&
+            (map != bbsc_encounter_map || boss_name != bbsc_encounter_name ||
+             load != bbsc_encounter_load_generation))
+            RememberBbscDreamEncounterHostLoad();
         bbsc_encounter_name = boss_name;
         bbsc_encounter_lamp = point; // unknown encounter must not reuse an older boss
         bbsc_encounter_map = map;
-        bbsc_encounter_load_generation = bbsc_load_generation.load();
+        bbsc_encounter_load_generation = load;
     }
 }
 
@@ -5585,6 +5593,9 @@ Chalice::Key ReadBbscChaliceKey() {
 // Hook at 01928987: the native stage initializer has decoded the selected ritual, but
 // has not committed channel/layout/parts/type/feature into its runtime loader yet.
 // Both copied instructions are whole, non-RIP-relative stores (11 checked bytes).
+#ifdef BBSC_MOD
+void NoteBbscChaliceBossLayout(const Chalice::Mount& mount);
+#endif
 void PS4_SYSV_ABI BbscChaliceContextHook(u64, const GuestRegisterSnapshot* registers) {
     if (!registers) return;
     const s32 state = GetSessionState();
@@ -5608,9 +5619,14 @@ void PS4_SYSV_ABI BbscChaliceContextHook(u64, const GuestRegisterSnapshot* regis
         native.dungeon_type = static_cast<s32>(registers->r8);
         native.feature = static_cast<u32>(registers->r15);
         native.parts = ReadValue<std::array<s32, 18>>(frame - 0x78, 0);
-        std::scoped_lock lock{bbsc_chalice_mutex};
-        native.revision = ++bbsc_chalice_native_revision;
-        bbsc_chalice_native = native;
+        {
+            std::scoped_lock lock{bbsc_chalice_mutex};
+            native.revision = ++bbsc_chalice_native_revision;
+            bbsc_chalice_native = native;
+        }
+#ifdef BBSC_MOD
+        NoteBbscChaliceBossLayout(native);
+#endif
         return;
     }
     if (selected) {
@@ -5658,6 +5674,9 @@ void PS4_SYSV_ABI BbscChaliceContextHook(u64, const GuestRegisterSnapshot* regis
     }
     LOG_INFO(Debug, "BBSC chalice: borrowed native loader injected, channel {}, revision {}, layout {:#x}",
              borrowed.key.channel, borrowed.revision, borrowed.layout_map);
+#ifdef BBSC_MOD
+    NoteBbscChaliceBossLayout(borrowed);
+#endif
     BBSC_TIMELINE("CHALICE", "borrowed loader injected: channel {} revision {} layout {:#x}",
                   borrowed.key.channel, borrowed.revision, borrowed.layout_map);
 }
@@ -6341,6 +6360,14 @@ struct BbscGehrmanView {
 BbscGehrmanPlacement bbsc_own_gehrman = BbscGehrmanPlacement::Unknown;
 u64 bbsc_own_gehrman_load = 0;
 BbscGehrmanView bbsc_applied_gehrman;
+BbscGehrmanView bbsc_dream_encounter_host_view;
+
+void RememberBbscDreamEncounterHostLoad() {
+    // Pin the host load while the gauge belongs to the old fight. By the time
+    // this guest leaves spectate the host may already have loaded the retry.
+    bbsc_dream_encounter_host_view = bbsc_applied_gehrman;
+}
+
 BbscGehrmanPlacement bbsc_local_gehrman = BbscGehrmanPlacement::Unknown;
 u64 bbsc_local_gehrman_load = 0;
 u64 bbsc_applied_gehrman_load = 0;
@@ -6835,6 +6862,7 @@ void EnableBbscKidnapEvent(u64 instance);
 void EnableBbscRomJumpEvent(u64 instance);
 void PrepareBbscBossFogEvent(u64 instance, const BbscQuestRange& range);
 void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range);
+void PS4_SYSV_ABI BbscEventBank2000Hook(u64 tag, const GuestRegisterSnapshot* registers);
 bool GuardBbscSharedFinaleEvent(u64 instance);
 u8 bbsc_transition_event_skip = 0;
 bool bbsc_npc_pass_due = false;
@@ -6856,9 +6884,6 @@ void PS4_SYSV_ABI BbscNpcPassHook(u64 /*tag*/, const GuestRegisterSnapshot* regi
     if(steps & EventSteps::Kidnap)EnableBbscKidnapEvent(registers->rdi);
     if(steps & EventSteps::RomJump)EnableBbscRomJumpEvent(registers->rdi);
     if(range && (steps & EventSteps::BossFog))PrepareBbscBossFogEvent(registers->rdi,*range);
-#ifdef BBSC_MOD
-    if(range && (steps & EventSteps::ChaliceBossInit))RememberBbscChaliceBossInit(registers->rdi,*range);
-#endif
     if ((steps & EventSteps::DreamPhase) && BbscIndependentActive() && GetSessionState() == 6) {
         // These m21 events derive and stage the local Dream from native progress.
         // The host still owns the audience, encounter and ending triggers.
@@ -7176,6 +7201,34 @@ bool BbscHostBlockSnapshot(u32 packed_map, BbscWorldSnapshot& out) {
     return true;
 }
 
+World::Scope BbscWipeScopeForMap(u32 map) {
+    const u64 load = bbsc_boss_wipe_load.load();
+    if (!load || load != bbsc_world_native_load.load()) return {};
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    const auto scope = World::ScopeForMap(World::ScopeOf(bbsc_world_presence_local), map,
+                                          std::nullopt);
+    return scope == bbsc_boss_wipe_scope ? scope : World::Scope{};
+}
+
+void KeepBbscEncounterFlags(const World::Scope& scope, u32 key, const u8* before, u8* live);
+#ifdef BBSC_MOD
+void KeepBbscGuestStartedFlags(u32 key, const u8* before, u8* live);
+bool BbscGuestStartedFlag(u32 flag);
+#else
+void KeepBbscGuestStartedFlags(u32, const u8*, u8*) {}
+bool BbscGuestStartedFlag(u32) { return false; }
+#endif
+void CopyBbscHostFlagGroup(const World::Scope& wipe_scope, u32 key, u8* live,
+                           const std::array<u8, BbscWorldGroupBytes>& host) {
+    auto incoming = host;
+    if (wipe_scope.map) KeepBbscEncounterFlags(wipe_scope, key, live, incoming.data());
+    KeepBbscGuestStartedFlags(key, live, incoming.data());
+    Chalice::CopyHostFlagGroup(key, live, incoming);
+}
+
+u32 BbscDreamRetryStartFlag(const World::Scope& scope, const BbscGehrmanView& host_view,
+                           bool& allow_host_start);
+
 // m21 battle state is borrowed; shops, Doll and cords stay personal until the host ending.
 // Keep the original complete groups in the existing crash-persistent own-world journal.
 void ApplyBbscDreamBattleFlags() {
@@ -7184,8 +7237,22 @@ void ApplyBbscDreamBattleFlags() {
     BbscWorldSnapshot host;
     if (!BbscHostBlockSnapshot(BbscDreamStateMap, host) ||
         SteadyNowMs() - host.complete_ms >= BbscWorldFlagsFreshMs) return;
+    u32 retry_start = 0;
+    bool allow_host_start = false;
+    if (const auto scope = BbscWipeScopeForMap(BbscDreamStateMap); scope.map) {
+        BbscGehrmanView host_view;
+        {
+            std::scoped_lock lock{bbsc_world_mutex};
+            // The paired Dream view names the native host load of this flag
+            // snapshot. A newer receive time alone can still describe the old fight.
+            if (bbsc_dream_ready.snapshot == host.snapshot)
+                host_view = bbsc_dream_ready.gehrman;
+        }
+        retry_start = BbscDreamRetryStartFlag(scope, host_view, allow_host_start);
+    }
     bool changed = false;
     for (const u32 flag : Bbsc::DreamFinale::BattleFlags) {
+        if (BbscGuestStartedFlag(flag)) continue;
         const u32 key = flag / 1000;
         const size_t index = key - 12100;
         if (index >= 10 || !(host.present & (u64{1} << index))) continue;
@@ -7195,6 +7262,10 @@ void ApplyBbscDreamBattleFlags() {
         const u32 bit = flag % 1000;
         const u8 mask = static_cast<u8>(0x80u >> (bit % 8));
         const u8 wanted = host.groups[index][bit / 8] & mask;
+        // The local EMEVD must complete setup on this visit. Only activation
+        // from a later host load may start it, and only in the enabled direction.
+        if (retry_start && flag >= retry_start && flag <= retry_start + 2 &&
+            (flag != retry_start || !allow_host_start || !wanted)) continue;
         if ((live[bit / 8] & mask) == wanted) continue;
         KeepBbscOwnWorldGroup(key, live);
         live[bit / 8] = static_cast<u8>((live[bit / 8] & ~mask) | wanted);
@@ -7266,6 +7337,7 @@ bool ApplyBbscHostWorldFlags(u32 packed_map, std::string_view why) {
         size_t written = 0;
         if (Chalice::IsMap(snap.map) &&
             (snap.map != packed_map || !BbscChaliceSnapshotMatches(snap))) return written;
+        const auto wipe_scope = BbscWipeScopeForMap(snap.map);
         for (size_t i = 0; i < BbscWorldAppliedGroups; ++i) {
             if ((snap.present & (u64{1} << i)) == 0) {
                 continue;
@@ -7283,7 +7355,7 @@ bool ApplyBbscHostWorldFlags(u32 packed_map, std::string_view why) {
             for (size_t b = 0; b < BbscWorldGroupBytes; ++b) {
                 changed += live[b] != snap.groups[i][b] ? 1 : 0;
             }
-            Chalice::CopyHostFlagGroup(key, live, snap.groups[i]);
+            CopyBbscHostFlagGroup(wipe_scope, key, live, snap.groups[i]);
             KeepBbscGuestTalkBits(key, before.data(), live);
             KeepBbscNpcOwnBits(key, before.data(), live);
             if (snap.map == BbscDreamStateMap) {
@@ -7545,6 +7617,7 @@ void ApplyBbscHostDreamState(std::string_view why) {
         return;
     }
     const bool independent = BbscIndependentActive();
+    const auto wipe_scope = BbscWipeScopeForMap(BbscDreamStateMap);
     if (independent) {
         BbscWorldSnapshot map_state;
         if (!BbscHostBlockSnapshot(BbscDreamStateMap, map_state)) return;
@@ -7557,7 +7630,7 @@ void ApplyBbscHostDreamState(std::string_view why) {
             std::array<u8, BbscWorldGroupBytes> before;
             std::memcpy(before.data(), live, before.size());
             KeepBbscOwnWorldGroup(key, live);
-            Chalice::CopyHostFlagGroup(key, live, map_state.groups[i]);
+            CopyBbscHostFlagGroup(wipe_scope, key, live, map_state.groups[i]);
             KeepBbscGuestTalkBits(key, before.data(), live);
             KeepBbscNpcOwnBits(key, before.data(), live);
         }
@@ -7613,8 +7686,11 @@ void ApplyBbscHostDreamState(std::string_view why) {
 }
 
 // Guest side: our own Dream groups back, keeping whatever the game changed since we wrote.
+bool AlignBbscOwnWorldSlot();
+
 void RestoreBbscOwnDreamState(std::string_view why) {
-    if (bbsc_dream_own.held == 0) {
+    if (bbsc_dream_own.held == 0 || BbscReturningToTitle() || !AlignBbscOwnWorldSlot() ||
+        bbsc_dream_own.held == 0) {
         return;
     }
     size_t restored = 0;
@@ -7690,10 +7766,17 @@ void ApplyBbscHostWorldFlagsAtLoad() {
     if (!ReadablePointer(global, 0x1598) || (ReadValue<u8>(global, 0x1592) != 0 && !BbscIndependentActive())) {
         return;
     }
-    // The load's destination: the summoned placement map this reload goes to (see
-    // RequestBbscSessionWarp); the current map may still be the one we left.
-    const u32 map = ReadValue<u32>(global, GetSessionState()==3 ? 0x0C : 0x14C4);
-    if (BbscIndependentActive()) { ApplyBbscIndependentAtLoad(map); return; }
+    const bool independent = BbscIndependentActive();
+    // The initial summon uses the saved placement. Independent point loads
+    // keep the native stage destination, even for a guest. Commit that cup
+    // here so a dead guest can resolve its lamp before the alive arrival check.
+    const bool stage_destination = GetSessionState() == 3 ||
+                                   (independent && BbscWorldTravelInFlight());
+    const u32 map = ReadValue<u32>(global, stage_destination ? 0x0C : 0x14C4);
+    if (independent) {
+        ApplyBbscIndependentAtLoad(map);
+        return;
+    }
     if (!IsUsablePackedMap(map)) {
         return;
     }
@@ -7711,156 +7794,41 @@ struct BbscSaveSlot {
     std::string user;
     int slot = -1;
 };
-const auto bbsc_run_started = std::filesystem::file_time_type::clock::now();
+// The native loader stores the selected character at 0x0193F810 before
+// deserialization. The ordinary save request reads the same field.
+constexpr u32 BbscNativeCharacterSlotOffset = 0x1490;
 
-#ifdef _WIN32
-extern "C" __declspec(dllimport) wchar_t* __stdcall GetCommandLineW();
-#endif
-
-// The local user this process plays as: --user-id N on the emulator's command line, empty when
-// not given (one player per PC: the newest save is then ours). 2026-10-12 two-window test: both
-// windows share %APPDATA%\shadPS4, the guest took the host's newer save (user 1002) for its own,
-// wrote its own-world journal and pending shared progress under it, and the HOST merged them
-// ("own world restored after a crash" + shared progress notice at every join).
-const std::string& BbscProcessUserId() {
-    static const std::string id = [] {
-        std::string out;
-#ifdef _WIN32
-        const std::wstring line = GetCommandLineW();
-        const std::wstring flag = L"--user-id";
-        const size_t at = line.find(flag);
-        if (at != std::wstring::npos) {
-            size_t i = at + flag.size();
-            while (i < line.size() && (line[i] == L' ' || line[i] == L'=' || line[i] == L'"')) {
-                ++i;
-            }
-            while (i < line.size() && line[i] >= L'0' && line[i] <= L'9') {
-                out += static_cast<char>(line[i++]);
-            }
-        }
-#endif
-        if (!out.empty()) {
-            LOG_INFO(Debug, "BBSC save slot: this window plays as local user {} - only its saves "
-                            "count as ours",
-                     out);
-        }
-        return out;
-    }();
-    return id;
+s32 BbscLoadedCharacterSlot() {
+    const u64 global = GetGlobalState();
+    if (!ReadablePointer(global, BbscNativeCharacterSlotOffset + sizeof(s32))) return -1;
+    return ReadValue<s32>(global, BbscNativeCharacterSlotOffset);
 }
 
-// The character being played: the save slot file the game wrote last, during this run.
-std::optional<BbscSaveSlot> BbscActiveSaveSlotUnchecked();
-// Runs inside game hooks (the join load): a filesystem error must never become an exception there.
 std::optional<BbscSaveSlot> BbscActiveSaveSlot() {
-    try {
-        auto slot = BbscActiveSaveSlotUnchecked();
-        // Logged when the character first becomes known in this run, and when it changes (tests of
-        // LA-1/GI-2: the guest's journals need it).
-        static std::mutex mutex;
-        static std::optional<BbscSaveSlot> logged;
-        std::scoped_lock lock{mutex};
-        if (slot.has_value() &&
-            (!logged.has_value() || logged->user != slot->user || logged->slot != slot->slot)) {
-            logged = slot;
-            LOG_INFO(Debug, "BBSC save slot: playing user {} slot {} (BB_USER_DIR {})", slot->user,
-                     slot->slot, std::getenv("BB_USER_DIR") ? std::getenv("BB_USER_DIR") : "-");
-            BBSC_TIMELINE("SAVE", "save slot: user {} slot {}", slot->user, slot->slot);
-        }
-        return slot;
-    } catch (const std::exception& e) {
-        LOG_WARNING(Debug, "BBSC save slot: could not read the save folder ({})", e.what());
-        return std::nullopt;
-    }
-}
+    const s32 slot = BbscLoadedCharacterSlot();
+    if (slot < 0 || slot >= 10) return std::nullopt;
 
-std::optional<BbscSaveSlot> BbscActiveSaveSlotUnchecked() {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    // As shadPS4 picks its user folder: <working folder>\user when it exists (portable install),
-    // else %APPDATA%\shadPS4 - never both (another window may play from the other one).
-    std::vector<fs::path> bases{fs::current_path(ec) / "user"};
-    // BB_USER_DIR (2026-10-29, docs/study LA-1): the BBport launcher keeps the saves in its own user
-    // folder (Settings > user_dir, e.g. D:\Games\Bloodborne\ddd) and names it here; the port saves to
-    // <BB_USER_DIR>\savedata\<user>\CUSA00207. Without it the slot was never found on such installs
-    // (BBSC_SAVE_DIR is the launcher's copy made before the session, never written during the run),
-    // so the guest's own world, shared progress and guest items stayed in memory only.
-    const char* port_user_dir = std::getenv("BB_USER_DIR");
-    const bool port_user = port_user_dir != nullptr && port_user_dir[0] &&
-                           fs::is_directory(fs::path(port_user_dir) / "savedata", ec);
-    ec.clear();
-    if (port_user) {
-        bases = {fs::path(port_user_dir)};
-    }
-#ifdef _WIN32
-    if (!port_user && !fs::is_directory(bases.front() / "home", ec) &&
-        !fs::is_directory(bases.front() / "savedata", ec)) {
-        bases.clear();
-        if (const char* appdata = std::getenv("APPDATA")) {
-            bases.push_back(fs::path(appdata) / "shadPS4");
-        }
-    }
-    ec.clear();
+#ifdef BBSC_MOD
+    // BBport's UserService logs in as local user 1. Preserve BBGL's on-disk journal names.
+    const char* user_dir = std::getenv("BB_USER_DIR");
+    const char* save_dir = std::getenv("BBSC_SAVE_DIR");
+    BbscSaveSlot active{(!user_dir || !*user_dir) && save_dir && *save_dir ? "save" : "sd1", slot};
+#else
+    int user = -1;
+    if (Libraries::UserService::sceUserServiceGetInitialUser(&user) != 0 ||
+        user < 0 || user == 1004) return std::nullopt;
+    BbscSaveSlot active{std::to_string(user), slot};
 #endif
-    std::optional<BbscSaveSlot> best;
-    fs::file_time_type best_time = bbsc_run_started;
-    // BBSC_SAVE_DIR (2026-10-12): the folder holding userdata0000.. on hosts that keep saves
-    // elsewhere (bbhost: <data>\saves\SPRJ0005); its slots count as user "save".
-    if (const char* save_dir = std::getenv("BBSC_SAVE_DIR"); save_dir != nullptr && save_dir[0]) {
-        for (int slot = 0; slot < 10; ++slot) {
-            const fs::path file = fs::path(save_dir) / fmt::format("userdata{:04}", slot);
-            const auto written = fs::last_write_time(file, ec);
-            if (!ec && written > best_time) {
-                best_time = written;
-                best = BbscSaveSlot{"save", slot};
-            }
-            ec.clear();
-        }
+    static std::mutex mutex;
+    static std::optional<BbscSaveSlot> logged;
+    std::scoped_lock lock{mutex};
+    if (!logged || logged->user != active.user || logged->slot != active.slot) {
+        logged = active;
+        LOG_INFO(Debug, "BBSC save slot: playing user {} slot {}", active.user, active.slot);
+        BBSC_TIMELINE("SAVE", "save slot: user {} slot {}", active.user, active.slot);
     }
-    for (const fs::path& base : bases) {
-        for (const auto& user : fs::directory_iterator(base / "home", ec)) {
-            const std::string name = user.path().filename().string();
-            if (name == "1004") {
-                continue; // the user's rule: never touch user 1004
-            }
-            if (!BbscProcessUserId().empty() && name != BbscProcessUserId()) {
-                continue; // another window's character on this PC
-            }
-            const fs::path dir = user.path() / "savedata" / "CUSA00207" / "SPRJ0005";
-            for (int slot = 0; slot < 10; ++slot) {
-                const fs::path file = dir / fmt::format("userdata{:04}", slot);
-                const auto written = fs::last_write_time(file, ec);
-                if (!ec && written > best_time) {
-                    best_time = written;
-                    best = BbscSaveSlot{name, slot};
-                }
-                ec.clear();
-            }
-        }
-        ec.clear();
-        // The older layout <base>\savedata\<user>\CUSA00207 (BBport for Windows keeps its saves
-        // there, 2026-10-12); its users are named "sd<user>" so they never share a shadPS4 user's files.
-        for (const auto& user : fs::directory_iterator(base / "savedata", ec)) {
-            const std::string name = user.path().filename().string();
-            if (name == "1004") {
-                continue;
-            }
-            const fs::path dir = user.path() / "CUSA00207" / "SPRJ0005";
-            for (int slot = 0; slot < 10; ++slot) {
-                const fs::path file = dir / fmt::format("userdata{:04}", slot);
-                const auto written = fs::last_write_time(file, ec);
-                if (!ec && written > best_time) {
-                    best_time = written;
-                    best = BbscSaveSlot{"sd" + name, slot};
-                }
-                ec.clear();
-            }
-        }
-        ec.clear();
-    }
-    return best;
+    return active;
 }
-
 
 // ---- Own world journal (2026-10-08) --------------------------------------------------------------
 // Test 2026-10-08 (cls_amg guest in abood's world): the guest's game crashed during a follow load
@@ -7883,6 +7851,13 @@ std::mutex bbsc_own_world_save_mutex;
 std::optional<BbscSaveSlot> bbsc_own_world_slot;
 bool bbsc_own_world_dirty = false;
 
+bool BindBbscOwnWorldSlot() {
+    if (bbsc_own_world_slot) return BbscLoadedCharacterSlot() == bbsc_own_world_slot->slot;
+    std::scoped_lock lock{bbsc_own_world_save_mutex};
+    bbsc_own_world_slot = BbscActiveSaveSlot();
+    return bbsc_own_world_slot.has_value();
+}
+
 std::filesystem::path BbscOwnWorldPath(const BbscSaveSlot& slot) {
     return Common::FS::GetUserPath(Common::FS::PathType::CapturesDir).parent_path() / "own-world" /
            fmt::format("own-{}-{}.bin", slot.user, slot.slot);
@@ -7896,10 +7871,9 @@ bool BbscIsMapFlagGroup(u32 key) {
 }
 
 void KeepBbscOwnWorldGroup(u32 key, const u8* live) {
-    if (key == 0 || live == nullptr) {
+    if (key == 0 || live == nullptr || bbsc_own_world.contains(key) || !BindBbscOwnWorldSlot()) {
         return;
     }
-    if (bbsc_own_world.contains(key)) return; // only the game thread inserts
     std::scoped_lock lock{bbsc_own_world_save_mutex};
     std::memcpy(bbsc_own_world[key].data(), live, BbscWorldGroupBytes);
     bbsc_own_world_dirty = true;
@@ -7943,7 +7917,7 @@ const char* BbscTimeName(s32 bits) {
 
 // Our own night into the journal, the first time it is about to change while away. Game thread.
 void KeepBbscOwnTimeBits() {
-    if (bbsc_own_world.contains(BbscOwnTimeKey)) {
+    if (bbsc_own_world.contains(BbscOwnTimeKey) || !BindBbscOwnWorldSlot()) {
         return;
     }
     const u64 storage = BbscFlagGroupStorage(BbscTimeGroupKey);
@@ -8064,12 +8038,7 @@ void WriteBbscOwnWorldFile() {
     if (!bbsc_own_world_dirty || bbsc_own_world.empty()) {
         return;
     }
-    if (!bbsc_own_world_slot.has_value()) {
-        bbsc_own_world_slot = BbscActiveSaveSlot();
-        if (!bbsc_own_world_slot.has_value()) {
-            return; // no save written in this run yet: the next write tries again
-        }
-    }
+    if (!bbsc_own_world_slot) return;
     std::vector<u8> out;
     const auto put32 = [&out](u32 v) {
         const size_t at = out.size();
@@ -8090,6 +8059,7 @@ void WriteBbscOwnWorldFile() {
     {
         std::ofstream file(temp, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        file.flush();
         if (!file) {
             return;
         }
@@ -8098,6 +8068,24 @@ void WriteBbscOwnWorldFile() {
     if (!ec) {
         bbsc_own_world_dirty = false;
     }
+}
+
+// Leave the previous character's snapshot on disk before accepting another
+// character's world. Retain it in memory if the write failed.
+bool AlignBbscOwnWorldSlot() {
+    const auto active = BbscActiveSaveSlot();
+    if (!active) return false;
+    if (!bbsc_own_world_slot ||
+        (active->user == bbsc_own_world_slot->user && active->slot == bbsc_own_world_slot->slot)) {
+        return true;
+    }
+    WriteBbscOwnWorldFile();
+    if (bbsc_own_world_dirty) return false;
+    std::scoped_lock lock{bbsc_own_world_save_mutex};
+    bbsc_own_world.clear();
+    bbsc_own_world_slot.reset();
+    bbsc_dream_own = {};
+    return true;
 }
 
 bool LoadBbscOwnWorldFile(const BbscSaveSlot& slot) {
@@ -8110,13 +8098,13 @@ bool LoadBbscOwnWorldFile(const BbscSaveSlot& slot) {
         group_bytes != BbscWorldGroupBytes || !get32(count) || count > 10'000) {
         return false;
     }
+    std::scoped_lock lock{bbsc_own_world_save_mutex};
     for (u32 i = 0; i < count; ++i) {
         u32 key = 0;
         std::array<u8, BbscWorldGroupBytes> bytes{};
         if (!get32(key) || !file.read(reinterpret_cast<char*>(bytes.data()), bytes.size())) {
             break;
         }
-        std::scoped_lock lock{bbsc_own_world_save_mutex};
         bbsc_own_world.try_emplace(key, bytes); // what is in memory already is newer
     }
     bbsc_own_world_slot = slot;
@@ -8136,6 +8124,7 @@ u8 bbsc_altar_save_skip = 0;
 
 void PS4_SYSV_ABI BbscSavePersonalAltars(u64, const GuestRegisterSnapshot* registers) {
     std::scoped_lock lock{bbsc_own_world_save_mutex};
+    if (!bbsc_own_world_slot || BbscLoadedCharacterSlot() != bbsc_own_world_slot->slot) return;
     const auto first = bbsc_own_world.lower_bound(94000);
     if (first == bbsc_own_world.end() || first->first >= 94700) return;
 
@@ -8194,7 +8183,8 @@ void InstallBbscAltarSaveHook() {
 
 // Our own groups back into the live table. Returns the groups written (0 = nothing kept).
 size_t RestoreBbscOwnWorld(std::string_view why, bool native_finale = false) {
-    if (bbsc_own_world.empty() || image_base == 0 || (!native_finale && !BbscHomeForOwnWorld())) {
+    if (bbsc_own_world.empty() || image_base == 0 || BbscReturningToTitle() ||
+        (!native_finale && !BbscHomeForOwnWorld()) || !AlignBbscOwnWorldSlot()) {
         return 0;
     }
     std::scoped_lock lock{bbsc_own_world_save_mutex};
@@ -8360,8 +8350,9 @@ void TickBbscOwnWorld() {
         return;
     }
     last_ms = now;
+    if (BbscQuitInProgress() || BbscReturningToTitle()) return;
     if (!BbscHomeForOwnWorld()) {
-        WriteBbscOwnWorldFile(); // still away: a slot that was unknown may be known now
+        WriteBbscOwnWorldFile(); // still away: persist changes to the captured slot
         return;
     }
     const u64 global = GetGlobalState();
@@ -8385,6 +8376,7 @@ void TickBbscOwnWorld() {
 // The load home: as early as the load's respawn point / character creation, before the map's
 // events read the flags (and before shared progress merges the host's into them).
 void RestoreBbscOwnWorldAtLoad() {
+    if (BbscReturningToTitle() || !BbscHomeForOwnWorld() || !AlignBbscOwnWorldSlot()) return;
     if (!bbsc_own_world.empty()) {
         RestoreBbscOwnWorld("during the home load");
         return;
@@ -8554,6 +8546,7 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
     const u8 mask = static_cast<u8>(0x80u >> (flag % 8));
     if (IsBbscNativeItemStateFlag(flag)) {
         NoteBbscTalkFlag(flag, value, 0, true); // existing personal-state save, not a reward retry
+        if (!BindBbscOwnWorldSlot()) return;
         if (const auto own = bbsc_own_world.find(key); own != bbsc_own_world.end()) {
             const u8 updated = static_cast<u8>((own->second[byte] & ~mask) | (value ? mask : 0));
             if (own->second[byte] != updated) {
@@ -8566,7 +8559,8 @@ void RecordBbscNativeItemFlag(u32 flag, u8 value) {
     }
     const bool global_receipt = IsBbscGlobalLootReceipt(flag);
     if (value == 0 || key / 10000 != 5 || Chalice::IsLootGroup(key) ||
-        !bbsc_loot_dungeon.empty() || (!global_receipt && !bbsc_own_world.contains(key))) return;
+        !bbsc_loot_dungeon.empty() || (!global_receipt && !bbsc_own_world.contains(key)) ||
+        !BindBbscOwnWorldSlot()) return;
     // Global enemy/NPC receipts have no map baseline. This zero group contains
     // only a confirmed local pickup bit; restore ORs kind5 and cannot import host bits.
     if (global_receipt) {
@@ -9073,24 +9067,27 @@ std::optional<BbscTransform> ResolveLastLampTransform() {
     if (!ReadablePointer(global, 0x1530)) {
         return std::nullopt;
     }
-    s32 point_id = ReadValue<s32>(global, 0x1528);
-    bool here=false;
-    if (ReadBbscSharedLampCheckpoint(point_id,here)) {
-        if (!here) return std::nullopt;
-    } else {
-        // A native point lookup also searches resident neighbours. Their local
-        // coordinates are not a safe placement in the current map's frame.
-        const u32 lamp_map=BbscLampPointMap(point_id);
-        const u32 map=GetCurrentPackedMap();
-        if (lamp_map!=(Chalice::IsMap(map)?0x1D000000u:map)) return std::nullopt;
-        if (Chalice::IsMap(map)) {
-            const s32 first = BbscChaliceLayerFirstLamp(GetLocalPlayerCharacter());
-            if (first > 0 && point_id != first && point_id != first + 1) return std::nullopt;
+    const s32 point_id = ReadValue<s32>(global, 0x1528);
+    const u32 map = GetCurrentPackedMap();
+    const bool chalice = Chalice::IsMap(map);
+    const s32 first = chalice ? BbscChaliceLayerFirstLamp(GetLocalPlayerCharacter()) : -1;
+    s32 shared_point = -1;
+    bool here = false;
+    if (ReadBbscSharedLampCheckpoint(shared_point, here)) {
+        if (here) {
+            if (const auto transform = ResolveLampPoint(shared_point)) return transform;
+            LOG_INFO(Debug, "BBSC last lamp point {} is not in the loaded map", shared_point);
         }
+        // The host's native checkpoint can still be valid in the current layer.
+        if (GetSessionState() != 3 || first < 0 || (here && shared_point == point_id))
+            return std::nullopt;
     }
-    if (point_id == -1) {
+    // A native point lookup also searches resident neighbours. Their local
+    // coordinates are not a safe placement in the current map's frame.
+    if (BbscLampPointMap(point_id) != (chalice ? 0x1D000000u : map) || point_id == -1)
         return std::nullopt;
-    }
+    if (first > 0 && point_id != first && point_id != first + 1) return std::nullopt;
+
     const auto transform = ResolveLampPoint(point_id);
     if (!transform.has_value()) {
         LOG_INFO(Debug, "BBSC last lamp point {} is not in the loaded map", point_id);
@@ -12780,6 +12777,16 @@ void InstallBbscEventPassHook() {
                               &bbsc_transition_event_skip)) {
         LOG_ERROR(Debug, "BBSC event pass: failed to install pre-event hook");
     }
+#ifdef BBSC_MOD
+    // 012ECDC0 executes several commands before returning (012ECF9A loops
+    // inside it). Its entry cannot observe InitializeEvent instructions later
+    // in constructor 0. Observe the original bank dispatch, without a scan or
+    // another event-update pass; the native constructor still executes once.
+    if (!InstallGuestCodeHook(reinterpret_cast<void*>(image_base + 0x017C8030),
+                              std::span<const u8>{Prologue}, 0, BbscEventBank2000Hook)) {
+        LOG_ERROR(Debug, "BBSC boss retry: native constructor observation unavailable");
+    }
+#endif
 }
 
 // ---- The Hunter's Dream together (2026-09-25) --------------------------------------------------
@@ -15380,6 +15387,7 @@ bool BbscSharedProgressEnabled() {
 bool BackupBbscSaves(); // see "The BBSC hunter's kit"
 
 std::mutex bbsc_progress_mutex;
+bool bbsc_progress_accept_packets = false; // protected by bbsc_progress_mutex
 std::vector<u32> bbsc_progress_host_flags;                         // guest: host's boss flags seen
 std::map<u32, std::array<u8, BbscWorldGroupBytes>> bbsc_progress_groups; // guest: kind 1, OR-ed
 bool bbsc_progress_was_guest = false;
@@ -15434,11 +15442,22 @@ struct BbscChaliceBossArena {
 };
 
 struct BbscChaliceBossAttempts {
-    World::Scope scope;
-    u64 load = 0;
+    Chalice::Mount layout;
     std::vector<BossRetry::ChaliceAttempt> constructors;
 };
 BbscChaliceBossAttempts bbsc_chalice_boss_attempts;
+
+#ifdef BBSC_MOD
+void NoteBbscChaliceBossLayout(const Chalice::Mount& mount) {
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    auto& cup = bbsc_chalice_boss_attempts;
+    if (Chalice::SameLayout(cup.layout, mount)) return;
+    cup = {mount, {}};
+}
+bool BbscChaliceBossLayoutMatchesScope(const World::Scope& scope, const Chalice::Mount& layout);
+#else
+bool BbscChaliceBossLayoutMatchesScope(const World::Scope&, const Chalice::Mount&) { return false; }
+#endif
 
 u32 ResolveBbscChaliceVictory(const BbscChaliceBossAttempts& cup,
                             const BossRetry::ChaliceAttempt& init) {
@@ -15481,6 +15500,7 @@ auto ResolveBbscChaliceBossAttempts(const BbscChaliceBossAttempts& cup) {
 struct BbscWipeAttempt {
     u32 defeated = 0;
     u32 intro_completed = 0;
+    BbscGehrmanView dream_host_view;
     std::vector<u32> flags;
     bool reset = false;
 };
@@ -15492,10 +15512,12 @@ void MarkBbscBossWipeLoad() {
     bbsc_boss_wipe_scope = World::ScopeOf(bbsc_world_presence_local);
     bbsc_boss_wipe_attempt = {};
     auto& attempt = bbsc_boss_wipe_attempt;
+    if (bbsc_boss_wipe_scope.map == BbscDreamStateMap)
+        attempt.dream_host_view = bbsc_dream_encounter_host_view;
     if (Chalice::IsMap(bbsc_boss_wipe_scope.map)) {
         const s32 lamp = BbscChaliceLayerFirstLamp(GetLocalPlayerCharacter());
         const auto& cup = bbsc_chalice_boss_attempts;
-        if (cup.scope == bbsc_boss_wipe_scope && cup.load == load) {
+        if (BbscChaliceBossLayoutMatchesScope(bbsc_boss_wipe_scope, cup.layout)) {
             const auto arenas = ResolveBbscChaliceBossAttempts(cup);
             const auto layer = lamp >= 2902951 ? static_cast<u32>((lamp - 2902951) / 2) :
                                                 BossRetry::LayerCount;
@@ -15551,6 +15573,9 @@ void MarkBbscBossWipeLoad() {
         }
     }
     bbsc_boss_wipe_load = load + 1;
+    BBSC_TIMELINE("WORLD", "boss wipe prepared map={:#x} ritual={} victory={} flags={} load={}",
+                  bbsc_boss_wipe_scope.map, bbsc_boss_wipe_scope.ritual,
+                  attempt.defeated, attempt.flags.size(), load + 1);
 }
 
 void ResetBbscWipeEncounter(const World::Scope& scope) {
@@ -15565,7 +15590,11 @@ void ResetBbscWipeEncounter(const World::Scope& scope) {
         attempt = bbsc_boss_wipe_attempt;
         bbsc_boss_wipe_attempt.reset = true;
     }
-    if (attempt.flags.empty() || BbscEventFlag(attempt.defeated)) return;
+    if (attempt.flags.empty() || BbscEventFlag(attempt.defeated)) {
+        BBSC_TIMELINE("WORLD", "boss wipe reset skipped map={:#x} ritual={} victory={} flags={} load={}",
+                      scope.map, scope.ritual, attempt.defeated, attempt.flags.size(), load);
+        return;
+    }
     using SetFlag = void PS4_SYSV_ABI (*)(u64, u32, u32);
     const auto set_flag = reinterpret_cast<SetFlag>(image_base + 0x013CFCC0);
     // A recorded Laurence fight has passed the introduction. Install that
@@ -15624,6 +15653,21 @@ void KeepBbscEncounterFlags(const World::Scope& scope, u32 key, const u8* before
         const u8 mask = 0x80u >> (bit % 8);
         auto& byte = live[bit / 8];
         byte = (byte & ~mask) | (before[bit / 8] & mask);
+    }
+}
+
+u32 BbscDreamRetryStartFlag(const World::Scope& scope, const BbscGehrmanView& host_view,
+                           bool& allow_host_start) {
+    std::scoped_lock lock{bbsc_world_presence_mutex};
+    if (scope != bbsc_boss_wipe_scope ||
+        bbsc_boss_wipe_load.load() != bbsc_world_native_load.load()) return 0;
+    const auto& previous = bbsc_boss_wipe_attempt.dream_host_view;
+    allow_host_start = previous.room == scope.world.room && host_view.room == previous.room &&
+                       host_view.host_load > previous.host_load;
+    switch (bbsc_boss_wipe_attempt.defeated) {
+    case 12101800: return 12104800;
+    case 12101850: return 12104850;
+    default: return 0;
     }
 }
 
@@ -16062,8 +16106,7 @@ void ProcessBbscRewardCheck() {
 // the LIVE table (0x01399DE0 writes SprjEventFlagMan +0x28, no own-world copy), so the collected
 // progress goes to a file instead, every BbscProgressFileMs while a guest, and is merged as before
 // once home. When the game ends before that, the file stays, and the next time that character is
-// home (in any later run) it is merged then. The character is the save slot the game writes: the
-// newest userdata00NN (0..9) of the user's CUSA00207\SPRJ0005 folder, written during this run.
+// home (in any later run) it is merged then. The native character slot owns the journal.
 constexpr s64 BbscProgressFileMs = 10'000;
 constexpr s64 BbscProgressRecoverMs = 15'000;
 constexpr u32 BbscProgressFileMagic = 0x50534242; // "BBSP"
@@ -16075,9 +16118,9 @@ std::filesystem::path BbscPendingProgressPath(const BbscSaveSlot& slot) {
 }
 
 // Memory -> file (the whole collection, rewritten). Game thread.
-void WriteBbscPendingProgress() {
+bool WriteBbscPendingProgress() {
     if (!bbsc_progress_slot.has_value()) {
-        return;
+        return false;
     }
     std::vector<u8> out;
     const auto put32 = [&out](u32 v) {
@@ -16088,7 +16131,7 @@ void WriteBbscPendingProgress() {
     {
         std::scoped_lock lock{bbsc_progress_mutex};
         if (bbsc_progress_host_flags.empty() && bbsc_progress_groups.empty()) {
-            return;
+            return true;
         }
         put32(BbscProgressFileMagic);
         put32(static_cast<u32>(BbscWorldGroupBytes));
@@ -16109,11 +16152,13 @@ void WriteBbscPendingProgress() {
     {
         std::ofstream file(temp, std::ios::binary | std::ios::trunc);
         file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+        file.flush();
         if (!file) {
-            return;
+            return false;
         }
     }
     std::filesystem::rename(temp, path, ec); // replaces the previous one in one step
+    return !ec;
 }
 
 // File -> memory, OR-ed into whatever is collected already. True when a file was read.
@@ -16185,6 +16230,49 @@ void FinishBbscPendingProgress() {
     }
 }
 
+// Park this trip under its original character. A write failure leaves it
+// available for retry and blocks the next character from consuming it.
+bool ParkBbscProgress() {
+    {
+        std::scoped_lock lock{bbsc_progress_mutex};
+        bbsc_progress_accept_packets = false;
+    }
+    if (!bbsc_progress_slot ||
+        (BbscSharedProgressEnabled() && !WriteBbscPendingProgress()) ||
+        !WriteBbscTripJournal(*bbsc_progress_slot)) {
+        return false;
+    }
+    DropBbscTripJournalMemory();
+    {
+        std::scoped_lock lock{bbsc_progress_mutex};
+        bbsc_progress_host_flags.clear();
+        bbsc_progress_groups.clear();
+    }
+    bbsc_progress_slot.reset();
+    bbsc_progress_was_guest = false;
+    bbsc_progress_merged_at_load = false;
+    RequestBbscRewardCheck();
+    return true;
+}
+
+bool AlignBbscProgressSlot(const BbscSaveSlot& active) {
+    return !bbsc_progress_slot ||
+           (active.user == bbsc_progress_slot->user && active.slot == bbsc_progress_slot->slot) ||
+           ParkBbscProgress();
+}
+
+bool BindBbscGuestProgress() {
+    const auto active = BbscActiveSaveSlot();
+    if (!active || !AlignBbscProgressSlot(*active)) return false;
+    if (!bbsc_progress_slot) {
+        bbsc_progress_slot = active;
+        if (BbscSharedProgressEnabled()) LoadBbscPendingProgress(*active);
+        LoadBbscTripJournal(*active);
+    }
+    bbsc_progress_was_guest = true;
+    return true;
+}
+
 // Guest: collect while in the session; merge once home.
 bool BbscBossCompletionBitsAdded(u32 key, size_t byte, u8 added) {
     return std::ranges::any_of(BbscBossRewards, [=](const auto& reward) {
@@ -16204,6 +16292,7 @@ void TickBbscSharedProgress() {
         return;
     }
     last_ms = now;
+    if (BbscQuitInProgress() || BbscReturningToTitle()) return;
     const bool share = BbscSharedProgressEnabled();
     const s32 state = GetSessionState();
     const u64 global = GetGlobalState();
@@ -16223,16 +16312,11 @@ void TickBbscSharedProgress() {
         return;
     }
     if (state == 6) {
+        if (!BindBbscGuestProgress() || !AlignBbscOwnWorldSlot()) return;
         bbsc_talk_save_watch = false; // an older own-world commit cannot retire a new trip
-        // Which character this is, and what an earlier session left for it (once per session).
-        if (!bbsc_progress_slot.has_value()) {
-            bbsc_progress_slot = BbscActiveSaveSlot();
-            if (bbsc_progress_slot.has_value()) {
-                if (share) {
-                    LoadBbscPendingProgress(*bbsc_progress_slot);
-                }
-                LoadBbscTripJournal(*bbsc_progress_slot);
-            }
+        {
+            std::scoped_lock lock{bbsc_progress_mutex};
+            bbsc_progress_accept_packets = share;
         }
         if (now - file_written_ms >= BbscProgressFileMs) {
             file_written_ms = now;
@@ -16243,7 +16327,6 @@ void TickBbscSharedProgress() {
                 WriteBbscTripJournal(*bbsc_progress_slot);
             }
         }
-        bbsc_progress_was_guest = true;
         bbsc_progress_left_ms = 0;
         bbsc_progress_home_ms = 0;
         bbsc_progress_merged_at_load = false;
@@ -16330,6 +16413,10 @@ void TickBbscSharedProgress() {
         return;
     }
     if (bbsc_progress_left_ms == 0) {
+        {
+            std::scoped_lock lock{bbsc_progress_mutex};
+            bbsc_progress_accept_packets = false;
+        }
         bbsc_progress_left_ms = now;
         if (share) {
             WriteBbscPendingProgress(); // the session just ended: the newest state to disk
@@ -16339,24 +16426,7 @@ void TickBbscSharedProgress() {
         }
     }
     if (!own_world && now - bbsc_progress_left_ms > BbscProgressHomeLimitMs) {
-        std::scoped_lock lock{bbsc_progress_mutex};
-        LOG_WARNING(Debug, "BBSC shared progress: not home within {} s of the session end (quit to "
-                           "the title?) - {} boss flag(s) and {} world group(s) kept in the file, "
-                           "merged the next time this character is home",
-                    BbscProgressHomeLimitMs / 1000, bbsc_progress_host_flags.size(),
-                    bbsc_progress_groups.size());
-        BBSC_TIMELINE("WORLD", "shared progress: not home within {} s of the session end (quit to "
-                           "the title?) - {} boss flag(s) and {} world group(s) kept in the file, "
-                           "merged the next time this character is home",
-                    BbscProgressHomeLimitMs / 1000, bbsc_progress_host_flags.size(),
-                    bbsc_progress_groups.size());
-        bbsc_progress_host_flags.clear();
-        bbsc_progress_groups.clear();
-        bbsc_progress_was_guest = false;
-        if (bbsc_progress_slot.has_value()) {
-            DropBbscTripJournalMemory(); // it is in the file; read again the next time we are home
-        }
-        bbsc_progress_slot.reset();
+        ParkBbscProgress();
         return;
     }
     const u64 player = GetLocalPlayerCharacter();
@@ -16375,21 +16445,9 @@ void TickBbscSharedProgress() {
         return;
     }
     const bool at_load = bbsc_progress_merged_at_load;
-    if (bbsc_progress_slot.has_value()) {
-        const auto active_slot = BbscActiveSaveSlot();
-        if (!active_slot.has_value()) return;
-        if (active_slot->user != bbsc_progress_slot->user || active_slot->slot != bbsc_progress_slot->slot) {
-            if (!WriteBbscTripJournal(*bbsc_progress_slot)) return;
-            DropBbscTripJournalMemory();
-            bbsc_progress_was_guest = false;
-            bbsc_progress_slot.reset();
-            std::scoped_lock lock{bbsc_progress_mutex};
-            bbsc_progress_host_flags.clear();
-            bbsc_progress_groups.clear();
-            RequestBbscRewardCheck();
-            return; // never apply the old character's personal journal to a new character
-        }
-    }
+    const auto active = BbscActiveSaveSlot();
+    if (!active || !AlignBbscProgressSlot(*active) || !bbsc_progress_slot ||
+        !AlignBbscOwnWorldSlot()) return;
     RestoreBbscOwnWorld("before the shared progress merge");
     const auto [bosses, bits] =
         share ? MergeBbscSharedProgress("after the home load") : std::pair<s64, size_t>{-1, 0};
@@ -16436,33 +16494,29 @@ void TickBbscSharedProgress() {
 // there, so the map comes up with the host's progress already in it. The tick above checks again
 // once we are settled (and merges whatever did not stick, should the own-world table come later).
 void ApplyBbscSharedProgressAtLoad() {
-    // Recover before home map events/talks, not fifteen seconds after they may
-    // already have consumed a gift trigger from a previous process.
-    const u64 home = GetGlobalState();
-    if (image_base != 0 && !bbsc_progress_was_guest && GetSessionState() == 0 &&
-        ReadablePointer(home, 0x1598) && ReadValue<u8>(home, 0x1592) != 0) {
-        if (const auto slot = BbscActiveSaveSlot(); slot.has_value()) {
-            const bool talk = LoadBbscTripJournal(*slot);
-            const bool progress = BbscSharedProgressEnabled() && LoadBbscPendingProgress(*slot);
-            if (talk || progress) {
-                bbsc_progress_slot = slot;
-                bbsc_progress_was_guest = true;
-                bbsc_progress_left_ms = SteadyNowMs();
-                bbsc_progress_home_ms = 0;
-                bbsc_progress_backed_up = false;
-            }
-        }
-    }
-    if (image_base == 0 || !bbsc_progress_was_guest || bbsc_progress_merged_at_load) {
-        return;
-    }
     const s32 state = GetSessionState();
     const u64 global = GetGlobalState();
-    if (state == 4 || state == 6 || !ReadablePointer(global, 0x1598) ||
-        ReadValue<u8>(global, 0x1592) == 0 || bbsc_dream_own.held != 0 ||
+    if (image_base == 0 || BbscReturningToTitle() || (state != 0 && state != 3) ||
+        !ReadablePointer(global, 0x1598) || ReadValue<u8>(global, 0x1592) == 0 ||
         ReadValue<u64>(image_base + EventFlagManPointerOffset, 0) == 0) {
-        return; // not home yet, or our own Dream state still to be put back (the tick merges then)
+        return;
     }
+    const auto active = BbscActiveSaveSlot();
+    if (!active || !AlignBbscProgressSlot(*active) || !AlignBbscOwnWorldSlot() ||
+        bbsc_dream_own.held != 0) return;
+    // Recover before home map events and NPC talks read their flags.
+    if (!bbsc_progress_was_guest && state == 0) {
+        const bool talk = LoadBbscTripJournal(*active);
+        const bool progress = BbscSharedProgressEnabled() && LoadBbscPendingProgress(*active);
+        if (talk || progress) {
+            bbsc_progress_slot = active;
+            bbsc_progress_was_guest = true;
+            bbsc_progress_left_ms = SteadyNowMs();
+            bbsc_progress_home_ms = 0;
+            bbsc_progress_backed_up = false;
+        }
+    }
+    if (!bbsc_progress_slot || !bbsc_progress_was_guest || bbsc_progress_merged_at_load) return;
     RestoreBbscOwnWorldAtLoad(); // our own world first, then the host's progress on top
     const auto [bosses, bits] = BbscSharedProgressEnabled()
                                     ? MergeBbscSharedProgress("during the home load")
@@ -17459,7 +17513,8 @@ void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event) {
         {
             std::scoped_lock lock{bbsc_talk_journal_mutex};
             const auto it = bbsc_talk_journal.find(flag);
-            if (it != bbsc_talk_journal.end() && it->second != value) {
+            if (it != bbsc_talk_journal.end() && it->second != value && bbsc_progress_slot &&
+                BbscLoadedCharacterSlot() == bbsc_progress_slot->slot) {
                 it->second = value;
                 ++bbsc_talk_journal_revision;
                 changed = true;
@@ -17472,6 +17527,7 @@ void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event) {
     // talk) - a map flag of it would be lost on the trip home otherwise.
     const bool talk = bbsc_in_talk_step || caller_offset == BbscTalkSetFlagReturnOffset || talk_event ||
                       IsBbscScriptedPickupFlag(flag);
+    if (!bbsc_progress_slot && (!talk || !BindBbscGuestProgress())) return;
     {
         std::scoped_lock lock{bbsc_talk_journal_mutex};
         // A flag a talk set and something else (the gift event resetting its trigger) set again:
@@ -17483,7 +17539,8 @@ void NoteBbscTalkFlag(u32 flag, u8 value, u64 caller_offset, bool talk_event) {
         if (it != bbsc_talk_journal.end() && it->second == value) {
             return;
         }
-        if (bbsc_talk_journal.size() >= 4096) {
+        if (bbsc_talk_journal.size() >= 4096 ||
+            BbscLoadedCharacterSlot() != bbsc_progress_slot->slot) {
             return;
         }
         bbsc_talk_journal[flag] = value;
@@ -17676,13 +17733,11 @@ void FlushBbscSessionJournals() {
     WriteBbscGuestLootFile();
     WriteBbscOwnWorldFile();
     WriteBbscPendingProgress(); // include the last boss/world updates before the title unload
-    std::optional<BbscSaveSlot> slot;
     {
         std::scoped_lock lock{bbsc_ledger_mutex};
         WriteBbscLedgerLocked();
-        slot = bbsc_ledger_slot;
     }
-    if (slot.has_value()) WriteBbscTripJournal(*slot);
+    if (bbsc_progress_slot) WriteBbscTripJournal(*bbsc_progress_slot);
 }
 
 void FinishBbscTripJournal(const BbscSaveSlot& slot);
@@ -18144,6 +18199,7 @@ void RememberBbscLitLampCheckpoint(u64 instance) {
                   point,aux,map,GetSessionState());
 }
 
+void NoteBbscGuestBossEntrance(u64 instance);
 void PS4_SYSV_ABI BbscEventBank2003Hook(u64 /*tag*/, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscEventBank2003Hook");
     if (registers == nullptr) {
@@ -18151,6 +18207,9 @@ void PS4_SYSV_ABI BbscEventBank2003Hook(u64 /*tag*/, const GuestRegisterSnapshot
         return;
     }
     const u64 instance = registers->rsi;
+#ifdef BBSC_MOD
+    NoteBbscGuestBossEntrance(instance);
+#endif
     const s64 now = SteadyNowMs();
     // Re-evaluate provenance: an action may have started since the previous instruction.
     bbsc_event_run.instance = instance;
@@ -23891,8 +23950,6 @@ bool BbscEssentialDiagnosticSite(const TraceSite& site) {
 
 #ifdef BBSC_MOD
 void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range) {
-    const u64 load = bbsc_world_native_load.load();
-    if (bbsc_world_bootstrap_load != load || !Chalice::IsMap(bbsc_world_bootstrap_scope.map)) return;
     // The step resolver has already validated the constructor and its current PC.
     const u64 pc = ReadValue<u64>(instance, 0xB0);
     if (pc < range.first || pc >= range.end || !ReadablePointer(pc, 0x20) ||
@@ -23900,11 +23957,16 @@ void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range) {
     const u64 size = ReadValue<u64>(pc, 8);
     if (size < 8 || size > 40 || size % sizeof(u32)) return;
     const u64 ref = ReadValue<u64>(instance, 0xA8);
+    if (!ReadablePointer(ref, 0x10)) return;
     const u64 file = ReadValue<u64>(ref, 8);
+    if (!ReadablePointer(file, 0x80)) return;
     const u64 offset = ReadValue<u64>(pc, 0x10);
     const u64 args_size = ReadValue<u64>(file, 0x70);
     if (offset > args_size || size > args_size - offset) return;
-    const u64 args = file + ReadValue<u64>(file, 0x78) + offset;
+    // The bank receives native-resolved operands when the constructor itself
+    // is parameterized. Match 017C8076, rather than reading its placeholders.
+    const u64 resolved = ReadValue<u64>(instance, 0xB8);
+    const u64 args = resolved ? resolved : file + ReadValue<u64>(file, 0x78) + offset;
     if (!ReadablePointer(args, size)) return;
     std::array<u32, 10> words{};
     std::memcpy(words.data(), reinterpret_cast<const void*>(args), size);
@@ -23912,11 +23974,21 @@ void RememberBbscChaliceBossInit(u64 instance, const BbscQuestRange& range) {
     if (!init.victory && !init.actor) return;
     std::scoped_lock lock{bbsc_world_presence_mutex};
     auto& cup = bbsc_chalice_boss_attempts;
-    if (cup.load != load || cup.scope != bbsc_world_bootstrap_scope) {
-        cup = {bbsc_world_bootstrap_scope, load, {}};
-    }
+    // Event 0 can run before the first co-op admission or on a solo host.
+    // The native loader supplies the layout before those constructors run.
+    if (!cup.layout.key.channel || !Chalice::IsMap(cup.layout.layout_map)) return;
     if (std::ranges::find(cup.constructors, init) == cup.constructors.end())
         cup.constructors.push_back(init);
+}
+
+void PS4_SYSV_ABI BbscEventBank2000Hook(u64 /*tag*/, const GuestRegisterSnapshot* registers) {
+    if (!registers || !ReadablePointer(registers->rsi, 0xC0)) return;
+    const u64 instance = registers->rsi;
+    const u64 pc = ReadValue<u64>(instance, 0xB0);
+    if (!ReadablePointer(pc, 0x20) || ReadValue<s32>(pc, 0) != 2000 ||
+        ReadValue<s32>(pc, 4) != 0) return;
+    const auto* range = LookupBbscQuestRange(instance);
+    if (range && range->event == 0) RememberBbscChaliceBossInit(instance, *range);
 }
 #endif
 
@@ -25623,7 +25695,8 @@ void OnBbscProgressPacket(const std::uint32_t* flags, std::size_t count) {
             if (flags[i] >= 9800 && flags[i] <= 9802) {
                 time_bits |= 0x80 >> (flags[i] - 9800);
             }
-            if (known(flags[i]) && std::ranges::find(bbsc_progress_host_flags, flags[i]) ==
+            if (bbsc_progress_accept_packets && known(flags[i]) &&
+                std::ranges::find(bbsc_progress_host_flags, flags[i]) ==
                                        bbsc_progress_host_flags.end()) {
                 bbsc_progress_host_flags.push_back(flags[i]);
                 ++added;

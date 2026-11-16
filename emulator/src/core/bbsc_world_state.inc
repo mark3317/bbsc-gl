@@ -77,6 +77,14 @@ s32 BbscWorldHostAltarSlot(const World::Scope& scope) {
         if(a.entry.occupied && a.entry.ritual==scope.ritual && a.mount.key==scope.dungeon)return slot;}
     return -1;
 }
+bool BbscChaliceBossLayoutMatchesScope(const World::Scope& scope, const Chalice::Mount& layout) {
+    if (!World::Valid(scope) || !Chalice::IsMap(scope.map) || scope.world != bbsc_world_altar_world)
+        return false;
+    return std::ranges::any_of(bbsc_world_altars, [&](const auto& altar) {
+        return altar.entry.occupied && altar.entry.ritual == scope.ritual &&
+               altar.mount.key == scope.dungeon && Chalice::SameLayout(layout, altar.mount);
+    });
+}
 bool BbscWorldReadAltarLamps(s32 slot,u64& bits) {
     const u64 storage=BbscWorldNativeAltarGroup(slot,1,7);if(!storage)return false;
     bits=0;
@@ -246,6 +254,7 @@ void BbscWorldApplyFlags(const World::Scope& scope,const BbscWorldState& state,b
         if(i<10 && !dungeon)
             BbscMergeSharedProgressGroup(key,live,before.data());
         if (wipe_load) KeepBbscEncounterFlags(scope, key, before.data(), live);
+        KeepBbscGuestStartedFlags(key, before.data(), live);
         KeepBbscGuestTalkBits(key,before.data(),live);
         KeepBbscNpcOwnBits(key,before.data(),live);
 #ifdef BBSC_MOD
@@ -557,6 +566,7 @@ void TickBbscWorldSnapshots() {
         }
         if(c.kind==World::ControlKind::Lamps){BbscWorldReceiveLamps(message);continue;}
         if(c.kind==World::ControlKind::LampCheckpoint){BbscWorldReceiveLampCheckpoint(message);continue;}
+        if(c.kind==World::ControlKind::BossEntrance){BbscWorldReceiveBossEntrance(message);continue;}
         if(c.kind==World::ControlKind::NativeInitialRequest || c.kind==World::ControlKind::NativeInitialReady){
             BbscWorldNativeInitialControl(message);continue;
         }
