@@ -1,10 +1,10 @@
 # BBSC-GL — Bloodborne Seamless Co-op Game Launcher
 
-**BBSC-GL 1.5.10** targets **BBGL 1.5.10**. Fixes Silencing Blank item context and restores native collision after in-place respawn. See [release notes](docs/release-1.5.10.md) for installation and verification limits.
+**BBSC-GL 1.6.1** targets **BBGL 1.6.1**. It binds guest progress to the character slot and updates co-op respawn and boss recovery. [Release notes](docs/release-1.6.1.md).
 
 **English** · [Русский](README.ru.md) · [Download BBGL](https://github.com/mark3317/bbgl/releases/latest)
 
-BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). Download BBGL for matching DLL and P2P runtime versions. **BBGL 1.5.10** includes BBSC-GL 1.5.10. The mod waits for known party members during boss deaths, rechecks readiness when presence or the roster changes, and rejects death messages from earlier visits. Targeted tests passed. In-game verification is pending. [Release notes](docs/release-1.5.10.md).
+BBSC-GL is a fork of [Bloodborne Seamless Co-op](https://github.com/CLSAMG22/BBSC), integrated into [BBGL](https://github.com/mark3317/bbgl). The full launcher bundles the matching DLL and Party runtime.
 
 Hunters can travel independently within a party, use their own Dream and meet again on another map. The host’s Chalice lamp list and progress are synchronized with guests.
 
@@ -24,8 +24,8 @@ Binaries live in `coop/client/bbsc`, Party in `coop/party`, and writable data de
 
 The user confirmed a complete main-story co-op playthrough and a working NG+ transition on 5 November. Chalice co-op and randomly generated Root Chalices are supported. This does not establish coverage of every additional rite, reward edge case or party composition; those checks continue. T22 combat latency, T23 return and T24 wipe camera were confirmed on 1 November. See [HANDOFF](docs/HANDOFF.md) and [BACKLOG](docs/BACKLOG.md).
 
-- DLL: `emulator\mod\build-mod-bbport.cmd` → `build/mod/`.
-- Player package: [BBGL build guide](https://github.com/mark3317/bbgl/blob/develop/BUILDING.md).
+- To build the published DLL, check out tag `v1.6.1` and run `emulator\mod\build-mod-bbport.cmd`. Output goes to `build/mod/`.
+- For the complete launcher and mod package, see the [BBGL build guide](https://github.com/mark3317/bbgl/blob/main/BUILDING.md).
 - Standalone/server instructions and older changelog entries are historical.
 
 ## Credits and licence
