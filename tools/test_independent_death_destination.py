@@ -482,7 +482,7 @@ with tempfile.TemporaryDirectory(prefix='bbsc-death-destination-') as tmp:
     send_life = function('void SendBbscLifeState(u8 state)')
     refresh = function('void RefreshBbscBossDeathGroup()')
     count_change = function('void OnBbscPartyRoomMemberCountChanged()')
-    cpp.write_text(prefix+group+send_life+notify+life_receive+refresh+count_change+kidnap_production+
+    cpp.write_text(prefix+"\nvoid PrepareBbscNativeDeathResources() {}\n"+group+send_life+notify+life_receive+refresh+count_change+kidnap_production+
                    entry+reload+production+main, encoding='utf-8')
     compiler = os.environ.get('CXX','C:/msys64/clang64/bin/clang++.exe')
     subprocess.run([compiler,'-std=c++20','-I',str(ROOT/'emulator/src'),str(cpp),'-o',str(exe)],check=True)

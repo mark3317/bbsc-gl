@@ -196,5 +196,5 @@ assert 'else if (loaded)' not in spectate
 assert 'BbscRespawnInPlace' not in function('void TickBbscPostLoadRecovery()')
 print('post-load repair cannot steal a new death: PASS')
 
-assert 'bbsc_reload_finish_pending.store(true);' in SOURCE[SOURCE.index('if (site.offset == 0x0178D9C0) {'):][:250]
+assert 'bbsc_reload_finish_pending.store(true);' in SOURCE[SOURCE.index('if (site.offset == 0x0178D9C0) {'):SOURCE.index('if (site.offset == 0x0178D9C0 && BbscRejoinEnabled())')]
 print('native reload callback integration: PASS')

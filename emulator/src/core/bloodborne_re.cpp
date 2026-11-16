@@ -4556,6 +4556,28 @@ void SendBbscLifeState(u8 state) {
 
 bool IsInvaderType(s32 type);
 
+// The watchdog can reach the point loader without SoloPlayDeath_2/PartyGhostDeath_2.
+// Both native final steps set slot-manager+70 before StageTransition. StageFlow
+// 019395C6 consumes it to run 018FD460 (HP/resources), then clears it at 01939610.
+// A point-load request alone does not set it. Prepare the SAME native branch;
+// never heal a live actor here or carry a synthetic revival beyond construction.
+void PrepareBbscNativeDeathResources() {
+    const u64 player = GetLocalPlayerCharacter();
+    const s32 state = GetSessionState();
+    if ((state != 3 && state != 6) || !player || GetCharacterHp(player) != 0 ||
+        (state == 6 && IsInvaderType(GetLocalCharacterType())) ||
+        BbscQuitInProgress() || BbscReturningToTitle()) return;
+    const u64 global = GetGlobalState();
+    const u64 slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
+    if (!ReadablePointer(global, 0x10) || ReadValue<u8>(global, 8) != 0 ||
+        !ReadablePointer(slots, 0x78) ||
+        !HasMemoryAccess(slots + 0x70, 1, MemoryProt::CpuWrite)) return;
+    const u8 before = ReadValue<u8>(slots, 0x70);
+    WriteValue<u8>(slots, 0x70, 1);
+    BBSC_TIMELINE("RESPAWN", "native death resources armed: role={} hp=0 pending {}->1 generation={}",
+                  state, before, bbsc_load_generation.load());
+}
+
 void NotifyBbscDeathReload() {
     const s32 state = GetSessionState();
     if ((state != 3 && state != 6) ||
@@ -4565,6 +4587,7 @@ void NotifyBbscDeathReload() {
     const u64 player = GetLocalPlayerCharacter();
     if (!bbsc_boss_death_ready && !bbsc_spectate_active &&
         (player == 0 || GetCharacterHp(player) != 0)) return;
+    PrepareBbscNativeDeathResources();
     bbsc_death_reload_generation = generation;
     SendBbscLifeState(BbscLifeDeathReloading);
     BBSC_TIMELINE("DEATH", "{} death reload starting", state == 3 ? "host" : "guest");
@@ -12225,6 +12248,9 @@ void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global) {
 }
 
 void FinishBbscDeathAtNativeLoad() {
+    BBSC_TIMELINE("RESPAWN", "native load completed: role={} hp={} actor={:#x} death_generation={} generation={}",
+                  GetSessionState(), GetBbscLocalPlayerHp(), GetLocalPlayerCharacter(),
+                  bbsc_death_reload_generation.value_or(0), bbsc_load_generation.load());
     const bool had_death = bbsc_spectate_active || bbsc_spectate_releasing ||
                            bbsc_request_death_reload || bbsc_curtain.step != BbscCurtainStep::Idle ||
                            bbsc_dead_since_ms != 0 || bbsc_inplace_respawn_ms != 0;
@@ -23984,6 +24010,11 @@ void PS4_SYSV_ABI TraceEntry(u64 tag, const GuestRegisterSnapshot* registers) {
         ApplySummonReloadStateAtDescriptor(*registers);
     }
     if (site.offset == 0x0178D9C0) {
+        const u64 death_slots = ReadValue<u64>(image_base + PlayerSlotManagerPointerOffset, 0);
+        BBSC_TIMELINE("RESPAWN", "native summon construction: role={} hp={} resource_pending={} death_generation={} generation={}",
+                      GetSessionState(), GetBbscLocalPlayerHp(),
+                      ReadablePointer(death_slots, 0x78) ? ReadValue<u8>(death_slots, 0x70) : -1,
+                      bbsc_death_reload_generation.value_or(0), bbsc_load_generation.load());
         ClearBbscHomeTypeOverrideBeforeSummonFinish();
         bbsc_reload_finish_pending.store(true);
         bbsc_quest_index_epoch.fetch_add(1,std::memory_order_release);
