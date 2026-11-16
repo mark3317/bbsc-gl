@@ -211,7 +211,10 @@ int main(){
   TickBbscSpectate();assert(ready_sends==1); // no independent presence locally
   reset();TickBbscSpectate();assert(revives==1&&warps==0&&reloads==0&&!bbsc_spectate_active);
   assert(!bbsc_spectate_waiting_host_reload&&penalties==1);
-  reset();loop=true;TickBbscSpectate();assert(reloads==1&&warps==0&&suspends==0&&releases==0);
+  // A genuine next death 36 ms after revival takes the same native controller.
+  reset();TickBbscSpectate();assert(revives==1&&reloads==0);
+  now+=36;bbsc_spectate_active=false;BeginBbscCoopDeath("next native final",role);
+  TickBbscSpectate();assert(revives==2&&reloads==0&&penalties==2);
   reset();revive_ok=false;TickBbscSpectate();assert(reloads==1&&warps==0&&suspends==0&&releases==0);
   reset();living=false;TickBbscSpectate();now+=501;TickBbscSpectate();
   assert(reloads==1&&warps==0&&suspends==0&&releases==0);

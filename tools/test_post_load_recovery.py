@@ -64,6 +64,8 @@ std::atomic<u64> bbsc_world_load_pending{0};
 bool BbscReturningToTitle() { return false; }
 void ReleaseBbscQuitTitleAtLoad(bool, u64) {}
 void FinishBbscNativeFinaleLoad() {}
+void ApplyBbscGehrmanPlacement() {}
+void FinishBbscDeathAtNativeLoad() {}
 int item_seed_calls=0;
 void SeedBbscNativeItemStateAtLoad() { ++item_seed_calls; }
 bool BbscQuitInProgress() { return false; }
@@ -129,10 +131,9 @@ int main(int argc,char**argv) {
         bbsc_reload_finish_pending=true; TickBbscLoadState();
         assert(bbsc_load_generation==1);
         tick(20);
-        assert(!bbsc_spectate_active && camera_off==1 && hp>0 && stopped==0);
-        assert(revived==(test=="native_wipe_dead" ? 1 : 0));
-        assert(restocks==1 && !bbsc_wipe_restock_pending);
-        tick(20); assert(restocks==1);
+        assert(revived==0 && stopped==0 && camera_off==0);
+        assert(hp==(test=="native_wipe_alive" ? 100 : 0));
+        tick(20); assert(revived==0);
         return 0;
     }
     if(test=="override") {
@@ -166,17 +167,11 @@ int main(int argc,char**argv) {
     if(test=="host_missing") { state=3; player=0; revive_ok=false; }
     if(test=="healthy") hp=100;
     tick(72);
-    if(test=="loading" || test=="joining" || test=="invader" || test=="title" || test=="lua_unavailable") {
-        assert(revived==0 && stopped==0 && camera_off==0);
-    } else if(test=="missing" || test=="failed_revive" || test=="host_missing") {
-        assert(revived==((test=="missing" || test=="host_missing") ? 0 : 2) && stopped==1 && suspended==1);
-        assert(reloaded==(test=="host_missing" ? 1 : 0));
-    } else {
-        assert(hp>0 && !bbsc_spectate_active && camera_off==1 && stopped==0);
-        assert(revived==(test=="healthy" ? 0 : 1));
-        // A subsequent death without a new load must remain a normal boss spectator.
-        hp=0; bbsc_spectate_active=true; tick(72); assert(camera_off==1);
-    }
+    // Post-load role repair never revives, ends a session, clears a new death,
+    // or changes the camera. Native completion retires the OLD death separately.
+    assert(revived==0 && stopped==0 && camera_off==0 && reloaded==0);
+    assert(bbsc_spectate_active);
+
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bbsc-recovery-') as tmp:
@@ -198,7 +193,8 @@ print('home return integration: PASS')
 spectate=function('void TickBbscSpectate()')
 assert spectate.index('bbsc_load_generation.load() != bbsc_spectate_load_generation') < spectate.index('LivingPartnerExists()')
 assert 'else if (loaded)' not in spectate
-print('completed load has one recovery owner: PASS')
+assert 'BbscRespawnInPlace' not in function('void TickBbscPostLoadRecovery()')
+print('post-load repair cannot steal a new death: PASS')
 
 assert 'bbsc_reload_finish_pending.store(true);' in SOURCE[SOURCE.index('if (site.offset == 0x0178D9C0) {'):][:250]
 print('native reload callback integration: PASS')

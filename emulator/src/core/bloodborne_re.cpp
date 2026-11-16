@@ -4364,6 +4364,7 @@ s64 bbsc_spectate_since_ms = 0;
 // Death observation precedes a delayed native final step. Keep boss eligibility
 // separate from the spectator's existing safety/settle clocks.
 s64 bbsc_dead_since_ms = 0;
+s64 bbsc_death_script_ms = 0;
 s64 bbsc_spectate_death_ms = 0;
 s64 bbsc_spectate_alone_since_ms = 0;
 bool bbsc_boss_wipe_seen = false;
@@ -9262,26 +9263,6 @@ std::optional<BbscTransform> ResolveBbscDefeatedBossLamp(std::string_view why) {
     return ResolveLampPoint(bbsc_encounter_lamp);
 }
 
-// a4_ns 2026-10-14: revived at the host's lamp, died again 36 ms later (the game's kill reward
-// still held the old death), the next death step respawned in place again - a loop. A death this
-// soon after a respawn in place gets the game's real reload instead.
-constexpr s64 BbscRespawnLoopMs = 10'000;
-bool BbscDiedRightAfterRespawn(std::string_view why) {
-    if (bbsc_inplace_respawn_ms == 0) {
-        return false;
-    }
-    const s64 since = SteadyNowMs() - bbsc_inplace_respawn_ms;
-    if (since > BbscRespawnLoopMs) {
-        return false;
-    }
-    LOG_INFO(Debug, "BBSC death: repeat death {} ms after a respawn in place ({}) -> real reload",
-             since, why);
-    BBSC_TIMELINE("DEATH", "death: repeat death {} ms after a respawn in place ({}) -> real reload",
-             since, why);
-    bbsc_inplace_respawn_ms = 0;
-    return true;
-}
-
 // Native death removes unsaved timed effects (018C4C45..018C4C9A).
 // The effect serializer (018BCC40..018BCC87) additionally drops saved categories
 // 0/1/2/4/5/7/8/9 at HP <= 0; only 3/6 survive a death reload. Poison is in
@@ -10467,6 +10448,11 @@ bool BbscLateDeathStep(std::string_view name) {
     if (session_state != 3 && session_state != 6) {
         return false;
     }
+    const u64 loaded_global = GetGlobalState();
+    if (!ReadablePointer(loaded_global, 0x10) || ReadValue<u8>(loaded_global, 8) != 0 ||
+        bbsc_reload_finish_pending.load() || bbsc_world_load_pending.load() != 0) {
+        return false; // native construction already owns this life, before the next game tick
+    }
     const u64 player = GetLocalPlayerCharacter();
     if (player == 0) {
         return false;
@@ -10613,8 +10599,8 @@ void TickBbscSpectate() {
     const s32 session_state = GetSessionState();
     const bool session_alive = session_state == 3 || session_state == 6;
     if (session_alive && bbsc_load_generation.load() != bbsc_spectate_load_generation) {
-        // The completed load belongs to the common reconciler, including dead/missing locals.
-        // Do not race its settle/retry window with another warp or a partner-dependent revive.
+        // A completed native load retires this death on the load observer.
+        // Never revive a new actor using the previous life's spectator state.
         return;
     }
     std::string_view reason;
@@ -10646,12 +10632,6 @@ void TickBbscSpectate() {
             } else if (now - bbsc_boss_cleared_since_ms >= BbscBossClearedSettleMs) {
                 respawn_why = "boss killed";
             }
-        }
-        if (!respawn_why.empty() && BbscDiedRightAfterRespawn(respawn_why)) {
-            BbscApplyDeathPenalty(respawn_why);
-            penalty_applied = true;
-            reason = "repeat death right after a respawn in place";
-            respawn_why = {};
         }
         if (!respawn_why.empty()) {
             BbscApplyDeathPenalty(respawn_why);
@@ -12244,6 +12224,41 @@ void ReleaseBbscQuitTitleAtLoad(bool native_finish, u64 global) {
     }
 }
 
+void FinishBbscDeathAtNativeLoad() {
+    const bool had_death = bbsc_spectate_active || bbsc_spectate_releasing ||
+                           bbsc_request_death_reload || bbsc_curtain.step != BbscCurtainStep::Idle ||
+                           bbsc_dead_since_ms != 0 || bbsc_inplace_respawn_ms != 0;
+    bbsc_spectate_active = false;
+    bbsc_spectate_releasing = false;
+    bbsc_request_death_reload = false;
+    bbsc_spectate_since_ms = bbsc_spectate_death_ms = bbsc_spectate_alone_since_ms = 0;
+    bbsc_spectate_load_generation = bbsc_load_generation.load();
+    bbsc_spectate_name = {};
+    bbsc_death_mode = BbscDeathMode::Spectate;
+    bbsc_dead_since_ms = bbsc_death_script_ms = 0;
+    bbsc_inplace_respawn_ms = 0;
+    bbsc_death_lock_until_ms = bbsc_state_diff_at_ms = 0;
+    bbsc_curtain = {};
+    bbsc_native_death_rearm = {};
+    for (auto& skip : bbsc_late_death_skip) skip = 0;
+    for (auto& skip : bbsc_late_final_skip) skip = 0;
+    bbsc_echoes_at_death = -1;
+    bbsc_boss_at_own_death = bbsc_boss_wipe_seen = bbsc_boss_death_ready = false;
+    bbsc_boss_death_group = BbscBossDeathGroup::Unavailable;
+    bbsc_boss_cleared_since_ms = 0;
+    bbsc_death_reload_generation.reset();
+    // Native load already reset flags, effects, HP, physics and death Lua state.
+    // Do not clear native flags or revive here: HP 0 can already be a NEW death.
+    if (had_death) Bbsc::CinematicForceOff();
+    // Keep network reinsert independent; it restores the native session role, not HP.
+    const bool restock = bbsc_wipe_restock_pending;
+    bbsc_wipe_restock_pending = false;
+    if (restock && GetSessionState() == 6 && !IsInvaderType(GetLocalCharacterType()) &&
+        GetBbscLocalPlayerHp() > 0) {
+        BbscRestockFromStorage("native guest death load completed");
+    }
+}
+
 void TickBbscLoadState() {
     static bool was_loading = false;
     const u64 global = GetGlobalState();
@@ -12263,6 +12278,7 @@ void TickBbscLoadState() {
         ReleaseBbscQuitTitleAtLoad(native_finish || world_ready, global);
         if (was_loading || native_finish || world_ready) {
             ++bbsc_load_generation;
+            FinishBbscDeathAtNativeLoad();
             FinishBbscNativeFinaleLoad();
             ApplyBbscGehrmanPlacement();
             SeedBbscNativeItemStateAtLoad();
@@ -12277,18 +12293,13 @@ bool BbscPhantomType(s32 type) {
     return type == 1 || type == 2 || type == 12 || type == 13;
 }
 
-// Reconcile completed loads independently of remote-player creation/life packets. In particular,
-// a dead guest cannot wait for a living remote character: that character's insert can itself be
-// waiting for the local revive. Sample on the game thread, with no waits or network operations.
+// Repair session roles after native loading. Death belongs to the current life only.
 void TickBbscPostLoadRecovery() {
     static s64 last_ms = 0;
     static s64 stable_ms = 0;
     static u32 generation = 0;
     static s32 previous_state = -1;
     static bool previous_home = false;
-    static bool recover_death_load = false;
-    static int revive_attempts = 0;
-    static s64 last_revive_ms = 0;
     const s64 now = SteadyNowMs();
     if (now - last_ms < 250) return;
     last_ms = now;
@@ -12296,9 +12307,6 @@ void TickBbscPostLoadRecovery() {
     const u32 loaded = bbsc_load_generation.load();
     if (loaded != generation) {
         generation = loaded;
-        recover_death_load = bbsc_spectate_active || bbsc_v8_pending || bbsc_wipe_restock_pending;
-        revive_attempts = 0;
-        last_revive_ms = 0;
         stable_ms = 0;
     }
     if (!ReadablePointer(global, 0x1700) || ReadValue<u8>(global, 0x08) != 0 ||
@@ -12309,7 +12317,6 @@ void TickBbscPostLoadRecovery() {
     const u64 title_man = ReadValue<u64>(image_base + 0x0553B108, 0);
     const u64 title_request = ReadablePointer(title_man, 0x18) ? ReadValue<u64>(title_man, 0x10) : 0;
     if (ReadablePointer(title_request, 0x0C) && ReadValue<s32>(title_request, 8) == 2) {
-        recover_death_load = false;
         stable_ms = 0;
         return;
     }
@@ -12347,57 +12354,6 @@ void TickBbscPostLoadRecovery() {
             LOG_WARNING(Debug, "BBSC post-load: own world without session, phantom types {}/{} -> 0",
                         slot_type, chr_type);
         }
-        if (GetBbscLocalPlayerHp() > 0 &&
-            (bbsc_spectate_active || bbsc_spectate_releasing || recover_death_load)) {
-            bbsc_spectate_active = false;
-            bbsc_spectate_releasing = false;
-            Bbsc::CinematicForceOff();
-            bbsc_recover_session_cleanup = true;
-        }
-    }
-    if (!recover_death_load) return;
-    if (state != 3 && state != 6) {
-        bbsc_wipe_restock_pending = false;
-        recover_death_load = false; // normal home/solo death belongs to the native scripts
-        return;
-    }
-    if (state == 6 && (home || IsInvaderType(GetLocalCharacterType()))) return;
-    bool alive = GetBbscLocalPlayerHp() > 0;
-    if (!alive && revive_attempts < 2 && ReadablePointer(GetLocalPlayerCharacter(), 0x410) &&
-        (last_revive_ms == 0 || now - last_revive_ms >= 1'000)) {
-        last_revive_ms = now;
-        ++revive_attempts;
-        alive = BbscRespawnInPlace("completed co-op death load");
-        if (alive) bbsc_wipe_restock_pending = false; // respawn already restocked
-    }
-    if (alive) {
-        if (bbsc_wipe_restock_pending) {
-            BbscRestockFromStorage("completed guest wipe load");
-            bbsc_wipe_restock_pending = false;
-        }
-        recover_death_load = false;
-        bbsc_spectate_active = false;
-        bbsc_spectate_releasing = false;
-        Bbsc::CinematicForceOff();
-        ClearBbscBossContext("completed co-op death load");
-        ReleaseBbscDeathLocks("completed co-op death load");
-        LOG_INFO(Debug, "BBSC post-load: living local character, death camera and locks released");
-    } else if (now - stable_ms >= 15'000) {
-        // No usable local character: never leave a camera-only client in a kept session.
-        // Native leave followed by TickBbscStrandedGuest sends it home even with no character.
-        recover_death_load = false;
-        SuspendBbscPersistenceOnce("no usable local character after completed death load");
-        const u64 manager = ReadValue<u64>(image_base + MatchingStatePointerOffset, 0);
-        if (ReadablePointer(manager, 0x128)) {
-            using Stop = u8 PS4_SYSV_ABI (*)(u64);
-            reinterpret_cast<Stop>(image_base + MultiPlayStopRequestOffset)(manager);
-        }
-        bbsc_spectate_active = false;
-        bbsc_spectate_releasing = false;
-        Bbsc::CinematicForceOff();
-        if (state == 3) RequestBbscDeathReload("host character recovery failed after load");
-        bbsc_recover_session_cleanup = true;
-        LOG_WARNING(Debug, "BBSC post-load: character recovery failed (state {}), ending co-op", state);
     }
 }
 
@@ -20318,8 +20274,6 @@ constexpr s64 BbscDeadWatchdogMs = 15'000;
 // Native callbacks normally hand over to the retained-death controller.
 // Keep the original bounded handoff when a native script stalls; never revive
 // directly here, so boss/wipe/invasion and the existing fade remain authoritative.
-s64 bbsc_death_script_ms = 0;
-
 void PS4_SYSV_ABI BbscDeathStepTraceHook(u64 tag, const GuestRegisterSnapshot* registers) {
     BBSC_PERF_SCOPE("hook BbscDeathStepTraceHook");
     static constexpr std::array<std::string_view, 3> Names{"SoloPlayDeath", "SoloPlayDeath_1",
